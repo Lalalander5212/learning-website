@@ -1,0 +1,239 @@
+---
+title: "성능 기초 ③: Amdahl's Law"
+description: "일부만 빠르게 했을 때 전체는 얼마나 빨라지나, 그리고 왜 profile부터 해야 하나"
+track: arch-foundations
+est: 30min
+sidebar:
+  order: 3
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+"conv 연산을 FPGA로 10배 가속했는데 전체 inference는 3.5배밖에 안 빨라졌다. 왜?"
+
+시스템의 일부만 개선하면 **개선하지 않은 부분**이 전체 속도의 상한이 된다. 이걸 모르면 이미 충분히 빠른 부분에 노력을 쏟고, 진짜 병목은 방치하게 된다.
+
+## 직관: 출퇴근
+
+```text
+ 집 ──[걸어서 역까지 20분]──[지하철 80분]──► 회사     총 100분
+
+ 지하철을 10배 빠른 KTX로 바꿈:
+ 집 ──[걸어서 20분]──[KTX 8분]──► 회사                 총 28분  (3.57배)
+
+ 지하철을 순간이동으로 바꿔도:
+ 집 ──[걸어서 20분]──► 회사                            총 20분  (최대 5배)
+```
+
+**안 바꾼 부분**(걸어가는 20분)이 결국 벽이 된다. 이것이 Amdahl's law의 핵심이다.
+
+## 정식 설명
+
+**Amdahl's Law (암달의 법칙)**: 시스템의 일부만 개선했을 때 전체 speedup은 **개선되지 않은 부분**에 의해 제한된다.
+*The overall speedup from improving part of a system is limited by the fraction of time the improved part is actually used.*
+
+### 유도
+
+- 개선 전 전체 시간: $T_{old}$
+- 개선 가능한 부분이 차지하는 **시간 비율**: $f$ (0 ≤ $f$ ≤ 1)
+- 그 부분의 속도 향상 배수: $s$
+
+개선 전 시간을 두 덩어리로 나눈다.
+
+$$
+T_{old} = (1-f)\,T_{old} + f\,T_{old}
+$$
+
+개선 대상만 $s$배 빨라지므로
+
+$$
+T_{new} = (1-f)\,T_{old} + \frac{f\,T_{old}}{s}
+$$
+
+Speedup은
+
+$$
+\boxed{\text{Speedup} = \frac{T_{old}}{T_{new}} = \frac{1}{(1-f) + \dfrac{f}{s}}}
+$$
+
+### 상한
+
+$s \to \infty$로 보내면 $f/s \to 0$이므로
+
+$$
+\text{Speedup}_{max} = \frac{1}{1-f}
+$$
+
+80%를 무한히 빠르게 만들어도 최대 **5배**다.
+
+### Multicore 버전
+
+병렬화 가능한 비율을 $f$, 코어 수를 $N$이라고 하면 $s = N$이므로
+
+$$
+\text{Speedup}(N) = \frac{1}{(1-f) + \dfrac{f}{N}}
+$$
+
+### 목표 speedup에서 필요한 $s$ 역산
+
+목표 speedup을 $S$라고 하고 식을 $s$에 대해 풀면
+
+$$
+\frac{1}{S} = (1-f) + \frac{f}{s} \quad\Rightarrow\quad s = \frac{f}{\dfrac{1}{S} - (1-f)}
+$$
+
+분모가 0 이하이면(즉 $S \ge 1/(1-f)$이면) 어떤 $s$로도 불가능하다.
+
+<Aside type="note" title="수확 체감 (diminishing returns)">
+$s$를 키울수록 $f/s$ 항은 이미 작아서 더 줄일 게 없다. 같은 노력을 들여도 얻는 이득이 점점 줄어든다.
+</Aside>
+
+## Worked example: Edge 디바이스의 CNN inference
+
+CNN inference 한 번에 100 ms. 이 중 conv layer가 80 ms ($f = 0.8$), 나머지(pre-processing, pooling, activation, 메모리 복사)가 20 ms.
+
+**(a) conv를 HLS 가속기로 10배 빠르게 하면?**
+
+$$
+T_{new} = 20 + \frac{80}{10} = 28 \text{ ms}, \quad \text{Speedup} = \frac{100}{28} \approx 3.57
+$$
+
+공식으로 검산: $1 / (0.2 + 0.08) = 1 / 0.28 \approx 3.57$
+
+**(b) 이론적 최대 speedup은?**
+
+$$
+\frac{1}{1 - 0.8} = 5
+$$
+
+**(c) 전체 4배를 얻으려면 conv를 몇 배 가속해야 하나?**
+
+$$
+\frac{1}{0.2 + 0.8/s} = 4 \;\Rightarrow\; 0.2 + \frac{0.8}{s} = 0.25 \;\Rightarrow\; \frac{0.8}{s} = 0.05 \;\Rightarrow\; s = 16
+$$
+
+3.57배에서 4배로 0.43배만 더 얻으려고 가속기를 10배에서 16배로 만들어야 한다.
+
+**(d) 전체 5배는?** $s = \infty$가 필요하므로 **불가능**. 이 시점부터는 나머지 20 ms를 줄이는 게 맞다.
+
+### Amdahl 참고표 (Speedup)
+
+| f \\ s | 2 | 4 | 10 | 100 | ∞ |
+|---|---|---|---|---|---|
+| 0.50 | 1.33 | 1.60 | 1.82 | 1.98 | 2 |
+| 0.80 | 1.67 | 2.50 | 3.57 | 4.81 | 5 |
+| 0.90 | 1.82 | 3.08 | 5.26 | 9.17 | 10 |
+| 0.95 | 1.90 | 3.48 | 6.90 | 16.81 | 20 |
+| 0.99 | 1.98 | 3.88 | 9.17 | 50.25 | 100 |
+
+$f = 0.99$에서 $s = 100$이어도 50배밖에 안 나온다. **1%의 serial 부분이 절반을 잡아먹는다.**
+
+## 코드: Amdahl 계산 + 실제 profiling
+
+```python
+import time
+import numpy as np
+
+def amdahl(f, s):
+    return 1.0 / ((1 - f) + f / s)
+
+def required_s(f, target):
+    denom = 1 / target - (1 - f)
+    return float("inf") if denom <= 1e-12 else f / denom   # 부동소수점 오차 대비
+
+# 1) 참고표
+ss = [2, 4, 10, 100, float("inf")]
+print("f \\ s  " + "".join(f"{str(s):>8s}" for s in ss))
+for f in [0.5, 0.8, 0.9, 0.95, 0.99]:
+    row = [1 / (1 - f) if s == float("inf") else amdahl(f, s) for s in ss]
+    print(f"{f:5.2f}  " + "".join(f"{v:8.2f}" for v in row))
+
+print(f"\nf=0.8, 전체 4x 목표 -> conv를 {required_s(0.8, 4):.1f}x 가속해야 함")
+print(f"f=0.8, 전체 5x 목표 -> {required_s(0.8, 5)}")
+
+# 2) 실제로 f를 재고 speedup 예측하기
+W = np.random.randn(1024, 1024).astype(np.float32)
+x = np.random.randn(256, 1024).astype(np.float32)
+
+def preprocess(n=200_000):           # 순수 Python 루프 (가속 안 할 부분)
+    s = 0.0
+    for i in range(n):
+        s += i * 0.5
+    return s
+
+t = time.perf_counter(); preprocess(); t_pre = time.perf_counter() - t
+t = time.perf_counter()
+for _ in range(20):
+    x @ W
+t_mm = time.perf_counter() - t
+
+f = t_mm / (t_pre + t_mm)
+print(f"\npreprocess={t_pre*1e3:.1f} ms, matmul={t_mm*1e3:.1f} ms -> f(matmul)={f:.2f}")
+for s in [2, 10, 100]:
+    print(f"  matmul을 {s:3d}x 가속하면 전체 {amdahl(f, s):.2f}x  (상한 {1/(1-f):.2f}x)")
+```
+
+`preprocess`의 `n`을 바꿔가면서 $f$가 변할 때 상한이 어떻게 무너지는지 확인해보자.
+
+## 흔한 오해
+
+<Aside type="caution" title="f는 코드 비율이 아니라 시간 비율">
+코드 10줄짜리 루프가 실행 시간의 90%를 차지할 수 있다. 그리고 $f$는 **개선 전** 시스템에서 측정한 값이어야 한다. 그래서 최적화 전에 항상 **profile부터** 해야 한다.
+</Aside>
+
+<Aside type="note" title="Amdahl 때문에 병렬화는 쓸모없다?">
+Amdahl은 **문제 크기가 고정**이라고 가정한다(strong scaling). 실제로는 코어가 늘면 더 큰 문제(더 큰 batch, 더 큰 모델)를 푸는 경우가 많고, 이 관점이 **Gustafson's Law**다(weak scaling). GPU로 딥러닝이 잘 되는 이유이기도 하다.
+</Aside>
+
+## Efficient ML 연결
+
+**"linear layer만 빨라지는" 문제.** Quantization이나 pruning은 주로 matmul/conv를 가속한다. 그러면 softmax, LayerNorm, activation, 데이터 layout 변환, tokenization, sampling 같은 **나머지 부분의 비율이 커지면서 병목이 된다.** LLM inference에서 attention이나 KV cache 접근이 문제로 떠오르는 것도 같은 맥락이다.
+
+**가속기 설계.** FPGA/NPU에 conv만 올리고 나머지를 CPU에서 돌리면, CPU 쪽 처리와 **데이터 전송 시간**이 $(1-f)$에 들어간다. 가속기를 아무리 빠르게 만들어도 전송이 20%면 상한은 5배다.
+
+**분산 학습.** GPU 여러 장으로 학습할 때 gradient 동기화(all-reduce) 통신이 serial 부분처럼 작동한다. GPU를 늘릴수록 효율이 떨어지는 구조가 Amdahl과 같다.
+
+## 체크 퀴즈
+
+<Quiz
+  q="전체 시간의 80%를 차지하는 부분을 10배 빠르게 만들면 전체 speedup은?"
+  options={['8배', '3.57배', '5배', '10배']}
+  answer={1}
+  explain="1 / (0.2 + 0.8/10) = 1 / 0.28 ≈ 3.57. 10배는 개선 대상만 본 값이고, 5배는 s가 무한대일 때의 상한이다."
+/>
+
+<Quiz
+  q="병렬화 가능한 비율이 90%일 때, 코어를 무한히 늘려서 얻을 수 있는 최대 speedup은?"
+  options={['9배', '10배', '90배', '무한대']}
+  answer={1}
+  explain="상한은 1 / (1 - f) = 1 / 0.1 = 10. 남은 10%의 serial 부분은 코어 수와 상관없이 그대로 남는다."
+/>
+
+<Quiz
+  q="f = 0.8일 때 전체 speedup 4배를 얻으려면 개선 대상을 몇 배 가속해야 하나?"
+  options={['4배', '16배', '5배', '불가능']}
+  answer={1}
+  explain="1/4 = 0.2 + 0.8/s에서 0.8/s = 0.05, 따라서 s = 16. 4배는 상한 5배보다 작으므로 가능은 하지만, 상한에 가까워질수록 필요한 s가 급격히 커진다."
+/>
+
+<Quiz
+  q="Amdahl's law의 f를 구할 때 가장 올바른 방법은?"
+  options={['개선할 함수의 코드 줄 수 비율', '개선 전 실행 시간 중 그 부분이 차지하는 비율을 profile로 측정', '개선 후 실행 시간 중 그 부분의 비율', '그 부분의 명령어 수 비율']}
+  answer={1}
+  explain="f는 개선 전 시스템에서 측정한 시간 비율이다. 코드 줄 수나 명령어 수는 실제 시간과 비례하지 않을 수 있고, 개선 후 비율로 계산하면 식이 맞지 않는다."
+/>
+
+<Quiz
+  q="Gustafson's law가 Amdahl's law와 다른 핵심 가정은?"
+  options={['serial 부분이 없다고 가정', '코어가 늘면 문제 크기도 함께 키운다고 가정', '클럭이 올라간다고 가정', '메모리가 무한하다고 가정']}
+  answer={1}
+  explain="Amdahl은 문제 크기를 고정(strong scaling)하고, Gustafson은 코어가 늘면 병렬 부분의 일을 키운다(weak scaling). 그래서 Gustafson에서는 speedup이 코어 수에 거의 비례해서 늘 수 있다."
+/>
+
+## 더 읽을거리
+
+- [Amdahl's law (Wikipedia)](https://en.wikipedia.org/wiki/Amdahl%27s_law)
+- [Gustafson's law (Wikipedia)](https://en.wikipedia.org/wiki/Gustafson%27s_law)
+- [MIT 6.5940 TinyML and Efficient Deep Learning Computing](https://efficientml.ai)

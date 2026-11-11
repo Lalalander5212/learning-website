@@ -1,0 +1,178 @@
+---
+title: "성능 기초 ①: Latency vs Throughput"
+description: "빠르다의 두 가지 의미, Little's Law, 그리고 batching의 trade-off"
+track: arch-foundations
+est: 25min
+sidebar:
+  order: 1
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+"모델을 **빠르게** 돌리고 싶다"는 말은 사실 뜻이 두 개다. 카메라 프레임 **한 장**의 결과가 빨리 나와야 하는가(자율주행 브레이크 판단), 아니면 **1초에 몇 장**을 처리하느냐가 중요한가(서버에서 사진 100만 장 분류)?
+
+이 두 목표는 서로 충돌할 때가 많다. batch를 키우면 초당 처리량은 늘지만 한 장당 대기 시간은 길어진다. 무엇을 최적화할지 정하지 않으면 엉뚱한 방향으로 최적화하게 된다.
+
+## 직관: 스포츠카 vs 버스
+
+A에서 B까지 사람을 옮긴다고 해보자.
+
+```text
+ 스포츠카: 2명 탑승, 편도 10분
+ ┌──┐
+ │🚗│ ──────────────► B        한 사람 도착까지: 10분      (latency ↓)
+ └──┘                           시간당 운송: 2명 × 6회 = 12명/h
+
+ 버스: 50명 탑승, 편도 30분
+ ┌──────────┐
+ │🚌🚌🚌🚌🚌│ ──────► B          한 사람 도착까지: 30분      (latency ↑)
+ └──────────┘                   시간당 운송: 50명 × 2회 = 100명/h (throughput ↑)
+```
+
+- **급한 한 명**에게는 스포츠카가 낫다 → latency 관점
+- **많은 사람을 옮기는 회사**에게는 버스가 낫다 → throughput 관점
+
+"어느 쪽이 더 빠르냐"는 **무엇을 재느냐**에 따라 답이 달라진다.
+
+## 정의
+
+**Latency (지연 시간)**: 작업 **하나**가 시작해서 끝날 때까지 걸리는 시간.
+*The time elapsed from the start to the completion of a single task.* 단위는 s, ms, cycles.
+
+**Throughput (처리량)**: **단위 시간당** 완료되는 작업의 수.
+*The number of tasks completed per unit time.* 단위는 tasks/s, images/s, tokens/s.
+
+### 둘의 관계
+
+- 겹침(overlap)이 전혀 없으면: $\text{Throughput} = 1 / \text{Latency}$
+- $N$개를 동시에 처리하면: $\text{Throughput} = N / \text{Latency}$
+
+### Little's Law
+
+위 관계를 일반화한 것이 **Little's Law**다.
+
+$$
+L = \lambda \times W
+$$
+
+| 기호 | 의미 |
+|---|---|
+| $L$ | 시스템 안에 **동시에** 들어 있는 작업 수 (concurrency, in-flight 개수) |
+| $\lambda$ | throughput (완료율) |
+| $W$ | latency (작업 하나가 시스템에 머무는 시간) |
+
+<Aside type="tip" title="핵심 결론">
+latency가 고정이라면 throughput을 올리는 유일한 방법은 **동시에 더 많이 처리하는 것**이다. batching, pipelining, multicore가 전부 이 원리다. 그 대가로 개별 작업의 latency는 대개 늘어난다.
+</Aside>
+
+Little's Law는 이 트랙 전체에서 반복해서 나온다. CPU pipeline에 필요한 독립 명령어 수, SIMD reduction에 필요한 누적기 수, GPU가 메모리 대역폭을 채우는 데 필요한 thread 수가 전부 이 식으로 계산된다.
+
+## Worked example: Batching
+
+GPU에서 이미지 분류를 한다.
+
+| 설정 | batch 1회 처리 시간 | Latency (이미지 1장) | Throughput |
+|---|---|---|---|
+| batch = 1 | 10 ms | 10 ms | $1 / 0.010 = $ **100 img/s** |
+| batch = 8 | 24 ms | 24 ms | $8 / 0.024 = $ **333 img/s** |
+
+- Throughput은 **3.3배** 증가했다. GPU가 놀던 연산 유닛을 더 채웠기 때문이다.
+- 대신 각 이미지의 latency는 **2.4배** 늘었다. 8장이 다 같이 끝나야 하기 때문이다.
+
+Little's Law로 검산하면
+
+$$
+L = \lambda W = 333 \times 0.024 \approx 8
+$$
+
+동시에 처리 중인 이미지가 8장이므로 맞다.
+
+<Aside type="caution" title="실제 latency는 더 길다">
+서빙 환경에서는 batch를 **모으려고 기다리는 시간**까지 latency에 더해진다. 요청이 드문드문 들어오면 batch 8을 채우는 데만 수십 ms가 걸릴 수 있다.
+</Aside>
+
+## 코드: batch 크기에 따른 latency / throughput 측정
+
+NumPy만 있으면 돌아간다. 1024×1024 fully-connected layer 하나를 batch 크기별로 측정한다.
+
+```python
+import time
+import numpy as np
+
+W = np.random.randn(1024, 1024).astype(np.float32)
+
+def bench(batch, iters=50):
+    x = np.random.randn(batch, 1024).astype(np.float32)
+    x @ W                                   # warm-up
+    t = time.perf_counter()
+    for _ in range(iters):
+        x @ W
+    return (time.perf_counter() - t) / iters
+
+for b in [1, 4, 16, 64, 256, 1024]:
+    dt = bench(b)
+    print(f"batch={b:5d}  latency={dt*1e3:8.3f} ms  throughput={b/dt:12,.0f} samples/s")
+```
+
+볼 포인트: batch가 커지면 latency는 늘고, throughput은 늘다가 어느 지점에서 **포화**된다. 포화되는 이유는 나중에 배울 roofline 모델의 compute-bound / memory-bound 전환으로 설명된다.
+
+## 흔한 오해
+
+<Aside type="caution" title="Throughput이 오르면 latency도 줄어든다?">
+반대인 경우가 많다. batching과 pipelining은 throughput을 올리는 대신 개별 latency를 그대로 두거나 늘린다. 둘은 **다른 지표**이고, 따로 측정해야 한다.
+</Aside>
+
+## Efficient ML 연결
+
+**MIT 6.5940의 efficiency metrics.** 수업 초반에 latency, throughput, energy, #parameters, model size, peak activation memory, MACs/FLOPs를 정의한다. latency와 throughput의 구분이 그대로 나온다.
+
+**LLM 서빙 지표**가 정확히 이 구분으로 되어 있다.
+
+| 지표 | 종류 | 의미 |
+|---|---|---|
+| TTFT (Time To First Token) | latency | prompt 처리(prefill) 후 첫 토큰까지 |
+| TPOT (Time Per Output Token) | latency | decode 1 step |
+| tokens/s | throughput | 시스템 전체 생성 속도 |
+
+- **Edge**(폰, 노트북): 사용자 1명 → batch = 1 → **latency가 중요**
+- **Server**: batch를 크게 해서 **throughput 극대화**
+
+**Speculative decoding**은 batch = 1에서 놀고 있는 하드웨어에 draft token 여러 개를 한 번에 검증시켜 **latency를 줄이는** 기법이다. "놀고 있는 하드웨어를 채운다"는 점에서 batching과 같은 원리다.
+
+## 체크 퀴즈
+
+<Quiz
+  q="GPU에서 batch 1은 10 ms, batch 8은 24 ms 걸린다. batch 8의 throughput은 대략 얼마인가?"
+  options={['100 img/s', '333 img/s', '800 img/s', '42 img/s']}
+  answer={1}
+  explain="throughput = 처리한 개수 / 걸린 시간 = 8 / 0.024 s ≈ 333 img/s. 800은 batch 1의 100 img/s에 8을 곱한 값인데, batch를 키우면 처리 시간도 늘어나므로 틀렸다."
+/>
+
+<Quiz
+  q="서버의 throughput이 200 req/s이고 평균 latency가 50 ms다. 시스템 안에서 동시에 처리 중인 요청은 평균 몇 개인가?"
+  options={['4개', '10개', '40개', '250개']}
+  answer={1}
+  explain="Little's Law L = λ × W = 200 × 0.05 = 10. 단위를 ms 그대로 곱하면(200 × 50) 틀린 답이 나오니 초 단위로 맞춰야 한다."
+/>
+
+<Quiz
+  q="다음 중 LLM 서빙에서 latency 지표에 해당하는 것은?"
+  options={['tokens/s', 'TPOT (Time Per Output Token)', 'batch size', 'GPU 개수']}
+  answer={1}
+  explain="TPOT는 decode 한 step(토큰 하나)에 걸리는 시간이므로 latency다. tokens/s는 단위 시간당 개수이므로 throughput이고, batch size와 GPU 개수는 지표가 아니라 설정값이다."
+/>
+
+<Quiz
+  q="batch 크기를 키울 때 일반적으로 나타나는 변화는?"
+  options={['latency 감소, throughput 감소', 'latency 증가, throughput 증가', 'latency 감소, throughput 증가', '둘 다 변화 없음']}
+  answer={1}
+  explain="동시에 더 많이 처리하므로 throughput은 늘지만(하드웨어가 포화될 때까지), 각 샘플은 batch 전체가 끝날 때까지 기다려야 하므로 latency는 늘어난다."
+/>
+
+## 더 읽을거리
+
+- [Little's law (Wikipedia)](https://en.wikipedia.org/wiki/Little%27s_law)
+- [MIT 6.5940 TinyML and Efficient Deep Learning Computing](https://efficientml.ai)
+- [Fast Inference from Transformers via Speculative Decoding (Leviathan et al., 2022)](https://arxiv.org/abs/2211.17192)

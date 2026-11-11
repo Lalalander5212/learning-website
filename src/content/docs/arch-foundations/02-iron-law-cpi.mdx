@@ -1,0 +1,255 @@
+---
+title: "성능 기초 ②: Iron Law와 CPI"
+description: "실행 시간을 IC × CPI × clock으로 쪼개서 어디를 고칠지 찾는 법"
+track: arch-foundations
+est: 30min
+sidebar:
+  order: 2
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+"프로그램이 느리다"만으로는 아무것도 고칠 수 없다. 명령어가 너무 많은가? 명령어 하나하나가 느린가? 클럭이 낮은가? 실행 시간을 **세 요인의 곱**으로 분해하면 병목이 어디인지, 어떤 최적화가 실제로 효과가 있는지 숫자로 판단할 수 있다.
+
+## 성능과 Speedup
+
+**Performance (성능)**: 실행 시간의 역수. *Performance = 1 / Execution time.*
+
+$$
+\text{Performance}_X = \frac{1}{\text{Execution time}_X}
+$$
+
+"X가 Y보다 $n$배 빠르다"는 다음을 뜻한다.
+
+$$
+n = \frac{\text{Performance}_X}{\text{Performance}_Y} = \frac{\text{Time}_Y}{\text{Time}_X}
+$$
+
+**Speedup (속도 향상)**: 개선 전 실행 시간 ÷ 개선 후 실행 시간.
+*The ratio of old execution time to new execution time.*
+
+$$
+\text{Speedup} = \frac{T_{old}}{T_{new}}
+$$
+
+## 용어 정의
+
+**Clock cycle (클럭 사이클)**: CPU가 동작하는 기본 시간 단위.
+*The basic time unit of a processor, set by its clock.*
+Clock cycle time $T_{clk} = 1/f$. 예: 2 GHz면 $T_{clk} = 0.5$ ns.
+
+**Instruction Count, IC (명령어 수)**: 프로그램 실행 중 **실제로 실행된**(dynamic) 명령어의 총 개수.
+*The total number of instructions executed by a program.*
+코드 줄 수가 아니다. 루프가 1000번 돌면 그 안의 명령어는 1000번 센다.
+
+**CPI, Cycles Per Instruction (명령어당 평균 사이클 수)**: 명령어 하나를 실행하는 데 평균적으로 드는 클럭 사이클 수.
+*The average number of clock cycles per instruction.*
+역수는 **IPC (Instructions Per Cycle)**. 현대 superscalar CPU는 IPC가 1보다 커서 CPI가 1보다 작을 수도 있다.
+
+## Iron Law 유도
+
+실행 시간 = (총 사이클 수) × (사이클 하나의 시간)
+
+$$
+T_{CPU} = \text{Cycles} \times T_{clk}
+$$
+
+총 사이클 수 = (명령어 수) × (명령어당 평균 사이클)
+
+$$
+\text{Cycles} = IC \times CPI
+$$
+
+대입하면 **Iron Law of Performance**가 나온다.
+
+$$
+\boxed{T_{CPU} = IC \times CPI \times T_{clk} = \frac{IC \times CPI}{f}}
+$$
+
+단위 검증:
+
+$$
+\frac{\text{Instructions}}{\text{Program}} \times \frac{\text{Cycles}}{\text{Instruction}} \times \frac{\text{Seconds}}{\text{Cycle}} = \frac{\text{Seconds}}{\text{Program}}
+$$
+
+### 명령어 종류마다 CPI가 다를 때
+
+명령어 클래스 $i$의 개수를 $IC_i$, CPI를 $CPI_i$라고 하면
+
+$$
+\text{Cycles} = \sum_i IC_i \times CPI_i
+$$
+
+평균 CPI는 **빈도로 가중평균**한 값이다.
+
+$$
+CPI_{avg} = \frac{\sum_i IC_i \times CPI_i}{IC} = \sum_i F_i \times CPI_i, \qquad F_i = \frac{IC_i}{IC}
+$$
+
+### 각 요인에 영향을 주는 것
+
+| 요인 | 영향을 주는 것 |
+|---|---|
+| IC | 알고리즘, 컴파일러, ISA (CISC vs RISC, SIMD 명령어 유무) |
+| CPI | microarchitecture (pipeline, cache, branch predictor), 컴파일러의 명령어 선택 |
+| $T_{clk}$ | 공정 기술, 회로 설계, pipeline 깊이 |
+
+<Aside type="note" title="세 요인은 trade-off 관계">
+pipeline을 깊게 하면 $T_{clk}$는 줄지만 hazard 때문에 CPI가 늘 수 있다. SIMD 명령어를 쓰면 IC는 줄지만 명령어 하나의 CPI는 늘 수 있다. 항상 **세 개의 곱**을 봐야 한다.
+</Aside>
+
+## Worked example: 어디를 고칠까?
+
+2 GHz CPU에서 명령어 $10^9$개를 실행하는 프로그램.
+
+| 클래스 | 빈도 $F_i$ | 개수 $IC_i$ | $CPI_i$ |
+|---|---|---|---|
+| ALU | 50% | $0.5 \times 10^9$ | 1 |
+| Load | 20% | $0.2 \times 10^9$ | 5 |
+| Store | 10% | $0.1 \times 10^9$ | 3 |
+| Branch | 20% | $0.2 \times 10^9$ | 2 |
+
+**Step 1. 평균 CPI**
+
+$$
+CPI_{avg} = 0.5(1) + 0.2(5) + 0.1(3) + 0.2(2) = 0.5 + 1.0 + 0.3 + 0.4 = 2.2
+$$
+
+Load는 빈도가 20%뿐인데 CPI 기여는 $1.0 / 2.2 \approx$ **45%**다. 병목은 Load다.
+
+**Step 2. 실행 시간**
+
+$$
+T = \frac{10^9 \times 2.2}{2 \times 10^9} = 1.1 \text{ s}
+$$
+
+**Step 3a. 개선안 A: cache 개선으로 Load CPI를 5 → 2로**
+
+$$
+CPI_{avg} = 0.5 + 0.2(2) + 0.3 + 0.4 = 1.6, \quad T = 0.8 \text{ s}, \quad \text{Speedup} = \frac{1.1}{0.8} = 1.375
+$$
+
+**Step 3b. 개선안 B: 컴파일러가 ALU 명령어를 20% 줄임 (0.5 → 0.4 × 10⁹)**
+
+빈도가 바뀌므로 **개수 기준으로 사이클을 직접 센다.**
+
+$$
+\text{Cycles} = 0.4(1) + 0.2(5) + 0.1(3) + 0.2(2) = 2.1 \times 10^9
+$$
+
+$$
+IC_{new} = 0.9 \times 10^9, \quad CPI_{new} = \frac{2.1}{0.9} \approx 2.33, \quad T = 1.05 \text{ s}, \quad \text{Speedup} \approx 1.048
+$$
+
+<Aside type="caution" title="CPI가 나빠졌는데 빨라졌다">
+개선안 B에서 CPI는 2.2 → 2.33으로 **올라갔는데** 실행 시간은 줄었다. 빠른 명령어(ALU)를 빼버려서 평균이 올라간 것이다. CPI 하나만 보고 성능을 판단하면 안 된다.
+</Aside>
+
+## 코드: Iron Law 계산기
+
+```python
+def cpu_time(mix, freq_hz):
+    """mix: {클래스명: (실행 횟수, CPI)}"""
+    ic = sum(n for n, _ in mix.values())
+    cycles = sum(n * cpi for n, cpi in mix.values())
+    return ic, cycles / ic, cycles / freq_hz
+
+F = 2e9  # 2 GHz
+base  = {"ALU": (0.5e9, 1), "Load": (0.2e9, 5), "Store": (0.1e9, 3), "Branch": (0.2e9, 2)}
+opt_a = dict(base, Load=(0.2e9, 2))      # cache 개선: Load CPI 5 -> 2
+opt_b = dict(base, ALU=(0.4e9, 1))       # 컴파일러: ALU 명령어 20% 감소
+
+_, _, t0 = cpu_time(base, F)
+for name, mix in [("base", base), ("A: Load CPI 5->2", opt_a), ("B: ALU -20%", opt_b)]:
+    ic, cpi, t = cpu_time(mix, F)
+    print(f"{name:18s} IC={ic:.2e}  CPI={cpi:.3f}  T={t:.3f}s  speedup={t0/t:.3f}x")
+
+# 어떤 클래스가 사이클을 제일 많이 먹나?
+total = sum(n * c for n, c in base.values())
+for k, (n, c) in base.items():
+    print(f"  {k:6s} {n*c/total*100:5.1f}%")
+```
+
+개선안 B에서 CPI는 올라가는데 T는 줄어드는 것을 직접 확인해보자.
+
+## 흔한 오해
+
+### 1. "클럭이 높으면 빠르다" (MHz myth)
+
+Iron Law에서 $f$는 세 요인 중 하나일 뿐이다. 클래식 **8051**은 machine cycle 하나가 12 클럭이고 명령어 대부분이 1~2 machine cycle이라서, 클럭 기준 CPI가 **12~24**다. 같은 12 MHz짜리 Cortex-M은 CPI가 대략 1 근처라서 **클럭이 같아도 10배 이상** 차이가 난다. 게다가 8051은 8-bit라서 32-bit 덧셈 하나에 ADD/ADDC를 여러 번 써야 하므로 IC까지 커진다.
+
+### 2. "CPI가 낮을수록 항상 빠르다"
+
+위 개선안 B에서 봤듯이 IC가 바뀌면 CPI만으로는 판단할 수 없다. 같은 이유로 **MIPS**(초당 백만 명령어)도 ISA가 다른 기계끼리 비교하면 오해를 부른다.
+
+### 3. "n% 빨라졌다"와 "n배 빨라졌다" 혼동
+
+1.1 s → 0.8 s는 성능 기준으로 1.375배 = **37.5% 향상**이고, 실행 시간 기준으로는 **27% 단축**이다. 논문을 읽을 때 어느 기준인지 꼭 확인하자.
+
+## Efficient ML 연결
+
+Iron Law는 DL inference에도 거의 그대로 대응된다.
+
+```text
+ CPU:  T = IC        × CPI                          × T_clk
+ DL:   T ≈ #MACs     × (1 / 하드웨어 utilization)    × (1 / peak MAC/s)
+           ↑                 ↑                            ↑
+      pruning, NAS,     kernel 최적화,                 하드웨어
+      작은 모델         TinyEngine, 메모리 배치        (NPU, GPU, MCU)
+```
+
+MIT 6.5940의 기법들은 각각 이 중 하나를 공격한다.
+
+| 기법 | 공략하는 항 |
+|---|---|
+| Pruning, NAS, 작은 모델 | IC에 해당하는 #MACs |
+| Quantization | MAC당 비용, 메모리 traffic |
+| TinyEngine 같은 시스템 최적화 | utilization (CPI에 해당) |
+
+<Aside type="tip" title="MACs가 줄어도 안 빨라질 수 있다">
+CPU에서 IC를 줄여도 CPI가 오르면 손해일 수 있듯이, MACs를 줄인 모델이 메모리 접근 패턴이 나빠서 utilization이 떨어지면 latency가 거의 안 줄어든다. 대표적인 예가 depthwise convolution이다.
+</Aside>
+
+## 체크 퀴즈
+
+<Quiz
+  q="2 GHz CPU에서 명령어 10^9개를 평균 CPI 2.2로 실행한다. 실행 시간은?"
+  options={['0.55 s', '1.1 s', '2.2 s', '4.4 s']}
+  answer={1}
+  explain="T = IC × CPI / f = 10^9 × 2.2 / (2 × 10^9) = 1.1 s. 4.4 s는 클럭으로 나누지 않고 곱한 경우의 실수다."
+/>
+
+<Quiz
+  q="ALU 50% (CPI 1), Load 20% (CPI 5), Store 10% (CPI 3), Branch 20% (CPI 2)일 때 평균 CPI는?"
+  options={['1.6', '2.2', '2.75', '11']}
+  answer={1}
+  explain="빈도 가중평균: 0.5×1 + 0.2×5 + 0.1×3 + 0.2×2 = 2.2. 2.75는 빈도를 무시하고 CPI 4개를 단순 평균한 값이다."
+/>
+
+<Quiz
+  q="컴파일러 최적화 후 평균 CPI는 2.2에서 2.33으로 올랐는데 실행 시간은 1.1 s에서 1.05 s로 줄었다. 가장 정확한 설명은?"
+  options={['클럭이 올라갔다', 'IC 감소 효과가 CPI 증가 효과보다 컸다', '측정 오류다', 'Load의 CPI가 줄었다']}
+  answer={1}
+  explain="CPI가 1인 빠른 ALU 명령어가 빠지면서 평균 CPI는 올랐지만, IC가 10% 줄어서 총 사이클(IC × CPI)은 2.2 × 10^9에서 2.1 × 10^9로 줄었다. 클럭과 Load CPI는 그대로다."
+/>
+
+<Quiz
+  q="둘 다 12 MHz인 8051과 Cortex-M MCU를 비교할 때 옳은 설명은?"
+  options={['클럭이 같으니 성능도 같다', '8051은 CPI가 훨씬 커서(약 12~24) 같은 클럭이어도 훨씬 느리다', '8051이 8-bit라 IC가 작아서 더 빠르다', 'CPI는 클럭에만 의존한다']}
+  answer={1}
+  explain="클래식 8051은 machine cycle 하나가 12 클럭이라 클럭 기준 CPI가 12~24다. 게다가 8-bit라 32-bit 연산에 명령어가 더 많이 필요해서 IC도 오히려 크다."
+/>
+
+<Quiz
+  q="실행 시간이 1.1 s에서 0.8 s로 줄었다. 성능(performance) 기준으로 몇 % 향상인가?"
+  options={['27%', '37.5%', '30%', '72.7%']}
+  answer={1}
+  explain="성능은 시간의 역수이므로 1.1 / 0.8 = 1.375배, 즉 37.5% 향상이다. 27%는 실행 시간이 줄어든 비율(0.3 / 1.1)로, 기준이 다르다."
+/>
+
+## 더 읽을거리
+
+- [Iron law of processor performance (Wikipedia)](https://en.wikipedia.org/wiki/Iron_law_of_processor_performance)
+- [MIT 6.5940 TinyML and Efficient Deep Learning Computing](https://efficientml.ai)

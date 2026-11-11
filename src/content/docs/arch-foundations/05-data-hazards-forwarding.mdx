@@ -1,0 +1,364 @@
+---
+title: "Data hazard와 forwarding"
+description: "앞 명령어 결과를 기다려야 할 때 생기는 stall, forwarding, load-use hazard, compiler scheduling"
+track: arch-foundations
+est: 35min
+sidebar:
+  order: 5
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+파이프라인은 명령어들이 서로 독립적일 때 가장 잘 돌아간다. 그런데 실제 코드는 앞 명령어의 결과를 뒤 명령어가 바로 쓰는 경우가 대부분이다. 결과가 아직 안 나왔는데 뒤 명령어가 그 값을 읽으면 **틀린 값**으로 계산하게 된다. 이걸 막으려고 파이프라인을 멈추면 CPI가 1보다 커진다. 실제 CPU의 CPI가 이상적인 값에서 벗어나는 주된 이유다.
+
+## 용어 정의
+
+**Hazard (해저드)**: 다음 명령어가 다음 클럭 사이클에 정상적으로 실행될 수 없는 상황.
+*A situation that prevents the next instruction from executing in its designated clock cycle.*
+
+**Stall / Bubble (스톨 / 버블)**: hazard를 해결하려고 파이프라인 일부를 멈추고 빈 사이클(nop)을 끼워 넣는 것.
+*A pipeline delay that inserts an empty cycle to resolve a hazard.*
+
+Hazard는 세 종류다: **structural**, **data**, **control**. 이 레슨은 앞의 두 개, 다음 레슨은 control hazard를 다룬다.
+
+## Structural hazard
+
+**Structural hazard (구조적 해저드)**: 두 명령어가 **같은 하드웨어 자원**을 같은 사이클에 써야 하는 상황.
+*A hazard where the hardware cannot support the combination of instructions in the same clock cycle.*
+
+메모리가 하나뿐이면 `lw`의 MEM 단계와 3개 뒤 명령어의 IF 단계가 같은 사이클에 메모리를 쓰려고 해서 충돌한다.
+
+해결책:
+- **Instruction cache와 data cache를 분리**한다 (Harvard 구조). 실제 CPU의 L1이 I-cache / D-cache로 나뉜 이유다. 8051도 program memory와 data memory가 분리된 Harvard 구조였다.
+- Register file은 **사이클 전반부에 쓰고 후반부에 읽는다.** 그래서 WB와 ID가 같은 사이클에 겹쳐도 충돌하지 않는다.
+
+## Data hazard
+
+**Data hazard (데이터 해저드)**: 명령어가 **아직 계산되지 않은 이전 명령어의 결과**에 의존하는 상황.
+*A hazard where an instruction depends on the result of a prior instruction still in the pipeline.*
+
+| 종류 | 이름 | 예 | 5-stage in-order에서 |
+|---|---|---|---|
+| **RAW** | Read After Write (true dependence) | `add x1,...` 다음 `sub ...,x1,...` | **발생 (핵심)** |
+| WAR | Write After Read (anti-dependence) | `sub ...,x1,...` 다음 `add x1,...` | 발생 안 함 |
+| WAW | Write After Write (output dependence) | `add x1,...` 다음 `sub x1,...` | 발생 안 함 |
+
+5-stage in-order에서는 읽기가 항상 앞쪽(ID), 쓰기가 항상 뒤쪽(WB)에서 순서대로 일어나서 WAR/WAW가 문제 되지 않는다. 명령어 순서를 바꿔 실행하는 out-of-order CPU에서 문제가 되고, register renaming으로 해결한다.
+
+### 문제 상황
+
+```text
+사이클          1    2    3    4    5    6
+add x1,x2,x3   IF   ID   EX   MEM  WB         ← x1은 사이클 5에 register file에 써짐
+sub x4,x1,x5        IF   ID   EX   MEM  WB    ← x1을 사이클 3에 읽으려 함 ✗
+```
+
+**해결책 1: Stall.** sub의 레지스터 읽기를 사이클 5까지 미룬다 (register file은 전반부 쓰기, 후반부 읽기). **2 사이클 stall**이 생긴다.
+
+### 해결책 2: Forwarding
+
+**Forwarding (포워딩, bypassing)**: 결과가 register file에 쓰이기를 기다리지 않고, pipeline register에 있는 값을 바로 다음 명령어의 ALU 입력으로 전달하는 기법.
+*Retrieving a result directly from pipeline registers instead of waiting for it to reach the register file.*
+
+```text
+사이클          1    2    3    4    5    6
+add x1,x2,x3   IF   ID   EX   MEM  WB
+                         │ x1 결과가 EX/MEM 레지스터에 있음
+                         ▼
+sub x4,x1,x5        IF   ID   EX   MEM  WB    ← EX 입력으로 바로 전달 → stall 0
+```
+
+`add`의 결과는 사이클 3의 **EX 끝**에 이미 계산돼 있다. 그걸 EX/MEM 레지스터에서 꺼내 사이클 4의 sub EX 입력으로 넣으면 된다.
+
+### Forwarding으로도 못 막는 경우: Load-use hazard
+
+```text
+사이클          1    2    3    4    5    6    7
+lw  x1,0(x2)   IF   ID   EX   MEM  WB
+                              │ x1은 MEM "끝"에야 나옴
+                              ▼
+add x3,x1,x4        IF   ID   **   EX   MEM  WB   ← 1 사이클 stall 불가피
+```
+
+`lw`는 데이터를 **MEM 단계 끝**(사이클 4 끝)에야 얻는다. 바로 다음 명령어는 사이클 4 **시작**에 EX에서 그 값이 필요하다. 시간을 거꾸로 보낼 수는 없으므로 **1 사이클 stall**이 반드시 생긴다.
+
+**Load-use hazard**: load 바로 다음 명령어가 load한 값을 사용할 때 생기는, forwarding으로도 제거할 수 없는 stall.
+*A data hazard in which data loaded by a load instruction is needed by the immediately following instruction.*
+
+### 해결책 3: Compiler scheduling
+
+컴파일러가 load와 그 값을 쓰는 명령어 사이에 **독립적인 명령어**를 끼워 넣어 stall 슬롯을 채운다.
+
+## Worked example 1: 사이클 추적
+
+```text
+lw   x1, 0(x2)
+add  x3, x1, x4     # x1 의존 (load-use)
+sub  x5, x3, x6     # x3 의존
+sw   x5, 8(x2)      # x5 의존 (store할 데이터)
+```
+
+이상적인 경우: $5 + 4 - 1 = 8$ 사이클.
+
+### (a) Forwarding 없음
+
+규칙: 소비자의 레지스터 읽기(ID)가 생산자의 WB와 같거나 이후 사이클이어야 한다.
+
+```text
+사이클         1   2   3   4   5   6   7   8   9   10  11  12  13  14
+lw  x1,0(x2)   IF  ID  EX  ME  WB
+add x3,x1,x4       IF  ID  --  --  EX  ME  WB
+sub x5,x3,x6           IF  --  --  ID  --  --  EX  ME  WB
+sw  x5,8(x2)                       IF  --  --  ID  --  --  EX  ME  WB
+```
+
+`--`는 stall이다. ID는 진입 시점을 표시하고, 레지스터 읽기는 EX 직전 사이클에 완료된다.
+
+- lw → add: 2 stall, add → sub: 2 stall, sub → sw: 2 stall
+- 총 **14 사이클**, stall 6개
+
+### (b) Forwarding 있음
+
+- lw → add: load-use라서 **1 stall**. 사이클 4 끝(MEM)에 나온 x1을 MEM/WB에서 forwarding → add의 EX는 사이클 5.
+- add → sub: add 결과가 사이클 5 끝(EX)에 나옴 → EX/MEM에서 forwarding → **stall 0**.
+- sub → sw: sw는 x5를 **MEM 단계**에서 메모리에 쓴다. sub 결과가 사이클 6 끝에 나오므로 문제없음 → **stall 0**.
+
+```text
+사이클         1   2   3   4   5   6   7   8   9
+lw  x1,0(x2)   IF  ID  EX  ME  WB
+add x3,x1,x4       IF  ID  --  EX  ME  WB
+sub x5,x3,x6           IF  --  ID  EX  ME  WB
+sw  x5,8(x2)                   IF  ID  EX  ME  WB
+```
+
+총 **9 사이클**. forwarding만으로 14 → 9가 됐고, 남은 1 stall은 load-use라서 하드웨어로는 없앨 수 없다.
+
+## Worked example 2: Compiler scheduling
+
+```c
+a = b + c;
+d = e + f;
+```
+
+변수 주소: b = 0, c = 8, a = 16, e = 24, f = 32, d = 40, base 레지스터 = x31.
+
+**원래 순서**
+
+```text
+lw  x1, 0(x31)    # b
+lw  x2, 8(x31)    # c
+add x3, x1, x2    # ← x2 load-use: 1 stall
+sw  x3, 16(x31)   # a
+lw  x4, 24(x31)   # e
+lw  x5, 32(x31)   # f
+add x6, x4, x5    # ← x5 load-use: 1 stall
+sw  x6, 40(x31)   # d
+```
+
+$5 + 8 - 1 + 2 = $ **14 사이클**
+
+**재배치 (독립적인 load를 위로 올림)**
+
+```text
+lw  x1, 0(x31)
+lw  x2, 8(x31)
+lw  x4, 24(x31)   # ← 위로 올림: x2 load와 add 사이를 채움
+add x3, x1, x2    # x2는 2개 전에 load됨 → stall 없음
+lw  x5, 32(x31)
+sw  x3, 16(x31)   # ← 위로 올림: x5 load와 add 사이를 채움
+add x6, x4, x5    # x5는 2개 전에 load됨 → stall 없음
+sw  x6, 40(x31)
+```
+
+$5 + 8 - 1 + 0 = $ **12 사이클**. 의미는 같고 $14/12 \approx 1.17$배 빨라졌다.
+
+<Aside type="note" title="공짜는 없다">
+재배치하면 레지스터를 더 오래 살려둬야 한다 (register pressure 증가). 레지스터가 모자라면 오히려 spill(메모리에 임시 저장)이 생긴다.
+</Aside>
+
+## 코드: 5-stage pipeline 시뮬레이터
+
+Forwarding ON/OFF로 타이밍 다이어그램을 그려준다. 표준 라이브러리만 쓴다.
+
+```python
+LOAD, STORE, ALU = "lw", "sw", "alu"
+
+def parse(prog):
+    insts = []
+    for line in prog.strip().splitlines():
+        line = line.split("#")[0].strip()
+        if not line:
+            continue
+        op, rest = line.split(None, 1)
+        a = [s.strip() for s in rest.split(",")]
+        if op in ("lw", "sw"):
+            _, base = a[1].rstrip(")").split("(")
+            if op == "lw":
+                insts.append(dict(text=line, kind=LOAD, rd=a[0], srcs=[base], st_data=None))
+            else:
+                insts.append(dict(text=line, kind=STORE, rd=None, srcs=[base], st_data=a[0]))
+        else:
+            insts.append(dict(text=line, kind=ALU, rd=a[0], srcs=a[1:], st_data=None))
+    return insts
+
+def simulate(prog, forwarding=True):
+    """각 명령어가 IF/ID/EX에 '진입'하는 사이클 계산. stall은 ID에서 대기."""
+    insts = parse(prog)
+    last_writer, t = {}, []
+    for i, ins in enumerate(insts):
+        IF = 1 if i == 0 else t[i-1]["ID"]
+        ID = IF + 1 if i == 0 else max(IF + 1, t[i-1]["EX"])
+        EX = ID + 1
+
+        def ready(reg, needed_at_mem=False):
+            if reg not in last_writer:
+                return 0
+            p = last_writer[reg]
+            pEX = t[p]["EX"]
+            if not forwarding:
+                return pEX + 3                 # 생산자 WB(=EX+2)에 쓰고 → 그 다음 사이클에 EX
+            avail = pEX + 1 if insts[p]["kind"] == LOAD else pEX   # 값이 나오는 사이클(끝)
+            return avail if needed_at_mem else avail + 1
+
+        for r in ins["srcs"]:
+            EX = max(EX, ready(r))
+        if ins["st_data"]:                     # sw의 저장 데이터는 MEM에서 필요
+            EX = max(EX, ready(ins["st_data"], needed_at_mem=True))
+
+        t.append(dict(IF=IF, ID=ID, EX=EX, MEM=EX + 1, WB=EX + 2))
+        if ins["rd"] and ins["rd"] != "x0":
+            last_writer[ins["rd"]] = i
+    return insts, t
+
+def show(prog, forwarding=True, title=""):
+    insts, t = simulate(prog, forwarding)
+    total, n = t[-1]["WB"], len(insts)
+    ideal = 5 + n - 1
+    print(f"\n### {title}  [forwarding={'ON' if forwarding else 'OFF'}]")
+    print(f"total={total} cycles, ideal={ideal}, stalls={total-ideal}")
+    print(" " * 18 + "".join(f"{c:>4d}" for c in range(1, total + 1)))
+    for ins, s in zip(insts, t):
+        row = ["    "] * total
+        put = lambda c, x: row.__setitem__(c - 1, f"{x:>4s}")
+        put(s["IF"], "IF")
+        for c in range(s["IF"] + 1, s["ID"]): put(c, "--")
+        put(s["ID"], "ID")
+        for c in range(s["ID"] + 1, s["EX"]): put(c, "--")
+        put(s["EX"], "EX"); put(s["MEM"], "MEM"); put(s["WB"], "WB")
+        print(f"{ins['text']:18s}" + "".join(row))
+
+ex1 = """
+lw  x1, 0(x2)
+add x3, x1, x4
+sub x5, x3, x6
+sw  x5, 8(x2)
+"""
+show(ex1, forwarding=False, title="Example 1")
+show(ex1, forwarding=True,  title="Example 1")
+
+orig = """
+lw  x1, 0(x31)
+lw  x2, 8(x31)
+add x3, x1, x2
+sw  x3, 16(x31)
+lw  x4, 24(x31)
+lw  x5, 32(x31)
+add x6, x4, x5
+sw  x6, 40(x31)
+"""
+sched = """
+lw  x1, 0(x31)
+lw  x2, 8(x31)
+lw  x4, 24(x31)
+add x3, x1, x2
+lw  x5, 32(x31)
+sw  x3, 16(x31)
+add x6, x4, x5
+sw  x6, 40(x31)
+"""
+show(orig,  title="Example 2 original")
+show(sched, title="Example 2 scheduled")
+```
+
+실험해볼 것: `ex1`의 `add`와 `sub` 사이에 독립 명령어(`add x7, x8, x9`)를 하나 끼우면 stall이 어떻게 변하는지 보자.
+
+## 흔한 오해
+
+<Aside type="caution" title="Forwarding이 있으면 data hazard가 다 사라진다?">
+**Load-use hazard**는 남는다. 값이 MEM 끝에서야 존재하기 때문이다. compiler scheduling으로 슬롯을 채우는 수밖에 없다.
+</Aside>
+
+<Aside type="caution" title="Hazard = Stall?">
+Hazard는 **상황**이고, stall은 **해결 방법 중 하나**다. forwarding, 재배치, 하드웨어 자원 추가도 해결 방법이다.
+</Aside>
+
+## Efficient ML 연결
+
+**HLS의 loop-carried dependency.** Vitis HLS에서 dot product를 짜면 이런 일이 생긴다.
+
+```c
+for (int i = 0; i < N; i++) {
+#pragma HLS PIPELINE II=1
+    sum += a[i] * b[i];     // sum에 RAW 의존 (loop-carried dependency)
+}
+```
+
+float 덧셈기 latency가 예를 들어 4 사이클이면, 다음 iteration은 이전 `sum`이 나올 때까지 기다려야 해서 HLS가 **II를 4로 올려버린다.** 해결책은 compiler scheduling과 같은 아이디어다. 독립적인 연산으로 슬롯을 채운다.
+
+```c
+float psum[4] = {0};
+for (int i = 0; i < N; i++) {
+#pragma HLS PIPELINE II=1
+    psum[i % 4] += a[i] * b[i];   // 독립 누적기 4개 → RAW 간격이 4로 벌어짐
+}
+float sum = psum[0] + psum[1] + psum[2] + psum[3];
+```
+
+같은 원리가 CPU SIMD reduction(누적기 여러 개)과 GPU 커널에서도 반복된다.
+
+**LLM decoding = RAW 의존성의 연속.** token $t+1$을 만들려면 token $t$가 필요하다. 그래서 decode는 본질적으로 순차적이고, batch = 1에서 하드웨어가 놀게 된다. 이걸 "예측"으로 우회하는 방법이 다음 레슨에서 볼 speculative execution 계열 기법이다.
+
+## 체크 퀴즈
+
+<Quiz
+  q="Forwarding이 있는 5-stage pipeline에서 add x1,x2,x3 바로 다음에 sub x4,x1,x5가 오면 stall은 몇 사이클인가?"
+  options={['0', '1', '2', '3']}
+  answer={0}
+  explain="add의 결과는 EX 끝에 나오고, EX/MEM 레지스터에서 바로 다음 명령어의 EX 입력으로 forwarding되므로 stall이 없다."
+/>
+
+<Quiz
+  q="Forwarding이 있어도 lw x1,0(x2) 바로 다음에 add x3,x1,x4가 오면 stall은 몇 사이클인가?"
+  options={['0', '1', '2', '3']}
+  answer={1}
+  explain="load-use hazard다. lw의 데이터는 MEM 끝에 나오는데 add는 그 사이클의 시작에 EX에서 값이 필요하므로 1 사이클은 반드시 기다려야 한다."
+/>
+
+<Quiz
+  q="Forwarding이 없고 register file이 전반부 쓰기, 후반부 읽기일 때, ALU 명령어 결과를 바로 다음 명령어가 쓰면 stall은?"
+  options={['0', '1', '2', '3']}
+  answer={2}
+  explain="생산자는 사이클 5(WB)에 쓰고, 소비자는 같은 사이클 후반부에 읽을 수 있다. 소비자의 원래 ID는 사이클 3이므로 2 사이클을 기다려야 한다. register file 트릭이 없으면 3이 된다."
+/>
+
+<Quiz
+  q="In-order 5-stage pipeline에서 실제로 stall을 일으키는 의존성은?"
+  options={['RAW', 'WAR', 'WAW', '셋 다']}
+  answer={0}
+  explain="in-order 5-stage에서는 읽기가 항상 ID, 쓰기가 항상 WB에서 순서대로 일어나므로 WAR과 WAW는 문제가 되지 않는다. 둘은 out-of-order 실행에서 문제가 된다."
+/>
+
+<Quiz
+  q="HLS에서 sum += a[i]*b[i] 루프에 PIPELINE II=1을 줬는데 float 덧셈 latency가 4라서 II가 4가 됐다. 가장 적절한 해결책은?"
+  options={['클럭을 낮춘다', '독립 누적기 여러 개(psum[4])로 나누고 마지막에 합친다', 'pragma를 지운다', '배열을 더 크게 만든다']}
+  answer={1}
+  explain="II가 늘어난 원인은 sum에 대한 loop-carried RAW 의존성이다. 누적기를 4개로 나누면 같은 누적기에 대한 의존 간격이 4 iteration으로 벌어져서 덧셈 latency를 숨길 수 있다."
+/>
+
+## 더 읽을거리
+
+- [Hazard (computer architecture) (Wikipedia)](https://en.wikipedia.org/wiki/Hazard_(computer_architecture))
+- [Operand forwarding (Wikipedia)](https://en.wikipedia.org/wiki/Operand_forwarding)
+- [Vitis HLS User Guide (AMD)](https://docs.amd.com/r/en-US/ug1399-vitis-hls)

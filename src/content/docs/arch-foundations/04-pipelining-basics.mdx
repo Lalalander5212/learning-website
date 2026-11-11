@@ -1,0 +1,268 @@
+---
+title: "Pipelining 기초: 5-stage와 speedup 공식"
+description: "명령어 처리를 단계로 쪼개 겹치면 throughput이 오르는 원리와 그 한계"
+track: arch-foundations
+est: 30min
+sidebar:
+  order: 4
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+가장 단순한 CPU는 **single-cycle CPU**다. 명령어 하나를 한 사이클 안에 fetch부터 레지스터 쓰기까지 전부 처리한다. CPI = 1이라 좋아 보이지만 문제가 두 개 있다.
+
+1. **클럭이 가장 느린 명령어에 맞춰진다.** `lw`가 800 ps 걸리면 400 ps면 끝나는 `add`도 800 ps를 써야 한다.
+2. **하드웨어 대부분이 놀고 있다.** ALU를 쓰는 동안 instruction memory는 놀고, 메모리에 접근하는 동안 ALU는 논다.
+
+Pipelining은 명령어 처리를 단계로 쪼개고 각 단계가 **서로 다른 명령어를 동시에** 처리하게 만든다. "throughput은 올리고 latency는 그대로"가 CPU 안에서 일어나는 것이다.
+
+## 직관: 빨래방
+
+빨래 한 번에 4단계(세탁 W → 건조 D → 개기 F → 정리 P)가 있고 각각 30분이 걸린다.
+
+**순차 처리 (non-pipelined)**
+
+```text
+시간(30분 단위)  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16
+빨래 A           W  D  F  P
+빨래 B                       W  D  F  P
+빨래 C                                   W  D  F  P
+빨래 D                                               W  D  F  P
+                                                    → 16칸 = 8시간
+```
+
+**파이프라인 처리**
+
+```text
+시간(30분 단위)  1  2  3  4  5  6  7
+빨래 A           W  D  F  P
+빨래 B              W  D  F  P
+빨래 C                 W  D  F  P
+빨래 D                    W  D  F  P
+                 └fill┘      └drain┘
+                          → 7칸 = 3.5시간
+```
+
+- 빨래 **하나**가 끝나는 데 걸리는 시간은 여전히 2시간이다 (latency 변화 없음).
+- 세탁기, 건조기, 사람이 **동시에 일해서** 전체 시간이 8시간에서 3.5시간으로 줄었다 (throughput 증가).
+- 빨래가 아주 많으면 30분마다 하나씩 끝나므로 speedup은 **단계 수(4배)**에 가까워진다.
+
+## 용어 정의
+
+**Pipelining (파이프라이닝)**: 명령어 실행을 여러 단계로 나누고, 서로 다른 명령어의 서로 다른 단계를 동시에 수행해 처리량을 높이는 기법.
+*An implementation technique in which multiple instructions are overlapped in execution, each in a different stage.*
+
+**Pipeline stage (파이프라인 단계)**: 파이프라인을 구성하는 각 처리 단계. 한 클럭 사이클에 한 단계씩 진행한다.
+*One step of the pipeline, completed in one clock cycle.*
+
+**Pipeline register (파이프라인 레지스터)**: 단계 사이에서 한 단계의 결과를 다음 사이클까지 보관하는 레지스터.
+*Registers between stages that hold intermediate results for the next stage.*
+
+## 클래식 5-stage RISC pipeline
+
+| Stage | 이름 | 하는 일 |
+|---|---|---|
+| IF | Instruction Fetch | PC 주소로 instruction memory에서 명령어 읽기, PC += 4 |
+| ID | Instruction Decode / Register read | 명령어 해석, register file에서 source operand 읽기 |
+| EX | Execute | ALU 연산 (덧셈, 비교, 주소 계산) |
+| MEM | Memory access | `lw`면 data memory 읽기, `sw`면 쓰기 |
+| WB | Write Back | 결과를 register file에 쓰기 |
+
+```text
+         IF/ID       ID/EX       EX/MEM      MEM/WB     ← pipeline registers
+  ┌────┐   ║   ┌────┐   ║   ┌────┐   ║   ┌─────┐   ║   ┌────┐
+  │ IF │──▶║──▶│ ID │──▶║──▶│ EX │──▶║──▶│ MEM │──▶║──▶│ WB │
+  └────┘   ║   └────┘   ║   └────┘   ║   └─────┘   ║   └────┘
+  I-Mem        RegFile      ALU          D-Mem        RegFile
+               (read)                                 (write)
+```
+
+## 성능 공식 유도
+
+### 1. 클럭 주기
+
+각 stage의 지연 시간을 $t_1, \dots, t_k$, pipeline register 오버헤드(setup time + clock-to-Q)를 $t_{reg}$라고 하면
+
+$$
+T_{clk,pipe} = \max_i(t_i) + t_{reg}
+$$
+
+**가장 느린 stage가 클럭을 결정한다.** 그래서 stage 지연을 균형 있게 맞추는 게 중요하다.
+
+### 2. N개 명령어에 걸리는 사이클 수
+
+첫 명령어는 $k$개 stage를 다 거쳐야 하므로 $k$ 사이클 뒤에 끝난다 (pipeline fill). 그다음부터는 매 사이클 하나씩 끝나므로 나머지 $N-1$개는 $N-1$ 사이클이 더 걸린다.
+
+$$
+\text{Cycles}_{pipe} = k + (N-1)
+$$
+
+### 3. Speedup
+
+Single-cycle CPU는 명령어 하나에 $\sum t_i$가 걸리므로
+
+$$
+\text{Speedup} = \frac{N \cdot \sum_i t_i}{(k + N - 1)\cdot\left(\max_i t_i + t_{reg}\right)}
+$$
+
+$N$이 아주 크면 $(k+N-1) \approx N$이므로
+
+$$
+\text{Speedup}_{N\to\infty} = \frac{\sum_i t_i}{\max_i t_i + t_{reg}}
+$$
+
+stage가 완벽하게 균형 잡혀 있고($t_i = t$) 오버헤드가 없으면($t_{reg} = 0$)
+
+$$
+\text{Speedup}_{ideal} = \frac{k\,t}{t} = k
+$$
+
+<Aside type="note" title="현실에서 k배가 안 나오는 이유">
+① stage 불균형, ② register 오버헤드, ③ hazard로 인한 stall. ③은 다음 두 레슨에서 다룬다.
+</Aside>
+
+### 4. 명령어 하나의 latency
+
+$$
+\text{Latency}_{pipe} = k \times T_{clk,pipe} \;\ge\; \sum_i t_i
+$$
+
+Pipelining은 명령어 하나의 latency를 **오히려 늘린다.**
+
+## Worked example: speedup 계산
+
+| IF | ID | EX | MEM | WB | 합계 |
+|---|---|---|---|---|---|
+| 200 ps | 100 ps | 200 ps | 200 ps | 100 ps | 800 ps |
+
+$t_{reg} = 20$ ps, hazard는 없다고 가정한다.
+
+**Step 1. 클럭 주기**
+
+- Single-cycle: $T_{clk} = 800$ ps
+- Pipelined: $T_{clk} = \max(200, 100, 200, 200, 100) + 20 = 220$ ps
+
+**Step 2. 명령어 $10^6$개**
+
+- Single-cycle: $10^6 \times 800$ ps $= 800$ μs
+- Pipelined: $(5 + 10^6 - 1) \times 220$ ps $\approx 220.0009$ μs
+- Speedup $\approx$ **3.64배**
+
+**Step 3. 왜 5배가 아닌가: 손실 분해**
+
+| 조건 | Speedup |
+|---|---|
+| 이상적 (균형 160 ps × 5, 오버헤드 0) | $800/160 = 5.00$ |
+| 불균형 반영 (max = 200) | $800/200 = 4.00$ |
+| + register 오버헤드 (220) | $800/220 \approx 3.64$ |
+
+**Step 4. 명령어가 3개뿐이면?**
+
+- Single: $3 \times 800 = 2400$ ps
+- Pipelined: $(5 + 3 - 1) \times 220 = 1540$ ps
+- Speedup $\approx$ **1.56배**. fill/drain 때문에 $N$이 작으면 이득이 작다.
+
+**Step 5. 명령어 하나의 latency**
+
+Single 800 ps → Pipelined $5 \times 220 = 1100$ ps (37.5% 더 느림)
+
+## 코드: speedup 계산기와 pipeline 깊이
+
+```python
+def pipeline(stages_ps, t_reg_ps, n):
+    k = len(stages_ps)
+    t_clk = max(stages_ps) + t_reg_ps
+    T_single = n * sum(stages_ps)
+    T_pipe = (k + n - 1) * t_clk
+    return t_clk, T_single / T_pipe, k * t_clk     # clock, speedup, latency/inst
+
+stages = [200, 100, 200, 200, 100]
+for n in [1, 3, 10, 100, 10**6]:
+    clk, sp, lat = pipeline(stages, 20, n)
+    print(f"N={n:>8}  T_clk={clk} ps  speedup={sp:5.2f}x  latency/inst={lat} ps")
+
+# 같은 800 ps 로직을 k개 stage로 균등 분할하면? (hazard 없음, t_reg = 20 ps)
+print("\n깊이 k에 따른 이상적 speedup (N -> 무한대)")
+for k in [1, 2, 5, 10, 20, 40, 80]:
+    t_clk = 800 / k + 20
+    print(f"k={k:3d}  T_clk={t_clk:6.1f} ps  speedup={800 / t_clk:5.2f}x")
+print("상한 = 800 / 20 =", 800 / 20, "x  (register 오버헤드만으로도 막힌다)")
+```
+
+깊이를 계속 늘려도 speedup은 $\sum t_i / t_{reg}$에서 막힌다. 여기에 hazard penalty까지 더해지면 너무 깊은 pipeline은 오히려 손해다 (06 레슨).
+
+## 흔한 오해
+
+<Aside type="caution" title="Pipelining은 명령어 하나를 빠르게 한다?">
+아니다. 명령어 하나의 latency는 오히려 늘어난다 (800 → 1100 ps). 빨라지는 건 **throughput**이다.
+</Aside>
+
+<Aside type="caution" title="k-stage면 k배 빨라진다?">
+stage 균형이 완벽하고, register 오버헤드가 0이고, hazard가 없고, $N$이 충분히 클 때만 그렇다. 현실에서는 셋 다 성립하지 않는다.
+</Aside>
+
+## Efficient ML 연결
+
+**HLS의 `#pragma HLS PIPELINE`과 II.** Vitis HLS에서 루프에 붙이는 그 pragma가 바로 pipelining이다.
+
+**Initiation Interval, II (개시 간격)**: 파이프라인에서 연속된 두 iteration이 시작되는 사이클 간격. II = 1이면 매 사이클 새 iteration을 시작한다.
+*The number of cycles between the start of consecutive loop iterations.*
+
+루프 $N$회 실행 시간은 대략 $(N-1) \times II + \text{depth}$로, 위의 $k + N - 1$ 공식과 같은 구조다.
+
+**Systolic array.** TPU 같은 DL 가속기의 핵심인 systolic array는 MAC 유닛을 2D 파이프라인으로 연결한 것이다. fill/drain 동안 일부 PE가 놀기 때문에 행렬이 작으면 utilization이 떨어진다. Worked example의 "N = 3이면 1.56배"와 같은 현상이다.
+
+**Pipeline parallelism (분산 학습).** 모델의 layer를 $k$개 GPU에 나누고 micro-batch $m$개를 흘려보내면 (GPipe) 전체 시간이 $(m + k - 1)$ 단위가 되고
+
+$$
+\text{bubble 비율} = \frac{k-1}{m+k-1}
+$$
+
+위에서 유도한 fill/drain 공식과 완전히 같다. GPU가 노는 시간을 bubble이라고 부르는 것도 같다. 그래서 micro-batch를 충분히 잘게 쪼개야 한다.
+
+**Double buffering.** MCU에서 다음 layer weight를 DMA로 가져오는 동안 현재 layer를 계산하는 것도 load와 compute 2단계 파이프라인이다.
+
+## 체크 퀴즈
+
+<Quiz
+  q="Stage 지연이 200, 100, 200, 200, 100 ps이고 pipeline register 오버헤드가 20 ps일 때 클럭 주기는?"
+  options={['160 ps', '200 ps', '220 ps', '820 ps']}
+  answer={2}
+  explain="클럭은 가장 느린 stage에 register 오버헤드를 더한 값이다: max(200,100,200,200,100) + 20 = 220 ps. 160 ps는 평균 지연이라 가장 느린 stage를 담을 수 없다."
+/>
+
+<Quiz
+  q="5-stage pipeline에서 hazard 없이 명령어 100개를 실행하면 몇 사이클이 걸리나?"
+  options={['500', '104', '105', '100']}
+  answer={1}
+  explain="k + N - 1 = 5 + 100 - 1 = 104. 첫 명령어가 5 사이클 걸리고 나머지 99개가 한 사이클씩 뒤따른다. 500은 pipeline이 없을 때 multi-cycle CPU 기준 값이다."
+/>
+
+<Quiz
+  q="Pipelining을 적용하면 명령어 하나의 latency는 보통 어떻게 되나?"
+  options={['stage 수만큼 줄어든다', '같거나 약간 늘어난다', '절반이 된다', '0이 된다']}
+  answer={1}
+  explain="명령어 하나는 여전히 모든 stage를 거쳐야 하고, 각 stage가 가장 느린 stage의 시간과 register 오버헤드만큼 걸리므로 latency는 같거나 늘어난다. 빨라지는 건 throughput이다."
+/>
+
+<Quiz
+  q="GPipe 방식으로 모델을 GPU 4장(k = 4)에 나누고 micro-batch 12개(m = 12)를 흘리면 bubble 비율은?"
+  options={['25%', '20%', '33%', '8%']}
+  answer={1}
+  explain="(k - 1) / (m + k - 1) = 3 / 15 = 20%. micro-batch를 늘릴수록 bubble 비율이 줄어든다."
+/>
+
+<Quiz
+  q="다음 중 파이프라인 speedup이 이상적인 k배에 못 미치는 이유가 아닌 것은?"
+  options={['stage 지연 불균형', 'pipeline register 오버헤드', 'hazard로 인한 stall', 'pipelining 때문에 명령어 수(IC)가 늘어남']}
+  answer={3}
+  explain="Pipelining은 하드웨어 구현 방식이라 실행되는 명령어 수(IC)는 바뀌지 않는다. 나머지 세 개는 실제로 speedup을 깎는 요인이다."
+/>
+
+## 더 읽을거리
+
+- [Instruction pipelining (Wikipedia)](https://en.wikipedia.org/wiki/Instruction_pipelining)
+- [GPipe: Efficient Training of Giant Neural Networks using Pipeline Parallelism (Huang et al., 2018)](https://arxiv.org/abs/1811.06965)
+- [MIT 6.5940 TinyML and Efficient Deep Learning Computing](https://efficientml.ai)
