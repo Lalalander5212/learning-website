@@ -1,0 +1,311 @@
+---
+title: "TLB, huge page, page fault"
+description: "번역 비용을 숨기는 TLB, TLB reach와 huge page, 그리고 page fault가 얼마나 비싼지"
+track: arch-foundations
+est: 35min
+sidebar:
+  order: 15
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+4-level page table이면 load/store 하나에 메모리 접근이 5번이다. 메모리 접근 하나가 수백 사이클인데 이걸 5배로 만들 수는 없다. 다행히 번역에도 locality가 있다. 4 KB page 안의 float을 순차로 읽으면 1024번 연속으로 같은 VPN이다. 최근 번역을 cache하면 된다. 반대로 번역할 page가 아예 메모리에 없으면(page fault) 수백만 사이클이 걸릴 수 있다.
+
+## TLB
+
+**TLB, Translation Lookaside Buffer (변환 색인 버퍼)**: 최근 사용한 VPN → PPN 번역(과 권한 비트)을 저장하는 작은 하드웨어 cache.
+*A small hardware cache of recent virtual-to-physical page translations.*
+
+```text
+ VA ──▶ [ VPN | offset ]
+            │
+            ▼
+       ┌─────────┐  hit (1 cycle 이하)
+       │   TLB   │────────────────────▶ PPN ──▶ PA ──▶ cache/memory
+       └─────────┘
+            │ miss
+            ▼
+       page walk (메모리 접근 4번) ──▶ TLB에 채움 ──▶ PA
+            │ PTE invalid
+            ▼
+       page fault ──▶ OS
+```
+
+- 크기: L1 dTLB 대략 64 entry, L2 TLB 대략 1~2천 entry (CPU마다 다름)
+- 보통 fully associative 또는 높은 associativity
+- context switch 때 다른 프로세스의 번역이 무의미해지므로 flush해야 한다. 이를 피하려고 entry에 프로세스 ID 태그(**ASID**, x86은 **PCID**)를 붙이기도 한다.
+
+## EAT (Effective Access Time)
+
+TLB 조회 시간 $t_{TLB}$, 메모리 접근 시간 $t_{mem}$, TLB hit rate $h$, page table 레벨 수 $L$일 때
+
+- TLB hit: $t_{TLB} + t_{mem}$
+- TLB miss: $t_{TLB} + L\,t_{mem} + t_{mem}$
+
+$$
+\boxed{EAT = h\,(t_{TLB} + t_{mem}) + (1-h)\,(t_{TLB} + (L+1)\,t_{mem})}
+$$
+
+<Aside type="note" title="최악 기준 모델">
+실제로는 page walk에서 읽는 PTE도 cache에 있을 수 있고, 상위 레벨용 page walk cache도 있어서 이보다 훨씬 빠르다.
+</Aside>
+
+## TLB reach와 huge page
+
+**TLB reach (TLB 도달 범위)**: TLB가 한 번에 커버할 수 있는 메모리 양.
+*The amount of memory accessible from the TLB without a miss.*
+
+$$
+\text{TLB reach} = (\text{TLB entry 수}) \times (\text{page 크기})
+$$
+
+working set이 TLB reach보다 크면 TLB miss가 폭발한다 (cache의 capacity miss와 같은 원리).
+
+**Huge page (대형 페이지)**: 4 KB보다 큰 page (x86-64는 2 MB, 1 GB). 상위 레벨 PTE를 leaf로 쓴다.
+*A larger page size that maps a big region with a single PTE.*
+
+2 MB page는 L2 PTE가 바로 frame을 가리켜서 offset이 12 + 9 = **21 bit**가 된다. walk가 3단계로 줄고, TLB entry 하나가 **512배** 넓은 영역을 커버한다.
+
+## Worked example 1: EAT와 TLB reach
+
+**(a) EAT** ($t_{TLB} = 1$ ns, $t_{mem} = 100$ ns, 4-level)
+
+$$
+h = 0.99:\quad 0.99 \times 101 + 0.01 \times 501 = 99.99 + 5.01 = 105.0 \text{ ns}
+$$
+
+$$
+h = 0.90:\quad 0.90 \times 101 + 0.10 \times 501 = 90.9 + 50.1 = 141.0 \text{ ns}
+$$
+
+| TLB hit rate | EAT | TLB 완벽 대비 |
+|---|---|---|
+| 100% | 101 ns | 1.00× |
+| 99% | 105 ns | 1.04× |
+| 90% | 141 ns | 1.40× |
+| 0% (TLB 없음) | 501 ns | 4.96× |
+
+**(b) TLB reach**
+- L1 dTLB 64 entry × 4 KB = **256 KB**
+- L2 TLB 1536 entry × 4 KB = **6 MB**
+- L2 TLB 1536 entry × **2 MB** = **3 GB**
+
+**(c) 4096 × 4096 float 행렬의 column 순회**
+
+- 행 하나 = 4096 × 4 B = 16 KB = **page 4개**
+- column 방향 다음 원소는 16 KB 뒤 → **매 접근마다 다른 page**
+- column 하나를 도는 동안 4096개 page를 건드림 → 64-entry TLB로는 **miss rate ≈ 100%**
+
+2 MB huge page면 column 하나 = 4096 × 16 KB = 64 MB = huge page **32개** → 64 entry TLB에 다 들어가서 miss가 거의 없다. 10번 레슨의 column 순회가 느렸던 이유에는 cache miss와 함께 **TLB miss**도 섞여 있었다.
+
+## Page fault
+
+**Page fault (페이지 폴트)**: 접근하려는 page의 PTE가 invalid(Present = 0)일 때 하드웨어가 일으키는 예외. OS가 처리한다.
+*An exception raised when an accessed page is not present in physical memory.*
+
+**처리 과정**
+1. MMU가 Present = 0을 발견하고 예외를 일으킨다. 실행 중이던 명령어는 중단된다.
+2. OS의 page fault handler가 주소가 유효한 영역인지 확인한다. 아니면 segfault.
+3. 빈 frame을 찾는다. 없으면 victim page를 골라 내쫓는다 (LRU 근사인 clock 알고리즘 등, Accessed bit 활용). victim이 dirty면 disk에 쓴다.
+4. 필요한 page를 disk에서 읽거나, 새 page면 0으로 채운다.
+5. PTE를 갱신한다 (PPN, Present = 1).
+6. 중단된 명령어를 **다시 실행**한다.
+
+**Demand paging (요구 페이징)**: page를 미리 다 올리지 않고, 처음 접근해서 page fault가 날 때 올리는 방식.
+*Loading pages into memory only when they are first accessed.*
+
+| 종류 | 원인 | 비용 |
+|---|---|---|
+| Minor fault | disk I/O 없음 (0으로 채운 새 page, 이미 메모리에 있는 공유 page 연결) | 마이크로초 |
+| Major fault | disk에서 읽어야 함 | SSD 수십~수백 μs, HDD ms → 수백만 사이클 |
+
+**Thrashing (스래싱)**: working set이 물리 메모리보다 커서 page fault가 계속 일어나고, 시스템이 실제 작업보다 page 교체에 대부분의 시간을 쓰는 상태.
+
+**Copy-on-write, COW (쓰기 시 복사)**: 여러 프로세스가 같은 page를 읽기 전용으로 공유하다가 누군가 쓰려고 하면 그때 복사하는 기법. `fork()`가 빠른 이유다.
+
+### Page fault를 포함한 EAT
+
+$$
+EAT = (1-p)\,t_{mem} + p\,t_{fault}
+$$
+
+## Worked example 2: 허용 가능한 page fault rate
+
+$t_{mem} = 100$ ns, major fault $t_{fault} = 100$ μs = 100,000 ns (SSD). 성능 저하를 10% 이내(EAT ≤ 110 ns)로 막으려면?
+
+$$
+100 + 99{,}900\,p \le 110 \;\Rightarrow\; p \le \frac{10}{99{,}900} \approx 1.0 \times 10^{-4}
+$$
+
+→ 메모리 접근 **1만 번에 1번** 이하로만 major fault가 나야 한다. HDD(10 ms)면 100만 번에 1번이다. RAM이 부족해 swap이 시작되면 컴퓨터가 멈춘 것처럼 느려지는 이유다.
+
+## 심화: VIPT L1과 page 크기
+
+L1 cache는 보통 **VIPT (Virtually Indexed, Physically Tagged)**다. index는 가상 주소에서, tag 비교는 번역된 물리 주소로 해서 **TLB 조회와 cache set 선택을 병렬로** 한다. 이게 성립하려면 cache의 index + offset 비트가 page offset 안에 있어야 한다 (page offset은 번역해도 안 바뀌므로).
+
+$$
+\frac{\text{L1 크기}}{\text{associativity}} \le \text{page 크기} = 4\text{ KB}
+$$
+
+그래서 L1이 **32 KB 8-way**(32 / 8 = 4 KB)나 **48 KB 12-way**(48 / 12 = 4 KB) 같은 조합이 나온다. L1을 64 KB로 키우려면 16-way가 필요하다.
+
+## 코드: TLB 시뮬레이터 + page fault 실측
+
+TLB 부분은 순수 Python, page fault 실측은 `resource` 모듈을 써서 **Linux/macOS 전용**이다.
+
+```python
+import time, resource
+from collections import OrderedDict
+import numpy as np
+
+class TLB:
+    def __init__(self, entries):
+        self.n, self.map = entries, OrderedDict()
+        self.hits = self.misses = 0
+    def access(self, vpn):
+        if vpn in self.map:
+            self.map.move_to_end(vpn); self.hits += 1
+        else:
+            self.misses += 1
+            if len(self.map) >= self.n:
+                self.map.popitem(last=False)
+            self.map[vpn] = True
+
+def tlb_experiment(order, page_bits, entries=64, N=4096, cols=64):
+    tlb, n, base = TLB(entries), 0, 0x10000000
+    if order == "row":
+        for i in range(cols):
+            for j in range(N):
+                tlb.access((base + (i * N + j) * 4) >> page_bits); n += 1
+    else:
+        for j in range(cols):
+            for i in range(N):
+                tlb.access((base + (i * N + j) * 4) >> page_bits); n += 1
+    return tlb.misses / n
+
+print("[TLB] 4096x4096 float32, 64-entry TLB")
+for order in ["row", "column"]:
+    for pb, name in [(12, "4KB page"), (21, "2MB page")]:
+        print(f"   {order:6s} {name:9s}  TLB miss = {tlb_experiment(order, pb)*100:6.2f}%")
+
+def eat(h, t_tlb, t_mem, levels):
+    return h * (t_tlb + t_mem) + (1 - h) * (t_tlb + (levels + 1) * t_mem)
+print("\n[EAT] t_tlb=1ns, t_mem=100ns, 4-level")
+for h in [1.0, 0.99, 0.90, 0.0]:
+    print(f"   TLB hit {h*100:5.1f}% -> {eat(h, 1, 100, 4):6.1f} ns")
+
+# ---- 실측: demand paging ----
+def minflt():
+    return resource.getrusage(resource.RUSAGE_SELF).ru_minflt
+
+def set_hugepage(flag):
+    """NumPy는 Linux에서 큰 배열에 huge page를 요청(madvise)함. 실험용 토글."""
+    for mod in ("_core", "core"):
+        try:
+            getattr(np, mod).multiarray._set_madvise_hugepage(flag); return True
+        except AttributeError:
+            pass
+    return False
+
+SIZE = 256 * 1024 * 1024
+stride = 4096 // 4                        # 4KB page당 원소 1개만 건드림
+print(f"\n[page fault] 256MB = {SIZE // 4096:,} x 4KB pages")
+for huge in [False, True]:
+    set_hugepage(huge)
+    a = np.empty(SIZE // 4, dtype=np.float32)   # 가상 주소만 예약
+    f0, t0 = minflt(), time.perf_counter()
+    a[::stride] = 1.0                    # 1st touch → page fault
+    t1, f1 = time.perf_counter(), minflt()
+    a[::stride] = 2.0                    # 2nd touch → 이미 매핑됨
+    t2, f2 = time.perf_counter(), minflt()
+    print(f"   huge={'ON ' if huge else 'OFF'} | 1st {(t1-t0)*1e3:6.1f} ms, faults={f1-f0:7,} "
+          f"| 2nd {(t2-t1)*1e3:5.1f} ms, faults={f2-f1}")
+    del a
+```
+
+클라우드 Linux에서 실측한 결과:
+
+```text
+   huge=OFF | 1st  120.7 ms, faults= 65,535 | 2nd   1.1 ms, faults=0
+   huge=ON  | 1st   54.5 ms, faults=    638 | 2nd   0.9 ms, faults=0
+```
+
+- `np.empty`는 메모리를 바로 할당하지 않는다. 가상 주소 범위만 예약하고, 처음 쓸 때 page마다 fault가 나서 OS가 frame을 붙여준다. 그래서 첫 쓰기가 **100배 이상** 느리다. fault 하나에 약 1.8 μs → minor fault다.
+- huge page를 켜면 fault 수가 65,535 → 638로 줄어든다. 2 MB page 하나가 4 KB page 512개를 대신한다.
+
+<Aside type="tip" title="벤치마크할 때 warm-up이 필요한 이유">
+PyTorch에서 큰 텐서를 처음 만든 뒤 첫 iteration만 유독 느린 현상의 원인 중 하나가 이 demand paging이다.
+</Aside>
+
+## 흔한 오해
+
+<Aside type="caution" title="Page fault = 에러 / 크래시?">
+page fault는 **정상적인 이벤트**다. 프로그램을 실행하면 수천~수만 번 일어난다 (demand paging). 크래시는 잘못된 주소나 권한 위반일 때 OS가 segfault로 처리하는 경우뿐이다.
+</Aside>
+
+<Aside type="caution" title="malloc / np.empty를 하면 그 순간 메모리를 쓴다?">
+가상 주소만 예약하고, 물리 frame은 **처음 접근할 때** 할당된다. 그래서 RAM보다 큰 `malloc`이 성공하는 경우도 있다 (Linux overcommit).
+</Aside>
+
+## Efficient ML 연결
+
+**Pinned memory (PyTorch).** GPU는 DMA로 CPU 메모리를 직접 읽는데, DMA 도중에 OS가 그 page를 swap하거나 옮기면 안 된다.
+- 일반(pageable) 메모리 → GPU 전송: 드라이버가 먼저 **page-locked(pinned) 임시 버퍼로 복사**한 뒤 DMA → 복사가 한 번 더 생긴다.
+- `DataLoader(pin_memory=True)`: 처음부터 pinned 메모리에 올려두니 바로 DMA가 가능하고, `.to('cuda', non_blocking=True)`로 연산과 전송을 겹칠 수 있다.
+
+**Pinned (page-locked) memory (고정 메모리)**: OS가 swap하거나 이동하지 않도록 물리 frame에 고정된 메모리.
+
+**Edge LLM과 mmap.** llama.cpp 같은 edge LLM 런타임은 모델 파일을 `mmap`으로 연다. 파일을 가상 주소 공간에 매핑만 하고, 실제로 읽은 부분만 demand paging으로 올라온다.
+- 로딩이 거의 즉시 끝난다 (실제 읽기는 첫 inference 때 page fault로).
+- 여러 프로세스가 같은 모델을 열면 물리 page를 공유한다.
+- **모델이 RAM보다 크면** 토큰마다 weight 전체를 읽어야 해서 매번 major fault → **thrashing**. 그래서 edge에서는 quantization으로 모델을 **RAM에 들어가게** 만드는 게 첫 번째 조건이다.
+
+**Huge page와 큰 텐서.** 수 GB weight를 4 KB page로 쓰면 TLB reach(수 MB)를 한참 넘는다. DL 프레임워크, 메모리 allocator, GPU 드라이버가 큰 버퍼에 huge page를 쓰는 이유다.
+
+**Unified memory.** CUDA Unified Memory는 CPU와 GPU가 같은 가상 주소를 쓰고, GPU가 없는 page에 접근하면 GPU page fault가 나서 드라이버가 page를 옮겨준다. 편하지만 fault가 잦으면 느리다. Apple Silicon처럼 CPU/GPU가 물리 메모리 자체를 공유하면 이 복사가 없다.
+
+## 체크 퀴즈
+
+<Quiz
+  q="TLB hit rate 99%, t_TLB = 1 ns, t_mem = 100 ns, 4-level page table일 때 EAT는?"
+  options={['101 ns', '105 ns', '141 ns', '501 ns']}
+  answer={1}
+  explain="0.99 × (1 + 100) + 0.01 × (1 + 5 × 100) = 99.99 + 5.01 = 105 ns. miss일 때는 page walk 4번 + 데이터 접근 1번이라 메모리 접근이 5번이다."
+/>
+
+<Quiz
+  q="64-entry TLB, 2 MB huge page일 때 TLB reach는?"
+  options={['256 KB', '128 MB', '2 MB', '64 GB']}
+  answer={1}
+  explain="64 × 2 MB = 128 MB. 같은 TLB로 4 KB page면 256 KB밖에 안 된다. huge page는 TLB reach를 512배 늘린다."
+/>
+
+<Quiz
+  q="4096×4096 float32 행렬을 column 방향으로 순회하면 4 KB page, 64-entry TLB에서 TLB miss rate가 거의 100%가 된다. 그 이유는?"
+  options={['행렬이 너무 작아서', '행 하나가 16 KB라 매 접근이 다른 page이고, column 하나가 4096개 page를 건드려서', 'TLB가 fully associative라서', 'offset이 번역돼서']}
+  answer={1}
+  explain="column 방향 다음 원소는 16 KB 뒤(page 4개 뒤)에 있다. 같은 page로 돌아오기 전에 서로 다른 page 4096개를 건드리므로 64개짜리 TLB로는 매번 miss다."
+/>
+
+<Quiz
+  q="t_mem = 100 ns, major fault 처리 100 μs일 때 성능 저하를 10% 이내로 막으려면 page fault rate는 대략 얼마 이하여야 하나?"
+  options={['10%', '1%', '0.01% (10^-4)', '10^-8']}
+  answer={2}
+  explain="100 + 99,900 × p ≤ 110 이므로 p ≤ 약 10^-4. fault 한 번이 일반 접근의 1000배 비싸니 1만 번에 1번 이하로만 일어나야 한다."
+/>
+
+<Quiz
+  q="L1 cache가 VIPT일 때 page 크기가 4 KB라면 32 KB L1에 필요한 최소 associativity는?"
+  options={['4-way', '8-way', '16-way', '1-way']}
+  answer={1}
+  explain="L1 크기 / associativity ≤ page 크기여야 index + offset 비트가 page offset 안에 들어간다. 32 KB / A ≤ 4 KB → A ≥ 8."
+/>
+
+## 더 읽을거리
+
+- [Translation lookaside buffer (Wikipedia)](https://en.wikipedia.org/wiki/Translation_lookaside_buffer)
+- [Page fault (Wikipedia)](https://en.wikipedia.org/wiki/Page_fault)
+- [How to Optimize Data Transfers in CUDA C/C++ (NVIDIA Developer Blog)](https://developer.nvidia.com/blog/how-optimize-data-transfers-cuda-cc/)
+- [Operating Systems: Three Easy Pieces, Faster Translations (TLBs) 장](https://pages.cs.wisc.edu/~remzi/OSTEP/)

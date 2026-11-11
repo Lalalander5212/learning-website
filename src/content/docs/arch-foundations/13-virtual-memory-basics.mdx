@@ -1,0 +1,271 @@
+---
+title: "Virtual memory 기초: VA, PA, PTE"
+description: "프로세스마다 자기만의 주소 공간을 주고 하드웨어가 번역하는 원리"
+track: arch-foundations
+est: 30min
+sidebar:
+  order: 13
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+Arduino나 8051에서는 포인터에 `0x0100`을 넣으면 그게 **실제 메모리 칩의 0x0100번지**다. 프로그램이 하나뿐이라 문제가 없다. 그런데 노트북에서는 브라우저, 에디터, Python이 동시에 돈다. 전부 물리 주소를 직접 쓴다면:
+
+1. **보호**: 버그 있는 포인터가 다른 프로그램 메모리를 덮어쓸 수 있다.
+2. **재배치**: 두 프로그램이 둘 다 0x400000에서 시작하고 싶으면?
+3. **단편화**: 빈 공간이 300 MB, 500 MB, 400 MB로 쪼개져 있으면 1 GB 배열을 못 잡는다.
+4. **용량**: RAM보다 큰 메모리를 원하면?
+5. **공유**: 모든 프로그램이 같은 `libc` 복사본을 들고 있으면 낭비다.
+
+**Virtual memory**는 각 프로세스에게 **자기만의 가상 주소 공간**을 주고, 하드웨어(MMU)가 매 접근마다 가상 주소를 물리 주소로 번역해서 이 문제를 한 번에 해결한다.
+
+## 직관: 호텔 방 번호
+
+손님(process)들은 각자 "제 방은 **3호**예요"라고 말한다. 손님 A의 3호와 손님 B의 3호는 서로 다른 방이다.
+
+```text
+ 손님 A의 장부 (page table A)       실제 호텔 (physical memory)
+ ┌──────┬─────────┐                 ┌────────┐
+ │ 1호  │ → 1207  │──────────────┐  │  1203  │ ← B의 2호
+ │ 2호  │ → 0805  │───────┐      │  │  ...   │
+ │ 3호  │ → 1502  │──┐    │      └─▶│  1207  │ ← A의 1호
+ └──────┴─────────┘  │    │         │  ...   │
+                     │    └────────▶│  0805  │ ← A의 2호
+ 손님 B의 장부        │              │  ...   │
+ ┌──────┬─────────┐  └─────────────▶│  1502  │ ← A의 3호
+ │ 1호  │ → 별관   │ (창고=disk)     │  ...   │
+ │ 2호  │ → 1203  │                 │  0310  │ ← B의 3호
+ │ 3호  │ → 0310  │                 └────────┘
+ └──────┴─────────┘
+```
+
+| 호텔 | Virtual memory |
+|---|---|
+| 손님이 말하는 방 번호 | 가상 주소 |
+| 실제 방 번호 | 물리 주소 |
+| 프런트의 손님별 장부 | page table |
+| 짐이 별관 창고에 있음 | page fault (disk에서 가져옴) |
+| A의 장부에 B의 방이 없음 | 보호 (isolation) |
+| "침대 옆 서랍 2번째 칸" | page offset (번역 안 함) |
+
+## 용어 정의
+
+**Virtual address, VA (가상 주소)**: 프로그램이 사용하는 주소. 프로세스마다 독립적인 주소 공간을 가진다.
+*An address used by a program, translated by hardware to a physical address.*
+
+**Physical address, PA (물리 주소)**: 실제 DRAM 칩의 위치를 가리키는 주소.
+*An address in main memory.*
+
+**Address space (주소 공간)**: 프로세스가 사용할 수 있는 가상 주소의 전체 범위. x86-64는 48 bit = 256 TB.
+
+**Page (페이지)**: 가상 주소 공간을 나누는 고정 크기 블록. 보통 4 KB.
+*A fixed-size block of virtual memory.*
+
+**Page frame (페이지 프레임)**: 물리 메모리를 page 크기로 나눈 블록. page 하나가 frame 하나에 매핑된다.
+*A fixed-size block of physical memory that holds one page.*
+
+**MMU, Memory Management Unit (메모리 관리 장치)**: CPU 안에서 가상 주소를 물리 주소로 번역하는 하드웨어.
+
+**Page table (페이지 테이블)**: 가상 page 번호를 물리 frame 번호로 매핑하는 표. **메인 메모리에 저장**되고 OS가 관리한다.
+*A data structure in memory, managed by the OS, that maps virtual pages to physical frames.*
+
+**Page table base register, PTBR**: 현재 프로세스의 page table 시작 물리 주소를 담는 레지스터. x86은 CR3, RISC-V는 satp. context switch 때 OS가 이 값을 바꾼다.
+
+## 주소 번역
+
+page 크기가 $P = 2^p$ byte면 가상 주소는 두 부분으로 나뉜다.
+
+```text
+ Virtual Address (n bit)
+ ┌──────────────────────────────┬──────────────────┐
+ │  VPN (Virtual Page Number)   │   Page offset    │
+ └──────────────────────────────┴──────────────────┘
+          n − p bit                    p bit
+                  │                       │
+                  ▼  page table로 번역       │ 그대로 복사
+ ┌──────────────────────────────┬──────────────────┐
+ │  PPN (Physical Page Number)  │   Page offset    │
+ └──────────────────────────────┴──────────────────┘
+ Physical Address (m bit)
+```
+
+**VPN (가상 페이지 번호)**: 가상 주소의 상위 비트. 몇 번째 page인지.
+**PPN (물리 페이지 번호)**: 물리 주소의 상위 비트. 몇 번째 frame인지.
+**Page offset (페이지 오프셋)**: page 안에서의 위치. **번역되지 않는다.**
+
+$$
+\text{VPN} = \left\lfloor \frac{VA}{2^p} \right\rfloor, \qquad \text{offset} = VA \bmod 2^p
+$$
+
+$$
+PA = \text{PPN} \times 2^p + \text{offset}
+$$
+
+<Aside type="note" title="cache 주소 분할과 같은 구조">
+하위 비트는 블록 안의 위치, 상위 비트는 어느 블록인지. 08번 레슨의 tag / index / offset 분할과 똑같은 아이디어다.
+</Aside>
+
+## Page Table Entry (PTE)
+
+**PTE (페이지 테이블 엔트리)**: page table의 한 항목. PPN과 상태/권한 비트로 구성된다.
+*One entry of a page table, containing a PPN and status/permission bits.*
+
+x86-64 PTE(8 byte)의 주요 필드:
+
+| 비트 | 이름 | 의미 |
+|---|---|---|
+| P | Present (= valid) | page가 물리 메모리에 있나? 0이면 접근 시 page fault |
+| R/W | Read/Write | 0이면 읽기 전용 (코드 영역 보호) |
+| U/S | User/Supervisor | 0이면 커널만 접근 가능 |
+| A | Accessed | 최근 접근됨 (OS의 교체 정책이 사용) |
+| D | Dirty | 수정됨 (교체할 때 disk에 써야 하나?) |
+| NX | No-eXecute | 1이면 이 page를 코드로 실행 불가 (보안) |
+| PPN | 물리 frame 번호 | 번역 결과 |
+
+권한을 어기면(읽기 전용에 쓰기, user가 커널 page 접근 등) 하드웨어가 예외를 일으키고 OS가 보통 그 프로세스를 죽인다. 이게 **segmentation fault**다.
+
+## Single-level page table의 크기 문제
+
+모든 VPN에 대해 PTE 하나씩 두면
+
+$$
+\text{Page table 크기} = 2^{\,n-p} \times (\text{PTE 크기})
+$$
+
+- **32-bit, 4 KB page, PTE 4 B**: $2^{20} \times 4$ = **4 MB / process**. 프로세스 100개면 400 MB가 page table로만 사라진다.
+- **x86-64 (48-bit), 4 KB page, PTE 8 B**: $2^{36} \times 8$ = **512 GB / process**. 불가능.
+
+실제 프로그램은 주소 공간의 극히 일부만 쓴다. 대부분의 PTE가 invalid인데 자리만 차지하는 셈이다. 해결책은 다음 레슨의 multi-level page table이다.
+
+## Worked example: 32-bit 번역
+
+**설정**: 32-bit VA, 4 KB page ($p = 12$), PTE 4 B. VA = **0x00403A2C**. page table에 VPN 0x403 → PPN **0x1F2**가 있다고 하자.
+
+**Step 1. 비트 분할**
+
+```text
+ hex :  0    0    4    0    3  |  A    2    C
+ bin : 0000 0000 0100 0000 0011 | 1010 0010 1100
+       └──── VPN (20 bit) ─────┘ └─ offset (12) ─┘
+```
+
+- VPN = 0x00403 = **1027**
+- Offset = 0xA2C = **2604**
+- 검산: $1027 \times 4096 + 2604 = 4{,}209{,}196$ = 0x00403A2C
+
+**Step 2. PTE 위치**
+
+$$
+\text{PTE 주소} = \text{PTBR} + 1027 \times 4 = \text{PTBR} + \text{0x100C}
+$$
+
+**Step 3. 물리 주소**
+
+$$
+PA = \text{0x1F2} \times 2^{12} + \text{0xA2C} = \text{0x1F2000} + \text{0xA2C} = \text{0x1F2A2C}
+$$
+
+offset 0xA2C는 번역 전후로 그대로다.
+
+## 코드: 주소 분할과 번역
+
+```python
+def split_va(va, level_bits, offset_bits):
+    """level_bits: 상위 레벨부터 [20] 또는 [10, 10], [9, 9, 9, 9] 같은 리스트"""
+    offset = va & ((1 << offset_bits) - 1)
+    idx, shift = [], offset_bits + sum(level_bits)
+    for b in level_bits:
+        shift -= b
+        idx.append((va >> shift) & ((1 << b) - 1))
+    return idx, offset
+
+def show_split(va, level_bits, offset_bits, name):
+    idx, off = split_va(va, level_bits, offset_bits)
+    total = sum(level_bits) + offset_bits
+    bits = format(va, f"0{total}b")
+    parts, p = [], 0
+    for b in level_bits + [offset_bits]:
+        parts.append(bits[p:p + b]); p += b
+    print(f"[{name}] VA=0x{va:X}")
+    print("   bits : " + " | ".join(parts))
+    print("   index: " + " | ".join(str(i) for i in idx) + f" | offset=0x{off:X}")
+
+show_split(0x00403A2C, [20], 12, "32-bit, 1-level")
+
+# 단순 single-level page table (dict로 흉내)
+page_table = {0x403: 0x1F2}             # VPN -> PPN
+def translate(va, p=12):
+    vpn, off = va >> p, va & ((1 << p) - 1)
+    if vpn not in page_table:
+        raise MemoryError(f"page fault: VPN 0x{vpn:X}")
+    return (page_table[vpn] << p) | off
+
+print(f"\nPA = 0x{translate(0x00403A2C):X}")
+try:
+    translate(0x00800000)
+except MemoryError as e:
+    print(e)
+
+# page table 크기
+for n, p, pte in [(32, 12, 4), (48, 12, 8)]:
+    size = (1 << (n - p)) * pte
+    print(f"{n}-bit VA, {1 << p}B page, PTE {pte}B -> single-level "
+          f"{size / 2**20:,.0f} MB = {size / 2**30:,.3g} GB")
+```
+
+## 흔한 오해
+
+<Aside type="caution" title="Virtual memory = RAM이 부족할 때 disk를 쓰는 것?">
+swap은 기능 중 하나일 뿐이다. 핵심 목적은 **보호, 재배치, 공유, 단편화 해소**다. 스마트폰은 swap을 거의 안 쓰는데도 virtual memory를 쓴다.
+</Aside>
+
+<Aside type="caution" title="Offset도 번역된다?">
+offset은 **그대로 복사**된다. 번역되는 건 VPN → PPN뿐이다.
+</Aside>
+
+<Aside type="caution" title="Page table은 MMU 하드웨어 안에 있다?">
+page table은 **메인 메모리(DRAM)**에 있다. MMU 안에 있는 건 PTBR과 TLB(15번 레슨) 정도다. 그래서 번역이 비싸다.
+</Aside>
+
+## Efficient ML 연결
+
+**MCU에는 MMU가 없다.** Arduino(AVR)나 Cortex-M MCU는 MMU가 없고, 있어도 영역별 권한만 거는 **MPU(Memory Protection Unit)**다. 가상 주소도 page fault도 없다. 그래서 TinyML 런타임(MCUNet, TinyEngine)은 **컴파일 시점에 모든 텐서의 SRAM 위치를 정적으로 계획**한다 (static memory planning). OS가 런타임에 해주던 일을 컴파일러가 미리 다 해야 하는 것이다. 반면 Raspberry Pi(Cortex-A)는 MMU가 있어서 Linux가 돈다.
+
+**공유 = 메모리 절약.** 같은 모델 파일을 여러 프로세스가 열면 OS가 같은 물리 page를 각 프로세스의 page table에 매핑해서 **물리 메모리 한 벌로 공유**할 수 있다. edge LLM 런타임이 `mmap`으로 weight를 여는 이유 중 하나다 (15번 레슨).
+
+## 체크 퀴즈
+
+<Quiz
+  q="32-bit VA, 4 KB page일 때 VA 0x00403A2C의 VPN과 offset은?"
+  options={['VPN 0x403A, offset 0x2C', 'VPN 0x00403, offset 0xA2C', 'VPN 0x403A2, offset 0xC', 'VPN 0x004, offset 0x03A2C']}
+  answer={1}
+  explain="4 KB = 2^12이므로 하위 12 bit(hex 3자리)가 offset이다. 0x00403A2C → VPN = 0x00403, offset = 0xA2C."
+/>
+
+<Quiz
+  q="VPN 0x403이 PPN 0x1F2로 매핑될 때 VA 0x00403A2C의 물리 주소는? (4 KB page)"
+  options={['0x1F2403', '0x1F2A2C', '0x403A2C', '0x1F20A2C']}
+  answer={1}
+  explain="PA = PPN × 4096 + offset = 0x1F2000 + 0xA2C = 0x1F2A2C. offset은 번역되지 않고 그대로 붙는다."
+/>
+
+<Quiz
+  q="48-bit VA, 4 KB page, PTE 8 B일 때 single-level page table의 크기는?"
+  options={['4 MB', '512 GB', '256 TB', '64 KB']}
+  answer={1}
+  explain="VPN이 48 - 12 = 36 bit이므로 entry 2^36개 × 8 B = 2^39 B = 512 GB. 4 MB는 32-bit, PTE 4 B일 때의 값이고 256 TB는 주소 공간 자체의 크기다."
+/>
+
+<Quiz
+  q="PTE의 Present bit가 0인 page에 접근하면?"
+  options={['segmentation fault로 즉시 종료', 'page fault 예외가 발생하고 OS가 처리', '0이 읽힌다', 'TLB가 알아서 채운다']}
+  answer={1}
+  explain="Present = 0이면 MMU가 page fault를 일으키고 OS handler가 처리한다. 유효한 주소면 page를 올리고 명령어를 재실행하고, 잘못된 주소일 때만 segfault가 된다."
+/>
+
+## 더 읽을거리
+
+- [Virtual memory (Wikipedia)](https://en.wikipedia.org/wiki/Virtual_memory)
+- [Operating Systems: Three Easy Pieces, Address Translation / Paging 장](https://pages.cs.wisc.edu/~remzi/OSTEP/)

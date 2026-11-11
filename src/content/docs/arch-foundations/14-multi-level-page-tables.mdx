@@ -1,0 +1,251 @@
+---
+title: "Multi-level page table과 page walk"
+description: "page table을 트리로 쪼개 메모리를 아끼는 법, x86-64 4-level walk를 비트 단위로 따라가기"
+track: arch-foundations
+est: 30min
+sidebar:
+  order: 14
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+48-bit 주소 공간에서 single-level page table은 프로세스 하나에 **512 GB**가 필요하다. 그런데 실제 프로그램은 아래쪽에 코드/데이터, 위쪽 끝에 스택을 두고 그 사이는 텅 비어 있다. **쓰는 영역에 대해서만** 번역표를 만들 수 있으면 page table이 수 KB~MB로 줄어든다.
+
+## 정의
+
+**Multi-level (hierarchical) page table (다단계 페이지 테이블)**: page table을 트리(radix tree) 구조로 나눠서, 실제로 사용하는 주소 영역에 대해서만 하위 테이블을 할당하는 방식.
+*A tree of page tables in which lower-level tables are allocated only for regions in use.*
+
+**Page walk (페이지 워크)**: 다단계 page table을 따라 내려가며 번역을 찾는 과정. 하드웨어가 자동으로 수행한다.
+*The process of traversing the page table levels to find a translation.*
+
+## 레벨당 index 비트 수 유도 (x86-64)
+
+1. page table 한 장이 정확히 page 하나(4 KB)에 들어가게 만든다.
+2. PTE 8 B면 테이블 한 장에 $4096 / 8 = 512 = 2^9$개 entry → **레벨당 9 bit**
+3. VPN = 48 − 12 = 36 bit → $36 / 9$ = **4 레벨**
+
+```text
+ 47        39 38        30 29        21 20        12 11            0
+ ┌───────────┬───────────┬───────────┬───────────┬───────────────┐
+ │  L4 index │  L3 index │  L2 index │  L1 index │  page offset  │
+ │   9 bit   │   9 bit   │   9 bit   │   9 bit   │    12 bit     │
+ └─────┬─────┴─────┬─────┴─────┬─────┴─────┬─────┴───────┬───────┘
+       │           │           │           │             │
+ CR3 ──▶ L4 table  │           │           │             │
+        [idx]──────▶ L3 table  │           │             │
+                   [idx]───────▶ L2 table  │             │
+                               [idx]───────▶ L1 table    │
+                                           [idx]─▶ PPN ──┴──▶ PA
+```
+
+RISC-V **Sv39**는 39-bit VA = 9 + 9 + 9 + 12로 3레벨이다.
+
+## Page walk 과정
+
+1. CR3에서 L4 테이블의 물리 주소를 얻는다.
+2. PTE 주소 = (테이블 시작 주소) + (index × 8). 그 위치의 PTE를 메모리에서 읽는다.
+3. Present가 0이면 → **page fault**. 1이면 PTE의 PPN이 다음 레벨 테이블의 위치다.
+4. L3, L2, L1에서 반복한다. L1 PTE의 PPN이 최종 데이터 page의 frame이다.
+5. PA = PPN × 4096 + offset
+
+<Aside type="caution" title="Trade-off">
+**장점**: 안 쓰는 영역의 하위 테이블은 아예 없어도 된다 (상위 PTE를 invalid로 두면 끝). 메모리 절약.
+**단점**: 번역 한 번에 **메모리 접근이 레벨 수만큼** 필요하다 (x86-64는 4번, 최신 5-level paging은 5번). 이 비용을 TLB가 숨긴다 (15번 레슨).
+</Aside>
+
+## Worked example 1: x86-64 4-level walk
+
+**VA = 0x7F3A1B2C4D5E** (48-bit)
+
+**Step 1. 2진수로 펼치기 (hex 한 자리 = 4 bit)**
+
+```text
+ 7    F    3    A    1    B    2    C    4    D    5    E
+ 0111 1111 0011 1010 0001 1011 0010 1100 0100 1101 0101 1110
+```
+
+**Step 2. 9 | 9 | 9 | 9 | 12로 자르기**
+
+```text
+ 011111110 | 011101000 | 011011001 | 011000100 | 110101011110
+   L4=254     L3=232      L2=217      L1=196      off=0xD5E
+```
+
+- L4 = `011111110` = 128+64+32+16+8+4+2 = **254**
+- L3 = `011101000` = 128+64+32+8 = **232**
+- L2 = `011011001` = 128+64+16+8+1 = **217**
+- L1 = `011000100` = 128+64+4 = **196**
+- Offset = `110101011110` = **0xD5E**
+
+**Step 3. Walk (가상의 테이블 내용)**
+
+CR3 = 0x1000이라고 하자. 각 PTE 주소 = 테이블 시작 + index × 8.
+
+| 레벨 | 테이블 시작 | index | index × 8 | PTE 주소 | PTE가 가리키는 곳 (가정) |
+|---|---|---|---|---|---|
+| L4 | 0x1000 | 254 | 0x7F0 | **0x17F0** | L3 table @ 0x2000 |
+| L3 | 0x2000 | 232 | 0x740 | **0x2740** | L2 table @ 0x3000 |
+| L2 | 0x3000 | 217 | 0x6C8 | **0x36C8** | L1 table @ 0x4000 |
+| L1 | 0x4000 | 196 | 0x620 | **0x4620** | data PPN = 0x8A3F1 |
+
+**Step 4. 최종 물리 주소**
+
+$$
+PA = \text{0x8A3F1} \times 2^{12} + \text{0xD5E} = \text{0x8A3F1D5E}
+$$
+
+번역 하나를 위해 메모리를 **4번**(0x17F0, 0x2740, 0x36C8, 0x4620) 읽었고, 데이터 접근까지 하면 총 5번이다. TLB가 없으면 모든 load/store가 이렇다.
+
+## Worked example 2: sparse address space의 크기
+
+**설정**: 32-bit, 2-level (10 + 10 + 12), PTE 4 B. 프로세스가 쓰는 영역:
+- 코드/데이터: 0x00000000 ~ 0x007FFFFF (하단 **8 MB**)
+- 스택: 0xFFF00000 ~ 0xFFFFFFFF (상단 **1 MB**)
+
+**계산**
+- Page directory: 1024 entry × 4 B = **4 KB** (항상 1장)
+- 2단계 테이블 한 장: 1024 entry × 4 KB page = **4 MB 영역**을 커버, 크기 4 KB
+- 하단 8 MB → 8 / 4 = **2장**
+- 상단 1 MB → 4 MB 영역 하나 안 → **1장**
+- 합계: (1 + 2 + 1)장 × 4 KB = **16 KB**
+
+| 구조 | Page table 크기 |
+|---|---|
+| Single-level | $2^{20} \times 4$ B = **4 MB** |
+| 2-level | **16 KB** (256배 작음) |
+
+나머지 1021개 directory entry는 invalid로 두고 하위 테이블을 아예 만들지 않는다.
+
+## 코드: radix-tree page table 시뮬레이터
+
+```python
+def split_va(va, level_bits, offset_bits):
+    offset = va & ((1 << offset_bits) - 1)
+    idx, shift = [], offset_bits + sum(level_bits)
+    for b in level_bits:
+        shift -= b
+        idx.append((va >> shift) & ((1 << b) - 1))
+    return idx, offset
+
+class PageTable:
+    def __init__(self, level_bits, offset_bits):
+        self.level_bits, self.offset_bits = level_bits, offset_bits
+        self.root = {}                 # 각 노드 = page table 한 장 (index -> 다음 노드 or PPN)
+        self.n_tables = 1
+        self.next_ppn = 0x100          # 새로 줄 frame 번호 (임의 시작)
+        self.page_faults = 0
+        self.walk_mem_refs = 0         # page walk 때 읽은 PTE 수
+
+    def walk(self, va):
+        """레벨마다 PTE 하나 읽음. 없으면 page fault → OS가 할당 (demand paging)"""
+        idx, off = split_va(va, self.level_bits, self.offset_bits)
+        node = self.root
+        for lvl, i in enumerate(idx):
+            self.walk_mem_refs += 1
+            last = (lvl == len(idx) - 1)
+            if i not in node:                          # PTE invalid
+                if last:
+                    self.page_faults += 1
+                    node[i] = self.next_ppn; self.next_ppn += 1
+                else:
+                    node[i] = {}; self.n_tables += 1   # 중간 page table 생성
+            node = node[i]
+        return (node << self.offset_bits) | off       # PA
+
+    def table_bytes(self, pte_bytes):
+        return self.n_tables * (1 << max(self.level_bits)) * pte_bytes
+
+# Example 1: 4-level walk
+va = 0x7F3A1B2C4D5E
+print("index:", split_va(va, [9, 9, 9, 9], 12))
+pt4 = PageTable([9, 9, 9, 9], 12)
+pa = pt4.walk(va)
+print(f"VA 0x{va:X} -> PA 0x{pa:X}  (PTE reads={pt4.walk_mem_refs}, tables={pt4.n_tables})")
+print("  (frame 번호는 시뮬레이터가 0x100부터 나눠줌. offset 0xD5E가 유지되는지 확인)")
+
+# Example 2: sparse address space
+pt = PageTable([10, 10], 12)
+for v in range(0x00000000, 0x00800000, 4096): pt.walk(v)     # 하단 8MB
+for v in range(0xFFF00000, 0x100000000, 4096): pt.walk(v)    # 상단 1MB
+print(f"\nmapped pages={pt.page_faults}, page tables={pt.n_tables}, "
+      f"2-level={pt.table_bytes(4)//1024} KB vs 1-level={(1 << 20) * 4 // 1024} KB")
+```
+
+## 흔한 오해
+
+<Aside type="caution" title="Multi-level page table은 더 빠르다?">
+반대다. walk할 때 메모리 접근이 **더 많다.** multi-level은 **메모리 공간을 아끼려고** 쓰는 것이고, 속도 문제는 TLB가 해결한다.
+</Aside>
+
+<Aside type="caution" title="가상 주소 공간 크기 = 물리 메모리 크기?">
+x86-64는 프로세스당 256 TB의 가상 주소 공간을 준다. 물리 RAM이 16 GB여도 상관없다. 실제로 매핑된 page만 frame을 차지한다.
+</Aside>
+
+## Efficient ML 연결: PagedAttention (vLLM)
+
+LLM은 생성 중에 토큰마다 **KV cache**를 쌓는다. Llama-2-7B, FP16 기준으로
+
+$$
+\underbrace{2}_{K,\,V} \times \underbrace{32}_{\text{layers}} \times \underbrace{4096}_{\text{hidden}} \times \underbrace{2\text{ B}}_{\text{FP16}} = 524{,}288\text{ B} = 0.5\text{ MB / token}
+$$
+
+최대 길이 2048 토큰을 미리 **연속으로** 예약하면 시퀀스 하나에 1 GB다. 실제로 200 토큰에서 끝나면 0.9 GB가 낭비되고, 요청마다 길이가 달라서 메모리 조각(external fragmentation)도 생긴다. virtual memory 이전 시대의 문제와 똑같다.
+
+vLLM의 **PagedAttention**은 해결책도 그대로 가져왔다.
+
+| OS Virtual Memory | PagedAttention |
+|---|---|
+| Page (4 KB) | KV block (예: 16 토큰) |
+| Process | 시퀀스 (요청) |
+| Page table | Block table (logical block → physical block) |
+| Demand paging | 토큰이 생길 때 block 할당 |
+| 연속이 아니어도 됨 | KV cache가 GPU 메모리에 흩어져도 됨 |
+| Copy-on-write (fork) | 병렬 샘플링, beam search에서 prompt KV 공유 |
+
+낭비는 마지막 block의 빈자리(internal fragmentation)뿐이다. 메모리가 남으니 batch를 키울 수 있고, throughput이 올라간다.
+
+## 체크 퀴즈
+
+<Quiz
+  q="page 4 KB, PTE 8 B, page table 한 장 = page 하나일 때 레벨당 index 비트 수는?"
+  options={['8', '9', '10', '12']}
+  answer={1}
+  explain="한 장에 4096 / 8 = 512 = 2^9개 entry가 들어가므로 9 bit. 10은 PTE가 4 B인 32-bit 2-level 구조일 때의 값이다."
+/>
+
+<Quiz
+  q="x86-64 VA 0x7F3A1B2C4D5E의 L4 index는?"
+  options={['127', '254', '232', '0x7F']}
+  answer={1}
+  explain="48 bit 중 상위 9 bit(47..39)는 011111110 = 254. 127(0x7F)은 상위 hex 두 자리를 그대로 읽은 실수다. hex 경계와 9 bit 경계가 맞지 않으니 2진수로 펼쳐서 잘라야 한다."
+/>
+
+<Quiz
+  q="TLB가 없다면 x86-64 4-level 구조에서 load 명령어 하나가 메모리에 접근하는 횟수는?"
+  options={['1번', '4번', '5번', '9번']}
+  answer={2}
+  explain="page walk에서 레벨마다 PTE를 하나씩 읽으니 4번, 거기에 실제 데이터 접근 1번을 더하면 5번이다."
+/>
+
+<Quiz
+  q="32-bit, 10+10+12 2-level 구조에서 하단 8 MB와 상단 1 MB만 쓸 때 page table 총 크기는?"
+  options={['4 MB', '12 KB', '16 KB', '36 KB']}
+  answer={2}
+  explain="directory 1장 + 하단 8 MB용 2장 + 상단 1 MB용 1장 = 4장 × 4 KB = 16 KB. 12 KB는 directory를 빼먹은 값이다."
+/>
+
+<Quiz
+  q="vLLM의 PagedAttention에서 OS의 page table에 해당하는 것은?"
+  options={['KV block', 'Block table', 'Attention head', 'Batch']}
+  answer={1}
+  explain="block table이 시퀀스의 logical KV block 번호를 실제 GPU 메모리의 physical block으로 매핑한다. KV block은 page에, 시퀀스는 process에 해당한다."
+/>
+
+## 더 읽을거리
+
+- [Page table (Wikipedia)](https://en.wikipedia.org/wiki/Page_table)
+- [Efficient Memory Management for Large Language Model Serving with PagedAttention (Kwon et al., 2023)](https://arxiv.org/abs/2309.06180)
+- [Operating Systems: Three Easy Pieces, Paging: Smaller Tables 장](https://pages.cs.wisc.edu/~remzi/OSTEP/)

@@ -1,0 +1,265 @@
+---
+title: "Roofline으로 DL 레이어 분석하기"
+description: "conv, depthwise, linear, LLM prefill/decode를 roofline 위에 올려 latency와 tokens/s를 추정하기"
+track: arch-foundations
+est: 35min
+sidebar:
+  order: 22
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+MobileNet은 일반 conv를 depthwise + pointwise로 바꿔 FLOPs를 8배 가까이 줄인다. 그런데 실제로는 8배만큼 빨라지지 않는다. LLM은 prompt(prefill)는 빨리 처리하는데 토큰 생성(decode)은 느리다. 둘 다 roofline으로 숫자까지 설명된다. 이 레슨은 Part A 전체를 DL 레이어 분석 도구로 묶는다.
+
+## Conv 레이어의 FLOPs와 bytes
+
+입력 $H \times W \times C_{in}$, 출력 $H \times W \times C_{out}$ (stride 1, same padding), kernel $k \times k$, 원소 크기 $w$.
+
+**Dense conv**
+
+$$
+\text{MACs} = H W C_{out} \cdot k^2 C_{in}, \qquad \text{FLOPs} = 2 \times \text{MACs}
+$$
+
+$$
+\text{Bytes} = w\left(H W C_{in} + H W C_{out} + k^2 C_{in} C_{out}\right)
+$$
+
+**Depthwise conv** (channel마다 따로, $C_{in} = C_{out} = C$)
+
+$$
+\text{MACs} = H W C \cdot k^2, \qquad \text{Bytes} = w\left(2 H W C + k^2 C\right)
+$$
+
+**Pointwise conv** ($k = 1$인 dense conv)
+
+$$
+\text{MACs} = H W C_{in} C_{out}
+$$
+
+<Aside type="note" title="bytes 가정">
+입력, 출력, weight를 DRAM에서 각각 한 번씩 읽고 쓴다고 가정한 최소 트래픽이다. 실제로는 activation이 L2/L3에 남거나 레이어끼리 fusion되면 더 적고, tiling이 나쁘면 더 많다.
+</Aside>
+
+## Worked example 1: MobileNet 블록
+
+$H = W = 56$, $C = 64$, FP32, kernel 3×3.
+
+| 레이어 | FLOPs | Bytes | AI (FLOP/B) |
+|---|---|---|---|
+| Dense 3×3 conv (64 → 64) | 231.2 M | 1.75 MB | **131.9** |
+| Depthwise 3×3 (64 ch) | 3.6 M | 1.61 MB | **2.25** |
+| Pointwise 1×1 (64 → 64) | 25.7 M | 1.62 MB | **15.8** |
+
+계산 과정 (dense):
+- MACs = $56 \times 56 \times 64 \times 9 \times 64 = 115{,}605{,}504$ → FLOPs = 231.2 M
+- Bytes = $4 \times (200{,}704 + 200{,}704 + 36{,}864) = 1{,}753{,}088$
+- AI = $231.2 \text{M} / 1.753 \text{M} \approx 131.9$
+
+depthwise는 FLOPs가 dense의 1/64인데 bytes는 거의 그대로다. activation을 읽고 쓰는 양은 같고 weight만 작아졌기 때문이다. 그래서 **AI가 59배 떨어진다.**
+
+**21번 레슨의 노트북 CPU** ($P_{peak} = 768$ GF/s, $BW = 50$ GB/s, ridge 15.4)에 올려보면
+
+| 레이어 | AI | 상한 성능 | 최소 시간 |
+|---|---|---|---|
+| Dense 3×3 | 131.9 | 768 GF/s (compute) | 0.301 ms |
+| Depthwise 3×3 | 2.25 | 112 GF/s (memory) | 0.032 ms |
+| Pointwise 1×1 | 15.8 | 768 GF/s (ridge 근처) | 0.033 ms |
+| **DW + PW 합계** | | | **0.066 ms** |
+
+- FLOPs 비: $231.2 / (3.6 + 25.7) \approx$ **7.9배** 감소
+- 시간 비: $0.301 / 0.066 \approx$ **4.6배** 감소
+
+depthwise가 memory-bound라서 FLOPs 감소가 시간 감소로 다 이어지지 않는다. 02번 레슨에서 말한 "MACs가 줄어도 안 빨라질 수 있다"의 정량적 설명이다.
+
+<Aside type="tip" title="그래서 fusion이 중요하다">
+depthwise 결과를 DRAM에 쓰지 않고 바로 pointwise에 넘기면(fusion) depthwise의 출력 쓰기와 pointwise의 입력 읽기가 사라진다. AI가 올라가서 두 레이어가 함께 compute-bound 쪽으로 이동한다.
+</Aside>
+
+## Linear layer와 batch
+
+20번 레슨에서 유도했듯이 FP16 linear layer $Y = XW$ ($W$: $M \times N$, batch $B$)는
+
+$$
+AI \approx \frac{2BMN}{2\,(MN + BM + BN)} \approx B \quad (B \ll M, N)
+$$
+
+ridge point가 156인 GPU라면
+
+- $B \lt 156$: memory-bound → 시간 ≈ weight 읽는 시간 (batch를 키워도 시간이 거의 안 늘어남)
+- $B \gt 156$: compute-bound → 시간이 batch에 비례
+
+그래서 **ridge 근처까지는 batch를 키울수록 throughput이 공짜로 늘어난다.** 01번 레슨의 batching 실험에서 throughput이 늘다가 포화된 지점이 바로 ridge point다.
+
+## LLM: prefill vs decode
+
+**Prefill**: prompt의 $L$개 토큰을 한 번에 처리한다. linear layer 입장에서 batch = $L$ → AI ≈ $L$. prompt가 수백 토큰이면 **compute-bound**.
+
+**Decode**: 토큰을 하나씩 생성한다. batch 1이면 AI ≈ 1 → **극단적인 memory-bound**.
+
+| 단계 | 유효 batch | AI (FP16) | 병목 | 지표 |
+|---|---|---|---|---|
+| Prefill (L = 512) | 512 | ≈ 512 | compute | TTFT |
+| Decode (batch 1) | 1 | ≈ 1 | memory | TPOT |
+| Decode (batch 64) | 64 | ≈ 64 | memory | tokens/s |
+
+### Decode tokens/s 상한
+
+decode 한 step마다 weight 전체를 한 번 읽어야 하므로
+
+$$
+\text{tokens/s} \le \frac{BW}{\text{model bytes} + \text{KV cache bytes}}
+$$
+
+## Worked example 2: edge LLM tokens/s 추정
+
+7B 파라미터 모델, KV cache는 일단 무시.
+
+| Weight 형식 | 모델 크기 | A100급 (2.0 TB/s) | 노트북 (50 GB/s) |
+|---|---|---|---|
+| FP16 | 14 GB | ≤ 143 tok/s | ≤ 3.6 tok/s |
+| INT8 | 7 GB | ≤ 286 tok/s | ≤ 7.1 tok/s |
+| INT4 | 3.5 GB | ≤ 571 tok/s | ≤ 14.3 tok/s |
+
+노트북에서 FP16 7B 모델은 이론상으로도 초당 3.6 토큰이다. INT4로 줄이면 4배 빨라진다. 연산 속도는 하나도 안 바꿨는데도 그렇다. memory-bound에서는 **bytes가 곧 시간**이다.
+
+### KV cache가 커지면?
+
+14번 레슨에서 Llama-2-7B의 KV cache가 FP16 기준 토큰당 0.5 MB라고 계산했다. decode step마다 지금까지의 KV cache를 전부 읽어야 하므로 context가 4096 토큰이면
+
+$$
+0.5 \text{ MB} \times 4096 = 2 \text{ GB / step}
+$$
+
+INT4 weight(3.5 GB)와 비슷한 크기다. 긴 context에서는 KV cache 읽기가 weight 읽기만큼 비싸져서, KV cache quantization이나 GQA(KV head 공유) 같은 기법이 필요해진다.
+
+## Worked example 3: speculative decoding의 AI
+
+draft model이 토큰 $\gamma = 4$개를 제안하고 target model이 한 번의 forward pass로 검증하면, target model 입장에서 weight 한 번 읽는 동안 토큰 5개(제안 4개 + 다음 1개)를 처리한다.
+
+$$
+AI \approx 1 \to 5
+$$
+
+memory-bound 영역에서는 시간이 거의 그대로이므로, 제안이 평균 $a$개 accept되면 step당 약 $a + 1$개 토큰을 얻는다. 놀던 연산 유닛을 쓰는 셈이다. (실제 speedup은 draft model 비용과 acceptance rate에 달려 있다.)
+
+## 코드: DL 레이어 roofline 분석기
+
+```python
+def conv(H, W, cin, cout, k, w=4, depthwise=False):
+    macs = H * W * cout * k * k * (1 if depthwise else cin)
+    wbytes = (cout * k * k) if depthwise else (cin * cout * k * k)
+    byts = w * (H * W * cin + H * W * cout + wbytes)
+    return 2 * macs, byts
+
+def linear(B, M, N, w=2):
+    return 2 * B * M * N, w * (M * N + B * M + B * N)
+
+def roof(flops, byts, peak, bw):
+    ai = flops / byts
+    perf = min(peak, bw * ai)
+    return ai, perf, flops / perf, "compute" if bw * ai >= peak else "memory"
+
+CPU = dict(peak=768e9, bw=50e9)            # 가상의 노트북 CPU
+GPU = dict(peak=312e12, bw=2.0e12)         # A100급 FP16 (대략)
+
+print("=== MobileNet block @ 56x56x64, FP32, laptop CPU ===")
+layers = {
+    "dense 3x3": conv(56, 56, 64, 64, 3),
+    "dw 3x3":    conv(56, 56, 64, 64, 3, depthwise=True),
+    "pw 1x1":    conv(56, 56, 64, 64, 1),
+}
+for name, (f, b) in layers.items():
+    ai, perf, t, kind = roof(f, b, **CPU)
+    print(f"{name:10s} FLOPs={f/1e6:7.1f}M  bytes={b/1e6:5.2f}MB  AI={ai:6.1f}  "
+          f"{perf/1e9:6.1f} GF/s  {t*1e3:.3f} ms  ({kind})")
+t_dense = roof(*layers["dense 3x3"], **CPU)[2]
+t_sep = roof(*layers["dw 3x3"], **CPU)[2] + roof(*layers["pw 1x1"], **CPU)[2]
+f_dense = layers["dense 3x3"][0]; f_sep = layers["dw 3x3"][0] + layers["pw 1x1"][0]
+print(f"FLOPs 감소 {f_dense/f_sep:.1f}x  vs  시간 감소 {t_dense/t_sep:.1f}x")
+
+print("\n=== LLM linear 4096x4096 FP16 on GPU, batch별 ===")
+for B in [1, 8, 64, 156, 512, 2048]:
+    ai, perf, t, kind = roof(*linear(B, 4096, 4096), **GPU)
+    print(f"B={B:5d} AI={ai:7.1f}  {perf/1e12:6.1f} TF/s  {t*1e6:7.1f} us  "
+          f"per-token {t/B*1e6:6.2f} us  ({kind})")
+
+print("\n=== 7B decode tokens/s 상한 (KV 무시) ===")
+for fmt, bpp in [("FP16", 2), ("INT8", 1), ("INT4", 0.5)]:
+    size = 7e9 * bpp
+    print(f"{fmt}: {size/1e9:4.1f} GB  GPU {GPU['bw']/size:6.0f} tok/s  laptop {CPU['bw']/size:5.1f} tok/s")
+
+kv = 2 * 32 * 4096 * 2                     # Llama-2-7B FP16, bytes/token
+for L in [512, 2048, 4096, 8192]:
+    print(f"context {L:5d}: KV cache {kv*L/2**30:5.2f} GiB / step")
+```
+
+## 흔한 오해
+
+<Aside type="caution" title="FLOPs가 8배 줄면 8배 빨라진다?">
+depthwise처럼 FLOPs만 줄고 bytes가 그대로면 AI가 떨어져서 memory-bound가 된다. 위 예시에서 FLOPs 7.9배 감소가 시간 4.6배 감소로 그쳤다.
+</Aside>
+
+<Aside type="caution" title="LLM이 느린 건 연산이 많아서다?">
+decode 단계는 연산 유닛의 1%도 못 쓰는 memory-bound다. 연산을 빠르게 하는 것보다 **읽는 byte를 줄이는 것**(quantization, KV cache 압축)과 **한 번 읽은 weight로 더 많은 토큰을 처리하는 것**(batching, speculative decoding)이 효과적이다.
+</Aside>
+
+## Efficient ML 연결 (Part A 총정리)
+
+| Part A 개념 | DL에서의 역할 |
+|---|---|
+| Latency vs throughput (01) | TTFT/TPOT vs tokens/s, batch 선택 |
+| Iron Law, Amdahl (02, 03) | MACs × utilization, non-matmul 연산이 병목 |
+| Pipelining (04~06) | systolic array, pipeline parallelism, speculative decoding |
+| Cache, locality (07~12) | tiling, fusion, FlashAttention, 텐서 레이아웃 |
+| Virtual memory (13~15) | PagedAttention, pinned memory, mmap |
+| SIMD, GPU (16~19) | quantization과 lane 수, Tensor Core, structured sparsity |
+| Roofline (20~22) | 모든 최적화가 roofline 위에서 어디로 움직이는지 |
+
+MIT 6.5940의 기법들(pruning, quantization, NAS, distillation, efficient attention, TinyEngine)을 볼 때마다 "이게 **FLOPs**를 줄이나, **bytes**를 줄이나, **utilization**을 올리나?"를 물어보자. 그러면 그 기법이 어떤 하드웨어, 어떤 batch 크기에서 효과가 있을지 예측할 수 있다.
+
+## 체크 퀴즈
+
+<Quiz
+  q="56×56×64 입력에서 depthwise 3×3 conv의 AI가 dense 3×3 conv보다 훨씬 낮은 이유는?"
+  options={['depthwise가 더 많은 FLOPs를 써서', 'FLOPs는 1/64로 줄었는데 activation을 읽고 쓰는 bytes는 거의 그대로라서', 'weight가 더 커서', 'stride가 달라서']}
+  answer={1}
+  explain="bytes의 대부분은 입력/출력 activation이고 이건 두 레이어가 같다. FLOPs만 64배 줄었으니 AI = FLOPs / bytes가 크게 떨어진다 (131.9에서 2.25로)."
+/>
+
+<Quiz
+  q="ridge point 156인 GPU에서 FP16 linear layer(AI ≈ batch)가 compute-bound가 되려면 batch가 대략 얼마 이상이어야 하나?"
+  options={['1', '16', '156', '4096']}
+  answer={2}
+  explain="AI ≈ B이므로 B가 ridge point 156을 넘어야 연산 지붕에 닿는다. 그보다 작으면 batch를 키워도 실행 시간이 거의 안 늘어서 throughput이 공짜로 증가한다."
+/>
+
+<Quiz
+  q="메모리 대역폭 50 GB/s 노트북에서 INT4 7B 모델(3.5 GB)의 decode tokens/s 상한은? (KV cache 무시)"
+  options={['약 3.6', '약 14', '약 50', '약 571']}
+  answer={1}
+  explain="토큰마다 weight 전체를 한 번 읽어야 하므로 50 / 3.5 ≈ 14.3 tokens/s. 3.6은 FP16(14 GB)일 때, 571은 2 TB/s GPU일 때의 값이다."
+/>
+
+<Quiz
+  q="LLM에서 prefill은 compute-bound, decode는 memory-bound인 이유는?"
+  options={['prefill은 GPU에서, decode는 CPU에서 돌아서', 'prefill은 prompt 토큰 여러 개가 같은 weight를 재사용해 AI가 높고, decode는 토큰 하나라 AI ≈ 1이라서', 'decode가 더 많은 FLOPs를 써서', 'prefill은 KV cache를 안 써서']}
+  answer={1}
+  explain="prefill에서는 L개 토큰이 한 번의 weight 읽기를 공유해 AI ≈ L이고, batch 1 decode에서는 weight를 읽어서 토큰 하나만 처리해 AI ≈ 1이다."
+/>
+
+<Quiz
+  q="Llama-2-7B(FP16, 토큰당 KV 0.5 MB)에서 context 4096일 때 decode step마다 읽어야 하는 KV cache는?"
+  options={['0.5 MB', '약 2 GB', '약 14 GB', '약 32 MB']}
+  answer={1}
+  explain="0.5 MB × 4096 = 2048 MB ≈ 2 GB. INT4 weight(3.5 GB)와 비슷한 크기라서 긴 context에서는 KV cache도 주요 병목이 된다."
+/>
+
+## 더 읽을거리
+
+- [MobileNets: Efficient Convolutional Neural Networks for Mobile Vision Applications (Howard et al., 2017)](https://arxiv.org/abs/1704.04861)
+- [Efficiently Scaling Transformer Inference (Pope et al., 2022)](https://arxiv.org/abs/2211.05102)
+- [LLM Inference Unveiled: Survey and Roofline Model Insights (Yuan et al., 2024)](https://arxiv.org/abs/2402.16363)
+- [MIT 6.5940 TinyML and Efficient Deep Learning Computing](https://efficientml.ai)

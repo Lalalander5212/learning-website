@@ -1,0 +1,287 @@
+---
+title: "Roofline model"
+description: "peak 연산 속도와 메모리 대역폭으로 커널 성능 상한을 그래프 하나로 그리기"
+track: arch-foundations
+est: 35min
+sidebar:
+  order: 21
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+커널 하나가 10 GFLOP/s로 돈다. 이게 좋은 건가 나쁜 건가? 하드웨어 peak가 768 GFLOP/s니까 1.3%라서 엉망인가? 그런데 그 커널이 vector add라면 **이론상 4 GFLOP/s도 못 넘는다.** peak 대비 비율만으로는 판단할 수 없다. roofline model은 "**이 커널이 이 하드웨어에서 낼 수 있는 최대 성능**"을 알려주고, 그래서 어떤 최적화를 해야 하는지(또는 더 할 게 없는지)를 결정해준다.
+
+## 직관: 두 개의 천장
+
+```text
+ Performance
+ (FLOP/s, log)
+      │                    ┌───────────────────────── Peak compute (평평한 지붕)
+      │                   ╱
+      │                  ╱
+      │                 ╱ ← 기울기 = 메모리 대역폭 (경사 지붕)
+      │                ╱
+      │               ╱
+      │              ╱
+      │             ╱
+      │            ╱
+      └───────────┴──────────────────────────────── Arithmetic intensity (FLOP/B, log)
+                ridge point
+       ◀── memory-bound ──▶◀────── compute-bound ──────▶
+```
+
+- AI가 낮은 커널(왼쪽)은 **경사 지붕** 아래에 갇힌다. 데이터를 아무리 빨리 가져와도 연산할 게 적다.
+- AI가 높은 커널(오른쪽)은 **평평한 지붕** 아래에 갇힌다. 연산 유닛이 한계다.
+- 지붕 모양이 집 지붕 같아서 roofline이다.
+
+## 정식 설명
+
+### 실행 시간의 하한에서 유도
+
+커널이 FLOPs $F$와 bytes $Q$를 가지고, 하드웨어가 peak 연산 속도 $P_{peak}$ (FLOP/s)와 메모리 대역폭 $BW$ (B/s)를 가진다고 하자. 연산과 데이터 이동이 완벽하게 겹친다고 해도
+
+$$
+T \ge \frac{F}{P_{peak}} \quad\text{그리고}\quad T \ge \frac{Q}{BW}
+$$
+
+이므로
+
+$$
+T \ge \max\left(\frac{F}{P_{peak}},\ \frac{Q}{BW}\right)
+$$
+
+달성 가능한 성능 $P = F / T$로 바꾸고 $AI = F / Q$를 대입하면
+
+$$
+\boxed{P_{attainable} = \min\left(P_{peak},\ BW \times AI\right)}
+$$
+
+### Ridge point
+
+두 지붕이 만나는 AI:
+
+$$
+AI^{*} = \frac{P_{peak}}{BW}
+$$
+
+**Ridge point (리지 포인트, machine balance)**: memory-bound와 compute-bound가 갈리는 arithmetic intensity. 하드웨어가 "byte 하나당 몇 FLOP을 해줘야 연산 유닛이 쉬지 않는가"를 나타낸다.
+*The arithmetic intensity at which a kernel transitions from memory-bound to compute-bound.*
+
+- $AI \lt AI^{*}$: **memory-bound**, 성능 = $BW \times AI$
+- $AI \gt AI^{*}$: **compute-bound**, 성능 = $P_{peak}$
+
+<Aside type="note" title="roofline은 상한이다">
+실제 커널은 지붕 **아래 어딘가**에 있다. 지붕과의 거리가 "아직 남은 최적화 여지"다.
+</Aside>
+
+### 여러 개의 지붕 (hierarchical roofline)
+
+현실에는 지붕이 여러 개다.
+
+```text
+ Performance
+      │                   ┌─────────────── FMA + SIMD peak
+      │                  ╱┌─────────────── SIMD, FMA 없음
+      │      L1 BW ─▶  ╱ ╱┌─────────────── scalar
+      │              ╱ ╱ ╱
+      │   L2 BW ─▶ ╱ ╱ ╱
+      │          ╱ ╱ ╱
+      │ DRAM ─▶╱ ╱ ╱
+      │      ╱ ╱ ╱
+      └────────────────────────────────────── AI
+```
+
+- **메모리 지붕**: 데이터가 어느 계층에 있느냐에 따라 기울기가 다르다 (L1 ≫ L2 ≫ DRAM).
+- **연산 지붕**: SIMD를 안 쓰면, FMA를 안 쓰면, Tensor Core를 안 쓰면 각각 더 낮은 지붕에 갇힌다.
+
+## Worked example 1: 노트북 CPU에 커널 올리기
+
+가상의 노트북 CPU: 8 cores, 3 GHz, AVX2, FMA 2개/core → $P_{peak} = 768$ GFLOP/s. DRAM 대역폭 $BW = 50$ GB/s.
+
+$$
+AI^{*} = \frac{768}{50} \approx 15.4 \text{ FLOP/B}
+$$
+
+| 커널 (FP32) | AI | $BW \times AI$ | 상한 | 영역 |
+|---|---|---|---|---|
+| Vector add | 0.083 | 4.2 GF/s | 4.2 GF/s | memory |
+| Dot product | 0.25 | 12.5 GF/s | 12.5 GF/s | memory |
+| GEMV | 0.5 | 25 GF/s | 25 GF/s | memory |
+| Tiled GEMM (AI 8) | 8 | 400 GF/s | 400 GF/s | memory |
+| GEMM (이상적, N = 1024) | 171 | 8550 GF/s | **768 GF/s** | compute |
+
+vector add가 4 GF/s로 돈다면 peak의 0.5%지만 **이미 최적**이다. 더 할 수 있는 건 연산을 다른 커널과 합쳐 bytes를 줄이는 것(fusion)뿐이다.
+
+## Worked example 2: 16번 레슨의 dot product 다시 보기
+
+16번 레슨에서 누적기 8개 AVX2 dot product가 46 GFLOP/s에서 멈췄다. 데이터는 L1에 있었으니 **L1 지붕**을 보자. 코어 하나, 약 3.3 GHz, 사이클당 32 B load 2개라고 하면
+
+$$
+BW_{L1} \approx 2 \times 32\text{ B} \times 3.3 \times 10^9 \approx 211 \text{ GB/s}
+$$
+
+$$
+P_{L1\,roof} = 211 \times 0.25 \approx 52.8 \text{ GFLOP/s}
+$$
+
+코어 하나의 FMA peak는 $3.3 \times 10^9 \times 8 \times 2 \times 2 \approx 106$ GFLOP/s지만, dot product(AI 0.25)는 L1 지붕 52.8에 막힌다. 실측 46은 그 지붕의 **87%**다. 당시 "load port가 병목"이라고 했던 설명이 roofline 위에서는 "L1 메모리 지붕 아래"로 읽힌다.
+
+## Worked example 3: GPU와 LLM decoding
+
+A100급 GPU를 대략 FP16 Tensor Core peak 312 TFLOP/s, HBM 2.0 TB/s로 보자.
+
+$$
+AI^{*} = \frac{312}{2.0} = 156 \text{ FLOP/B}
+$$
+
+batch 1 LLM decoding의 linear layer(FP16 weight)는 AI ≈ 1이다 (20번 레슨).
+
+$$
+P = 2.0 \text{ TB/s} \times 1 = 2 \text{ TFLOP/s} \approx 0.64\% \text{ of peak}
+$$
+
+GPU 연산 유닛의 99%가 논다. compute-bound가 되려면 AI ≈ 156, 즉 **batch ≈ 156**이 필요하다. LLM 서빙 시스템이 요청을 묶으려고 애쓰는 이유다.
+
+## Roofline으로 최적화 방향 정하기
+
+| 커널 위치 | 진단 | 할 일 |
+|---|---|---|
+| 메모리 지붕보다 한참 아래 | 접근 패턴이 나쁨 (stride, conflict, uncoalesced) | 연속 접근, coalescing, prefetch, padding |
+| 메모리 지붕 근처, ridge 왼쪽 | 대역폭을 다 씀 | **AI를 올려라**: tiling, fusion, quantization, batching |
+| 연산 지붕보다 한참 아래, ridge 오른쪽 | 연산 유닛을 덜 씀 | SIMD, FMA, Tensor Core, 누적기 분리, occupancy |
+| 연산 지붕 근처 | 하드웨어 한계 | **FLOPs를 줄여라**: pruning, 작은 모델, 알고리즘 변경 |
+
+## 코드: 내 컴퓨터의 roofline 그리기
+
+NumPy로 내 기계의 대역폭과 연산 peak를 직접 재고, 커널들을 roofline 위에 찍는다. matplotlib이 있으면 `roofline.png`를 저장한다.
+
+```python
+import time
+import numpy as np
+
+def best(f, reps=5):
+    t_best = float("inf")
+    for _ in range(reps):
+        t = time.perf_counter(); f(); t_best = min(t_best, time.perf_counter() - t)
+    return t_best
+
+# 1) 메모리 대역폭: c = a + b (64M floats = 256MB씩)
+n = 1 << 26
+a = np.ones(n, np.float32); b = np.ones(n, np.float32); c = np.empty_like(a)
+t = best(lambda: np.add(a, b, out=c))
+BW = 3 * n * 4 / t
+print(f"measured DRAM BW   ≈ {BW/1e9:6.1f} GB/s")
+del a, b, c
+
+# 2) 연산 peak: 큰 matmul (BLAS, 멀티스레드)
+N = 2048
+A = np.random.rand(N, N).astype(np.float32); B = np.random.rand(N, N).astype(np.float32)
+t = best(lambda: A @ B, 3)
+PEAK = 2 * N**3 / t
+print(f"measured GEMM peak ≈ {PEAK/1e9:6.1f} GFLOP/s")
+print(f"ridge point        ≈ {PEAK/BW:6.1f} FLOP/B")
+
+# 3) 커널들을 측정해서 roofline 위에 찍기
+points = []
+x = np.ones(1 << 24, np.float32); y = np.ones(1 << 24, np.float32); z = np.empty_like(x)
+t = best(lambda: np.add(x, y, out=z));     points.append(("vec add", 1/12, x.size / t))
+t = best(lambda: np.dot(x, y));            points.append(("dot", 0.25, 2 * x.size / t))
+W = np.random.rand(4096, 4096).astype(np.float32); v = np.random.rand(4096).astype(np.float32)
+t = best(lambda: W @ v);                   points.append(("GEMV", 0.5, 2 * 4096 * 4096 / t))
+for m in [128, 256, 512, 1024]:
+    M = np.random.rand(m, m).astype(np.float32)
+    t = best(lambda: M @ M)
+    points.append((f"GEMM {m}", 2 * m / (3 * 4), 2 * m**3 / t))
+
+print(f"\n{'kernel':10s}{'AI':>8s}{'measured':>12s}{'roof':>12s}{'% of roof':>11s}")
+for name, ai, perf in points:
+    roof = min(PEAK, BW * ai)
+    print(f"{name:10s}{ai:8.2f}{perf/1e9:10.1f} GF{roof/1e9:10.1f} GF{perf/roof*100:10.0f}%")
+
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    ais = np.logspace(-2, 3, 200)
+    plt.figure(figsize=(7, 4.5))
+    plt.loglog(ais, np.minimum(PEAK, BW * ais) / 1e9, "k-", label="roofline")
+    for name, ai, perf in points:
+        plt.loglog(ai, perf / 1e9, "o")
+        plt.annotate(name, (ai, perf / 1e9), textcoords="offset points", xytext=(5, 5), fontsize=8)
+    plt.axvline(PEAK / BW, ls="--", c="gray", lw=0.8)
+    plt.xlabel("Arithmetic intensity (FLOP/B)"); plt.ylabel("GFLOP/s")
+    plt.title("Roofline (measured)"); plt.grid(True, which="both", ls=":", lw=0.5)
+    plt.tight_layout(); plt.savefig("roofline.png", dpi=150)
+    print("\nsaved roofline.png")
+except ImportError:
+    print("\n(matplotlib 없음: 표만 출력)")
+```
+
+<Aside type="note" title="측정값 읽는 법">
+여기서 쓴 "peak"는 NumPy BLAS로 측정한 값이라 스펙상 peak보다 낮다. 대역폭은 `np.add` 하나(싱글스레드)로 쟀기 때문에 기계 전체 대역폭보다 낮게 나올 수 있고, 그래서 멀티스레드 BLAS를 쓰는 GEMV가 "지붕보다 위"(100% 초과)로 찍히기도 한다. 작은 GEMM처럼 데이터가 cache 안에 있으면 그 계층의 지붕을 써야 한다 (hierarchical roofline). 지붕을 정확히 그리려면 STREAM 같은 전용 벤치마크로 대역폭을 재는 게 좋다.
+</Aside>
+
+## 흔한 오해
+
+<Aside type="caution" title="Roofline이 실제 성능을 예측한다?">
+roofline은 **상한**이다. 실제 성능은 latency, 동기화, 구현 품질 때문에 그보다 낮다. "지붕까지 얼마나 남았나"를 보는 도구다.
+</Aside>
+
+<Aside type="caution" title="메모리 지붕에 붙어 있으면 나쁜 커널이다?">
+AI가 낮은 커널은 메모리 지붕이 곧 최적이다. vector add가 peak의 0.5%여도 지붕에 붙어 있으면 그 이상은 불가능하다. 그 이상을 원하면 **알고리즘을 바꿔 AI를 올려야** 한다.
+</Aside>
+
+<Aside type="caution" title="스펙 peak는 실제로 나온다?">
+스펙 peak는 모든 연산 유닛이 매 사이클 FMA를 할 때의 숫자다. 실측 GEMM은 보통 그 70~90% 정도이고, 위 코드처럼 직접 재보는 게 정확하다.
+</Aside>
+
+## Efficient ML 연결
+
+**가속기 분석의 표준 도구.** Google의 TPU 논문(Jouppi et al., 2017)은 데이터센터 DL 워크로드를 roofline 위에 찍어서 CPU/GPU/TPU를 비교했다. 많은 워크로드가 memory-bound 영역에 있다는 걸 보여준 것이 핵심 결론 중 하나였다.
+
+**MIT 6.5940의 관점.** 모델 압축(pruning, quantization)과 효율적 아키텍처를 평가할 때 "FLOPs가 몇 % 줄었나"만이 아니라 **roofline 위의 위치가 어떻게 바뀌었나**를 봐야 한다. FLOPs를 줄여도 memory-bound면 latency가 안 줄고, bytes를 줄이면(quantization) memory-bound 커널이 바로 빨라진다. 다음 레슨에서 conv와 LLM 레이어로 구체적으로 계산한다.
+
+## 체크 퀴즈
+
+<Quiz
+  q="P_peak = 768 GFLOP/s, BW = 50 GB/s인 CPU의 ridge point는?"
+  options={['약 0.065 FLOP/B', '약 15.4 FLOP/B', '약 38,400 FLOP/B', '768 FLOP/B']}
+  answer={1}
+  explain="AI* = P_peak / BW = 768 / 50 ≈ 15.4. AI가 이보다 낮은 커널은 memory-bound, 높은 커널은 compute-bound다."
+/>
+
+<Quiz
+  q="위 CPU에서 dot product(AI 0.25)의 성능 상한은?"
+  options={['768 GFLOP/s', '200 GFLOP/s', '12.5 GFLOP/s', '0.25 GFLOP/s']}
+  answer={2}
+  explain="AI가 ridge보다 낮으므로 상한은 BW × AI = 50 × 0.25 = 12.5 GFLOP/s. 연산 유닛이 아무리 빨라도 데이터가 그 이상 들어오지 않는다."
+/>
+
+<Quiz
+  q="peak 312 TFLOP/s, HBM 2 TB/s인 GPU에서 batch 1 LLM decoding(AI ≈ 1)은 peak의 대략 몇 %를 쓸 수 있나?"
+  options={['약 64%', '약 6.4%', '약 0.64%', '100%']}
+  answer={2}
+  explain="상한 = 2 TB/s × 1 = 2 TFLOP/s, 2 / 312 ≈ 0.64%. compute-bound가 되려면 AI가 ridge point 156 근처까지 올라가야 한다."
+/>
+
+<Quiz
+  q="어떤 커널이 memory-bound 영역에서 메모리 지붕에 거의 붙어 있다. 가장 효과적인 다음 최적화는?"
+  options={['SIMD 명령어 사용', '클럭을 올린다', 'tiling, fusion, quantization 등으로 AI를 높인다', '누적기를 늘린다']}
+  answer={2}
+  explain="이미 대역폭을 다 쓰고 있으므로 연산을 빠르게 해도 소용없다. 같은 일을 더 적은 byte로 하도록 AI를 높여서 지붕을 따라 오른쪽 위로 이동해야 한다."
+/>
+
+<Quiz
+  q="roofline 공식 P = min(P_peak, BW × AI)는 어떤 가정에서 유도되나?"
+  options={['연산과 데이터 이동이 완벽하게 겹친다는 가정 아래 실행 시간 하한', 'cache가 없다는 가정', 'FLOPs가 bytes와 같다는 가정', 'thread가 하나라는 가정']}
+  answer={0}
+  explain="실행 시간은 연산 시간(F / P_peak)과 전송 시간(Q / BW) 중 큰 쪽보다 짧을 수 없다. 둘이 완벽히 겹친다고 가정한 하한이라 성능의 상한이 된다."
+/>
+
+## 더 읽을거리
+
+- [Roofline: An Insightful Visual Performance Model for Multicore Architectures (Williams, Waterman, Patterson, 2009)](https://dl.acm.org/doi/10.1145/1498765.1498785)
+- [In-Datacenter Performance Analysis of a Tensor Processing Unit (Jouppi et al., 2017)](https://arxiv.org/abs/1704.04760)
+- [Making Deep Learning Go Brrrr From First Principles (Horace He)](https://horace.io/brrr_intro.html)

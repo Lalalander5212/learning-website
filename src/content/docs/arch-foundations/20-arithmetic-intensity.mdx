@@ -1,0 +1,263 @@
+---
+title: "Arithmetic intensity: 연산당 데이터"
+description: "FLOPs ÷ bytes로 커널이 연산에 막히는지 메모리에 막히는지 판단하는 첫 단계"
+track: arch-foundations
+est: 30min
+sidebar:
+  order: 20
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+지금까지 이상한 현상을 여러 번 봤다.
+
+- 16번 레슨: 누적기 8개 dot product가 FMA 유닛 한계가 아니라 **load 속도**에 막혔다.
+- 02번 레슨: MACs를 줄인 depthwise conv가 생각만큼 안 빨라진다.
+- 07번 레슨: edge LLM의 tokens/s가 연산 능력이 아니라 **메모리 대역폭**으로 정해진다.
+
+전부 같은 질문이다. "이 커널은 **연산**이 병목인가, **데이터 이동**이 병목인가?" 이걸 숫자 하나로 판단하는 지표가 **arithmetic intensity**다. 다음 레슨의 roofline model이 이 숫자 위에 세워진다.
+
+## 직관: 공장과 재료 트럭
+
+공장에 기계(연산 유닛)가 있고, 재료는 트럭(메모리 버스)으로 들어온다.
+
+- 재료 1 kg으로 제품을 **많이** 만드는 공정(조립이 복잡함) → 트럭이 조금만 와도 기계가 바쁘다. **기계가 병목** (compute-bound)
+- 재료 1 kg으로 제품을 **조금** 만드는 공정(포장만 함) → 기계는 금방 끝내고 다음 트럭을 기다린다. **트럭이 병목** (memory-bound)
+
+"재료 1 kg당 제품 수"가 arithmetic intensity다.
+
+## 용어 정의
+
+**FLOP (부동소수점 연산)**: 덧셈 하나 또는 곱셈 하나. FMA(곱셈-덧셈)는 **2 FLOP**로 센다.
+*A single floating-point operation.*
+
+**FLOPs**: 연산 **개수** (양). **FLOP/s (FLOPS)**: 초당 연산 수 (속도). 대소문자와 `/s`를 구분하자.
+
+**MAC (Multiply-Accumulate)**: $a \leftarrow a + b \times c$. 1 MAC = 2 FLOPs.
+
+**Arithmetic intensity, AI (산술 강도, operational intensity)**: 커널이 수행하는 연산 수를 메모리에서 옮기는 byte 수로 나눈 값.
+*The ratio of floating-point operations to bytes of memory traffic.*
+
+$$
+\boxed{AI = \frac{\text{FLOPs}}{\text{Bytes moved}} \quad [\text{FLOP/B}]}
+$$
+
+**Compute-bound (연산 병목)**: 연산 유닛 속도가 실행 시간을 결정하는 상태.
+**Memory-bound (메모리 병목)**: 데이터 이동 속도(대역폭)가 실행 시간을 결정하는 상태.
+
+<Aside type="note" title="Bytes는 어느 계층 기준인가?">
+보통은 **DRAM(또는 GPU HBM) ↔ chip** 사이의 트래픽을 센다. 하지만 L1 ↔ L2처럼 다른 계층 기준으로도 정의할 수 있고, 계층마다 AI가 다르다. 또 "최소한 읽어야 하는 양"(각 데이터를 한 번씩)으로 셀 수도 있고, 실제 구현이 옮기는 양(cache miss 포함)으로 셀 수도 있다. 이 레슨에서는 따로 말하지 않으면 **DRAM 기준 최소 트래픽**이다.
+</Aside>
+
+## 기본 커널의 AI
+
+float32 (4 B) 기준. 각 배열은 메모리에서 한 번씩 읽고 쓴다고 가정한다.
+
+### 1. Vector add: $c_i = a_i + b_i$
+
+- FLOPs: 원소당 1
+- Bytes: 원소당 읽기 2개 + 쓰기 1개 = 12 B
+
+$$
+AI = \frac{1}{12} \approx 0.083
+$$
+
+### 2. SAXPY: $y_i = \alpha x_i + y_i$
+
+- FLOPs: 원소당 2 (곱셈 + 덧셈)
+- Bytes: x 읽기, y 읽기, y 쓰기 = 12 B
+
+$$
+AI = \frac{2}{12} \approx 0.167
+$$
+
+### 3. Dot product: $s = \sum_i a_i b_i$
+
+- FLOPs: 원소당 2
+- Bytes: a, b 읽기 = 8 B (s는 register)
+
+$$
+AI = \frac{2}{8} = 0.25
+$$
+
+### 4. GEMV (행렬 × 벡터): $y = Wx$, $W$는 $M \times N$
+
+- FLOPs: $2MN$
+- Bytes: $W$가 지배적, $M N w$ (x, y는 무시할 만큼 작음)
+
+$$
+AI \approx \frac{2MN}{MN\,w} = \frac{2}{w}
+$$
+
+FP32면 0.5, FP16이면 **1**, INT4 weight(0.5 B)면 4.
+
+### 5. GEMM (행렬 × 행렬): $C = AB$, 모두 $N \times N$
+
+- FLOPs: $2N^3$
+- 최소 Bytes: A, B 읽기 + C 쓰기 = $3N^2 w$
+
+$$
+AI_{ideal} = \frac{2N^3}{3N^2 w} = \frac{2N}{3w}
+$$
+
+FP32($w = 4$)면 $N/6$. N = 1024면 약 **171**. 데이터 하나가 $N$번 재사용되기 때문에 N이 클수록 AI가 커진다.
+
+### 요약
+
+| 커널 | FLOPs | Bytes | AI (FP32) | 성격 |
+|---|---|---|---|---|
+| Vector add | $N$ | $12N$ | 0.083 | memory |
+| SAXPY | $2N$ | $12N$ | 0.167 | memory |
+| Dot product | $2N$ | $8N$ | 0.25 | memory |
+| GEMV | $2MN$ | $4MN$ | 0.5 | memory |
+| GEMM (N = 1024) | $2N^3$ | $12N^2$ | 171 | compute |
+
+<Aside type="tip" title="핵심 패턴">
+**데이터를 재사용하지 않는 연산**(element-wise, reduction, GEMV)은 AI가 1 이하로 낮다. **재사용이 많은 연산**(GEMM, 큰 conv)만 AI가 높다.
+</Aside>
+
+## Worked example 1: batch가 GEMV를 GEMM으로 바꾼다
+
+LLM linear layer $Y = XW$, $W$는 $M \times N$ (예: 4096 × 4096), 입력 $X$는 $B \times M$ (batch $B$개 토큰). FP16 ($w = 2$).
+
+- FLOPs: $2BMN$
+- Bytes: $W$ 읽기 $MN w$ + $X$ 읽기 $BMw$ + $Y$ 쓰기 $BNw$
+
+$$
+AI = \frac{2BMN}{w\,(MN + BM + BN)}
+$$
+
+$B$가 $M, N$보다 훨씬 작으면 분모는 $MN$이 지배하므로
+
+$$
+AI \approx \frac{2BMN}{w\,MN} = \frac{2B}{w} = B \quad (\text{FP16})
+$$
+
+| Batch B | AI (FP16, M = N = 4096) |
+|---|---|
+| 1 | ≈ 1.0 |
+| 8 | ≈ 8.0 |
+| 64 | ≈ 62 |
+| 256 | ≈ 228 |
+| 4096 | ≈ 1365 |
+
+같은 weight를 $B$개 토큰이 재사용하므로 **AI가 batch 크기에 거의 비례**한다. batch = 1 decoding이 memory-bound인 근본 이유다.
+
+## Worked example 2: tiling이 AI를 바꾼다
+
+12번 레슨의 matmul miss 분석을 bytes로 바꿔보자. FP32, line 64 B ($K = 16$), $N^3$ MAC = $2N^3$ FLOPs.
+
+**Naive ijk**: miss 수 $\approx N^3(1 + 1/K)$, miss당 64 B
+
+$$
+AI_{ijk} \approx \frac{2N^3}{N^3 (1 + 1/16) \times 64} = \frac{2}{68} \approx 0.029
+$$
+
+**Tiled (tile T)**: miss 수 $\approx 2N^3 / (K T)$, miss당 $K w$ byte
+
+$$
+AI_{tiled} \approx \frac{2N^3}{\frac{2N^3}{KT} \times K w} = \frac{T}{w}
+$$
+
+T = 32, FP32면 **8 FLOP/B**. 같은 알고리즘이 구현에 따라 AI가 **275배** 달라진다.
+
+<Aside type="caution" title="AI는 알고리즘만의 성질이 아니다">
+위의 "GEMM AI = N/6"은 **이상적인 재사용**을 가정한 상한이다. 실제 AI는 tiling, fusion, 데이터 타입, cache 크기에 따라 정해진다. 최적화의 목표는 실제 AI를 이론 상한에 가깝게 끌어올리는 것이다.
+</Aside>
+
+## 코드: AI 계산기
+
+```python
+def ai_vec_add(w=4):        return 1 / (3 * w)
+def ai_saxpy(w=4):          return 2 / (3 * w)
+def ai_dot(w=4):            return 2 / (2 * w)
+def ai_gemv(M, N, w=4):     return 2 * M * N / (w * (M * N + M + N))
+def ai_gemm(N, w=4):        return 2 * N**3 / (3 * N * N * w)
+def ai_linear(B, M, N, w=2):
+    return 2 * B * M * N / (w * (M * N + B * M + B * N))
+
+print("=== 기본 커널 (FP32) ===")
+print(f"vector add  : {ai_vec_add():.3f} FLOP/B")
+print(f"saxpy       : {ai_saxpy():.3f}")
+print(f"dot product : {ai_dot():.3f}")
+print(f"GEMV 4096²  : {ai_gemv(4096, 4096):.3f}")
+for n in [64, 256, 1024, 4096]:
+    print(f"GEMM N={n:5d}: {ai_gemm(n):8.1f}")
+
+print("\n=== LLM linear layer 4096x4096, FP16, batch별 ===")
+for B in [1, 2, 8, 32, 64, 128, 256, 1024, 4096]:
+    print(f"B={B:5d}  AI={ai_linear(B, 4096, 4096):8.1f}")
+
+print("\n=== weight 데이터 타입별 GEMV AI (batch 1) ===")
+for name, w in [("FP32", 4), ("FP16", 2), ("INT8", 1), ("INT4", 0.5)]:
+    print(f"{name}: {ai_gemv(4096, 4096, w):.2f}")
+
+print("\n=== matmul 구현별 실제 AI (FP32, 64B line, K=16) ===")
+K, w = 16, 4
+print(f"naive ijk : {2 / ((1 + 1/K) * 64):.3f}")
+for T in [8, 16, 32, 64]:
+    print(f"tiled T={T:2d}: {T / w:.1f}")
+```
+
+## 흔한 오해
+
+<Aside type="caution" title="FLOPs가 적으면 빠르다?">
+FLOPs가 줄어도 bytes가 그대로면 AI가 떨어지고 memory-bound가 된다. 실행 시간은 FLOPs가 아니라 **FLOPs와 bytes 중 더 비싼 쪽**이 정한다 (다음 레슨).
+</Aside>
+
+<Aside type="caution" title="FLOPS와 FLOPs는 같은 말?">
+FLOPs는 **개수**(일의 양), FLOP/s는 **속도**(하드웨어 성능)다. 논문에서 섞어 쓰는 경우가 많으니 문맥으로 구분하자.
+</Aside>
+
+## Efficient ML 연결
+
+**Quantization은 AI를 올린다.** weight를 FP16 → INT4로 줄이면 같은 FLOPs에 bytes가 1/4이 되니 AI가 4배가 된다. memory-bound인 LLM decoding에서 weight-only quantization(예: W4A16)이 거의 그대로 속도 향상으로 이어지는 이유다.
+
+**Batching과 speculative decoding은 재사용을 늘린다.** batch $B$개 토큰이 같은 weight를 쓰면 AI ≈ $B$. speculative decoding은 draft 토큰 $\gamma$개를 target model이 **한 번의 forward pass**로 검증하므로, weight 한 번 읽는 동안 토큰 약 $\gamma + 1$개 분량을 처리한다. batch = 1에서도 AI를 끌어올리는 방법이다.
+
+**Fusion과 FlashAttention은 bytes를 줄인다.** 연산은 그대로 두고 중간 결과의 DRAM 왕복을 없애서 분모를 줄인다.
+
+## 체크 퀴즈
+
+<Quiz
+  q="float32 vector add c[i] = a[i] + b[i]의 arithmetic intensity는?"
+  options={['1 FLOP/B', '0.25 FLOP/B', '약 0.083 FLOP/B', '3 FLOP/B']}
+  answer={2}
+  explain="원소당 1 FLOP, bytes는 a, b 읽기와 c 쓰기로 4 × 3 = 12 B. 1/12 ≈ 0.083. 0.25는 dot product(2 FLOP / 8 B)의 값이다."
+/>
+
+<Quiz
+  q="FP16 weight를 쓰는 batch 1 GEMV(y = Wx)의 AI는 대략?"
+  options={['0.25', '1', '16', '171']}
+  answer={1}
+  explain="FLOPs = 2MN, bytes ≈ weight 크기 = 2MN (FP16 = 2 B). AI ≈ 2MN / 2MN = 1. weight 하나를 읽어서 곱셈-덧셈 한 번(2 FLOP)만 하기 때문이다."
+/>
+
+<Quiz
+  q="LLM linear layer(FP16, 4096×4096)에서 batch를 1에서 64로 늘리면 AI는 대략 어떻게 되나?"
+  options={['변화 없음', '약 8배', '약 64배 (≈ 62)', '약 4096배']}
+  answer={2}
+  explain="AI ≈ 2B/w = B (FP16)이므로 batch에 거의 비례한다. 정확히는 X, Y 크기도 분모에 있어서 B = 64일 때 약 62다."
+/>
+
+<Quiz
+  q="같은 GEMV에서 weight를 FP16에서 INT4로 quantize하면 AI는?"
+  options={['1/4로 줄어든다', '변화 없다', '4배가 된다', '16배가 된다']}
+  answer={2}
+  explain="FLOPs는 그대로인데 weight bytes가 2 B에서 0.5 B로 1/4이 되므로 AI는 4배가 된다. memory-bound 커널에서는 이게 거의 그대로 속도 향상으로 이어진다."
+/>
+
+<Quiz
+  q="FP32 tiled matmul에서 tile 크기 T일 때 cache 기준 AI가 대략 T/4인 이유는?"
+  options={['tile 안에서 각 원소가 약 T번 재사용되고, 원소 하나가 4 B라서', 'T가 클수록 FLOPs가 늘어나서', 'cache line이 4개라서', 'T가 SIMD 폭이라서']}
+  answer={0}
+  explain="원소 하나를 cache로 가져오면 tile 안에서 T번의 MAC(2T FLOP)에 쓰이고, 그 원소는 4 B다. A와 B tile을 둘 다 가져와야 하므로 대략 2T FLOP / (2 × 4 B) = T/4."
+/>
+
+## 더 읽을거리
+
+- [Roofline: An Insightful Visual Performance Model for Multicore Architectures (Williams, Waterman, Patterson, 2009)](https://dl.acm.org/doi/10.1145/1498765.1498785)
+- [Roofline model (Wikipedia)](https://en.wikipedia.org/wiki/Roofline_model)
+- [Making Deep Learning Go Brrrr From First Principles (Horace He)](https://horace.io/brrr_intro.html)
