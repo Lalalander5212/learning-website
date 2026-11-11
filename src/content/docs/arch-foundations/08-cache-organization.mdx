@@ -1,0 +1,311 @@
+---
+title: "Cache 구조: tag / index / offset"
+description: "주소 하나가 cache의 어느 set, 어느 tag로 가는지 비트 단위로 계산하기"
+track: arch-foundations
+est: 35min
+sidebar:
+  order: 8
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+cache는 메모리보다 훨씬 작다. 그래서 주소 하나가 주어지면 하드웨어는 1 사이클 안에 "cache의 **어디**를 볼지", 그리고 "거기 있는 데이터가 **정말 내가 찾는 주소의 것인지**"를 결정해야 한다. 이걸 주소 비트를 tag / index / offset으로 쪼개서 해결한다. 이 분할을 이해해야 왜 어떤 메모리 접근 패턴이 cache를 망치는지(conflict miss) 설명할 수 있다.
+
+## 용어 정의
+
+**Set (세트)**: 특정 주소가 들어갈 수 있는 cache 자리들의 묶음.
+*A group of cache lines in which a given block may be placed.*
+
+**Way (웨이)**: set 안의 각 자리. N-way set-associative면 한 set에 N개의 way가 있다.
+*One of the slots within a set.*
+
+**Associativity (연관도)**: 하나의 block이 들어갈 수 있는 후보 자리의 수.
+*The number of locations in which a given block can be placed.*
+
+**Offset (오프셋)**: block 안에서 몇 번째 byte인지. *Selects the byte within a block.*
+
+**Index (인덱스)**: 어느 set을 볼지. *Selects the set.*
+
+**Tag (태그)**: 그 set에 있는 block이 정말 내가 찾는 주소의 block인지 확인하려고 저장하고 비교하는 상위 비트.
+*The upper address bits stored with each line to identify which memory block it holds.*
+
+**Valid bit (유효 비트)**: 그 line에 의미 있는 데이터가 들어 있는지 표시하는 1 bit. 전원을 켤 때는 모두 0.
+
+## 주소 분할 공식
+
+Cache 파라미터: 데이터 용량 $C$ (bytes), block 크기 $B$ (bytes), associativity $A$.
+
+**Set 개수**
+
+$$
+S = \frac{C}{B \times A}
+$$
+
+**주소 비트 분할** (주소가 $m$ bit일 때)
+
+```text
+ m-1                                         0
+ ┌─────────────────┬──────────────┬───────────┐
+ │       Tag       │    Index     │  Offset   │
+ └─────────────────┴──────────────┴───────────┘
+   m − s − b bit       s bit         b bit
+```
+
+$$
+b = \log_2 B, \qquad s = \log_2 S, \qquad t = m - s - b
+$$
+
+**산술로 보는 같은 계산** (비트 연산이 헷갈릴 때 검산용)
+
+$$
+\text{block address} = \left\lfloor \frac{\text{addr}}{B} \right\rfloor, \qquad
+\text{offset} = \text{addr} \bmod B
+$$
+
+$$
+\text{index} = \text{block address} \bmod S, \qquad
+\text{tag} = \left\lfloor \frac{\text{block address}}{S} \right\rfloor
+$$
+
+<Aside type="note" title="왜 index에 중간 비트를 쓸까?">
+상위 비트를 index로 쓰면 연속된 주소(배열)가 전부 **같은 set**으로 몰려서 충돌이 심해진다. 중간 비트를 쓰면 연속된 block들이 서로 다른 set으로 고르게 퍼진다.
+</Aside>
+
+## Associativity 3가지
+
+### Direct-mapped (A = 1)
+
+block이 들어갈 자리가 **딱 하나**다.
+
+```text
+ addr: [ tag | index | offset ]
+               │
+               ▼
+        ┌───┬─────┬────────────────┐
+ set 0  │ V │ tag │ data (B bytes) │
+ set 1  │ V │ tag │ data           │
+  ...   │   │     │                │
+ set i  │ 1 │ T   │ ███████████    │ ◀── index로 선택
+  ...   │   │     │                │
+        └───┴─────┴────────────────┘
+                │          │
+     tag 비교 ◀─┘          └─▶ offset으로 byte 선택
+      (==) AND V
+         ▼
+        hit?
+```
+
+- 장점: 비교기 1개, 빠르고 단순하다.
+- 단점: 같은 index를 쓰는 block 두 개를 번갈아 쓰면 계속 서로를 쫓아낸다 (conflict miss).
+
+### N-way set-associative
+
+set 안의 N개 way 중 **아무 데나** 들어갈 수 있다.
+
+```text
+              set i
+        ┌── way 0 ─────────┐  ┌── way 1 ─────────┐
+        │ V │ tag │ data   │  │ V │ tag │ data   │
+        └───────┬──────────┘  └───────┬──────────┘
+          (==)◀─┘                (==)◀─┘          ← tag 비교를 병렬로 N번
+            │                      │
+            └──────┬───────────────┘
+                   ▼
+           OR → hit?,  MUX → 맞는 way의 data 선택
+```
+
+- 비교기 N개, MUX 때문에 hit time이 약간 늘어난다.
+- Conflict miss가 크게 줄어든다.
+
+### Fully associative (S = 1)
+
+**아무 자리나** 들어갈 수 있다. Index 비트가 없다 ($s = 0$).
+
+- Conflict miss가 정의상 0이다.
+- 모든 line과 tag 비교를 해야 해서 크게 만들기 어렵다. TLB처럼 작은 구조에 쓴다.
+
+## Worked example: 주소 0x1A2B 쪼개기
+
+**설정**: 주소 16 bit, cache 데이터 용량 1 KB, block 16 B
+
+**Step 0. 0x1A2B를 2진수로**
+
+```text
+ hex:     1      A      2      B
+ bin:   0001   1010   0010   1011
+
+ bit 번호: 15 14 13 12 | 11 10  9  8 |  7  6  5  4 |  3  2  1  0
+ 값:        0  0  0  1 |  1  0  1  0 |  0  0  1  0 |  1  0  1  1
+```
+
+10진수: $1 \times 4096 + 10 \times 256 + 2 \times 16 + 11 = 6699$
+
+**Step 1. Offset (모든 구성 공통)**
+
+$b = \log_2 16 = 4$ bit → bit 3..0 = `1011` = **11 (0xB)**
+
+Block address $= \lfloor 6699 / 16 \rfloor = 418$ (0x1A2)
+
+### (a) Direct-mapped
+
+$S = 1024 / (16 \times 1) = 64$ sets → $s = 6$, $t = 16 - 6 - 4 = 6$
+
+```text
+ bit:   15 14 13 12 11 10 |  9  8  7  6  5  4 |  3  2  1  0
+         0  0  0  1  1  0 |  1  0  0  0  1  0 |  1  0  1  1
+        └──── Tag (6) ────┘└─── Index (6) ────┘└─ Offset ─┘
+```
+
+- Tag = `000110` = **6**
+- Index = `100010` = 32 + 2 = **34**
+- Offset = **11**
+
+산술 검산: $418 \bmod 64 = 34$, $\lfloor 418 / 64 \rfloor = 6$
+역검산: $6 \times 1024 + 34 \times 16 + 11 = 6699$
+
+→ **set 34를 보고, 저장된 tag가 6이고 valid = 1이면 hit. 그 line의 11번째 byte를 반환.**
+
+### (b) 2-way set-associative
+
+$S = 1024 / (16 \times 2) = 32$ sets → $s = 5$, $t = 7$
+
+```text
+ bit:   15 14 13 12 11 10  9 |  8  7  6  5  4 |  3  2  1  0
+         0  0  0  1  1  0  1 |  0  0  0  1  0 |  1  0  1  1
+        └───── Tag (7) ──────┘└─ Index (5) ───┘└─ Offset ─┘
+```
+
+- Tag = `0001101` = **13 (0x0D)**, Index = `00010` = **2**
+- 검산: $418 \bmod 32 = 2$, $\lfloor 418 / 32 \rfloor = 13$
+
+### (c) 4-way set-associative
+
+$S = 16$ sets → $s = 4$, $t = 8$
+
+- Tag = `00011010` = **0x1A**, Index = `0010` = **2**
+- hex 경계에 딱 맞아서 읽기 쉽다: 0x1A | 2 | B
+
+### (d) Fully associative
+
+$S = 1$ → $s = 0$, $t = 12$. Tag = 상위 12 bit = **0x1A2**, index 없음.
+
+### 정리
+
+| 구성 | Sets | Tag bits | Index bits | Offset bits | Tag | Index | Offset |
+|---|---|---|---|---|---|---|---|
+| Direct-mapped | 64 | 6 | 6 | 4 | 0x06 | 34 | 11 |
+| 2-way | 32 | 7 | 5 | 4 | 0x0D | 2 | 11 |
+| 4-way | 16 | 8 | 4 | 4 | 0x1A | 2 | 11 |
+| Fully assoc. | 1 | 12 | 0 | 4 | 0x1A2 | – | 11 |
+
+<Aside type="tip" title="패턴">
+associativity가 2배가 되면 set 수가 절반 → **index 1 bit가 tag로 넘어간다.** offset은 block 크기로만 정해진다.
+</Aside>
+
+### 충돌하는 주소 찾기
+
+0x1A2B와 **index는 같고 tag만 다른** 주소, 예를 들어 1 KB 떨어진 0x1E2B:
+
+```text
+ 0x1E2B = 0001 1110 0010 1011
+          tag=000111 (7), index=100010 (34), offset=1011
+```
+
+direct-mapped에서 set 34를 두고 tag 6과 7이 경쟁한다. 두 주소를 번갈아 접근하면 **매번 miss**다. 2-way에서는 둘 다 set 2로 가지만 way가 2개라서 **둘 다 들어간다.**
+
+### 저장 공간 오버헤드 (direct-mapped, write-back)
+
+line당 Tag 6 + Valid 1 + Dirty 1 = 8 bit. 64 lines × 8 bit = 512 bit = **64 B**. 데이터 1 KB 대비 **6.25%**가 추가로 필요하다.
+
+## 코드: 주소 분할기
+
+```python
+import math
+
+def split_addr(addr, cache_bytes, block_bytes, ways, addr_bits=16):
+    sets = cache_bytes // (block_bytes * ways)
+    ob = int(math.log2(block_bytes))
+    ib = int(math.log2(sets))
+    tb = addr_bits - ib - ob
+    offset = addr & (block_bytes - 1)
+    index  = (addr >> ob) & (sets - 1)
+    tag    = addr >> (ob + ib)
+    return tag, index, offset, (tb, ib, ob)
+
+def show_split(addr, cache_bytes, block_bytes, ways, addr_bits=16):
+    tag, idx, off, (tb, ib, ob) = split_addr(addr, cache_bytes, block_bytes, ways, addr_bits)
+    b = format(addr, f"0{addr_bits}b")
+    name = "fully" if ib == 0 else f"{ways}-way"
+    print(f"{name:>6s}: {b[:tb]} | {b[tb:tb+ib] or '-'} | {b[tb+ib:]}"
+          f"   tag=0x{tag:X}({tag})  index={idx}  offset={off}   [t={tb}, s={ib}, b={ob}]")
+
+print("=== 0x1A2B, 1KB cache, 16B block ===")
+for w in [1, 2, 4, 64]:
+    show_split(0x1A2B, 1024, 16, w)
+
+print("\n=== 0x1E2B (1KB 떨어진 주소) ===")
+for w in [1, 2]:
+    show_split(0x1E2B, 1024, 16, w)
+```
+
+직접 해볼 것: block 크기를 32 B, 64 B로 바꾸면 offset과 index 비트가 어떻게 이동하는지 보자.
+
+## 흔한 오해
+
+<Aside type="caution" title="Index는 주소의 하위 비트다?">
+하위 비트는 **offset**이다. index는 offset 바로 위의 **중간 비트**다. offset을 index로 쓰면 같은 block 안의 byte들이 서로 다른 set으로 흩어져서 block 개념 자체가 깨진다.
+</Aside>
+
+<Aside type="caution" title="1 KB cache = 저장 공간 1 KB?">
+데이터 용량만 말하는 것이다. tag, valid, dirty bit가 따로 필요하다 (위 예시에서 6.25%).
+</Aside>
+
+## Efficient ML 연결
+
+**Power-of-2 간격과 conflict miss.** 0x1A2B와 0x1E2B처럼 정확히 cache 크기(또는 그 약수 간격)만큼 떨어진 주소들은 같은 set으로 몰린다. DL 텐서는 차원이 64, 128, 1024처럼 2의 거듭제곱인 경우가 많아서, 행렬의 행(row)들이 같은 set으로 몰리기 쉽다. 그래서 BLAS/GEMM 라이브러리가 **leading dimension에 padding**을 넣기도 한다. 이 현상은 12번 레슨(tiling)에서 시뮬레이터로 직접 확인한다.
+
+**GPU shared memory bank.** GPU shared memory도 주소의 특정 비트로 bank를 고르는 구조라서 같은 원리의 충돌(bank conflict)이 생기고, 같은 방법(padding)으로 해결한다 (19번 레슨).
+
+## 체크 퀴즈
+
+<Quiz
+  q="Cache 4 KB, block 64 B, 4-way set-associative일 때 set 개수는?"
+  options={['64', '16', '256', '4']}
+  answer={1}
+  explain="S = C / (B × A) = 4096 / (64 × 4) = 16. 64는 associativity를 빼먹고 line 수를 구한 값이다."
+/>
+
+<Quiz
+  q="32-bit 주소, cache 32 KB, block 64 B, 8-way일 때 offset / index / tag 비트 수는?"
+  options={['6 / 9 / 17', '6 / 6 / 20', '5 / 6 / 21', '6 / 3 / 23']}
+  answer={1}
+  explain="offset = log2(64) = 6. set 수 = 32768 / (64 × 8) = 64이므로 index = 6. tag = 32 - 6 - 6 = 20. 6 / 9 / 17은 direct-mapped(512 sets)일 때의 값이다."
+/>
+
+<Quiz
+  q="1 KB direct-mapped cache, block 16 B, 16-bit 주소에서 0x1A2B의 index는?"
+  options={['2', '34', '6', '11']}
+  answer={1}
+  explain="block address = 0x1A2B / 16 = 418, set 수 = 64, index = 418 mod 64 = 34. 6은 tag, 11은 offset, 2는 2-way일 때의 index다."
+/>
+
+<Quiz
+  q="같은 cache 크기와 block 크기에서 associativity를 2배로 늘리면?"
+  options={['offset 비트가 1 늘어난다', 'index 비트가 1 줄고 tag 비트가 1 늘어난다', 'tag 비트가 1 줄어든다', '아무 변화 없다']}
+  answer={1}
+  explain="set 수가 절반이 되므로 index가 1 bit 줄고, 그 비트가 tag로 넘어간다. offset은 block 크기로만 정해지므로 그대로다."
+/>
+
+<Quiz
+  q="Direct-mapped cache에서 0x1A2B와 0x1E2B(1 KB 차이)를 번갈아 접근하면 어떤 일이 생기나?"
+  options={['둘 다 hit', '같은 set을 두고 서로를 계속 쫓아내서 매번 miss', '서로 다른 set이라 영향 없음', 'offset이 달라서 같은 line을 공유']}
+  answer={1}
+  explain="둘은 index(34)가 같고 tag(6과 7)만 다르다. direct-mapped는 set당 자리가 하나라서 번갈아 접근할 때마다 서로를 쫓아낸다. 2-way면 둘 다 들어간다."
+/>
+
+## 더 읽을거리
+
+- [CPU cache (Wikipedia)](https://en.wikipedia.org/wiki/CPU_cache)
+- [What Every Programmer Should Know About Memory (Ulrich Drepper, 2007)](https://people.freebsd.org/~lstewart/articles/cpumemory.pdf)

@@ -1,0 +1,261 @@
+---
+title: "Memory hierarchy와 AMAT"
+description: "DRAM이 CPU보다 수백 배 느린 문제를 cache 계층으로 메우는 원리와 평균 접근 시간 계산"
+track: arch-foundations
+est: 25min
+sidebar:
+  order: 7
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+3 GHz CPU의 1 사이클은 약 0.33 ns인데, DRAM 접근은 대략 60~100 ns, 즉 **200~300 사이클**이 걸린다. CPU는 수십 년간 빠르게 좋아졌지만 DRAM latency는 거의 그대로였다. 이 격차를 **processor-memory gap**, 또는 **memory wall**이라고 부른다.
+
+cache가 없다면? 명령어마다 fetch로 메모리 접근 1번, load/store가 35%라고 하면
+
+$$
+CPI = 1 + \underbrace{1 \times 200}_{\text{instruction fetch}} + \underbrace{0.35 \times 200}_{\text{data access}} = 271
+$$
+
+pipeline을 아무리 잘 만들어도 CPU는 시간의 99.6%를 메모리를 기다리며 보낸다.
+
+## 직관: 책상, 책장, 도서관, 창고
+
+```text
+ ┌──────────────┐
+ │  손에 든 책    │  Register      바로 봄        몇 권
+ ├──────────────┤
+ │  책상 위       │  L1 cache      1초            10권
+ ├──────────────┤
+ │  방 책장       │  L2 cache      10초           100권
+ ├──────────────┤
+ │  학교 도서관    │  L3 / DRAM     10분           수만 권
+ ├──────────────┤
+ │  다른 도시 창고 │  SSD / Disk    며칠           무한대
+ └──────────────┘
+```
+
+- 도서관에서 책을 빌릴 때 **한 권만** 가져오지 않고 옆에 꽂힌 관련 책까지 묶음으로 가져온다. 옆 책도 곧 볼 가능성이 높으니까. → **block (cache line)**, spatial locality
+- 한 번 본 책은 책상에 **놔둔다.** 곧 다시 볼 가능성이 높으니까. → temporal locality
+- 책상이 꽉 차면 **제일 오래 안 본 책**을 책장으로 돌려보낸다. → LRU replacement
+
+실제 하드웨어 숫자(현대 데스크톱 CPU 기준, 대략):
+
+```text
+                ┌─────┐
+                │ Reg │   ~0.3 ns              ~수백 B
+               ┌┴─────┴┐
+               │  L1   │   ~1 ns   (~4 cycle)   32–64 KB / core
+              ┌┴───────┴┐
+              │   L2    │  ~3–5 ns (~12 cycle)  256 KB – 2 MB / core
+            ┌─┴─────────┴─┐
+            │     L3      │ ~10–20 ns (~40 cycle) 수 MB – 수십 MB (코어 공유)
+         ┌──┴─────────────┴──┐
+         │       DRAM        │ ~60–100 ns (200+ cycle)  수 GB – 수백 GB
+      ┌──┴───────────────────┴──┐
+      │       SSD / Flash       │ ~10–100 μs          TB
+      └─────────────────────────┘
+       위로 갈수록: 빠름, 작음, bit당 비쌈
+```
+
+## 용어 정의
+
+**Memory hierarchy (메모리 계층 구조)**: 빠르고 작은 메모리를 CPU 가까이, 느리고 큰 메모리를 멀리 배치해서 큰 메모리를 빠른 메모리 속도로 쓰는 것처럼 보이게 하는 구조.
+*Multiple levels of memory with different speeds and sizes, so the system appears as large as the largest level and nearly as fast as the fastest.*
+
+**Cache (캐시)**: 하위 메모리의 일부 복사본을 보관하는 작고 빠른 메모리. 하드웨어가 자동으로 관리한다.
+*A small, fast memory that holds copies of data from a larger, slower memory, managed automatically by hardware.*
+
+**Block / Cache line (블록 / 캐시 라인)**: cache와 하위 메모리 사이에서 주고받는 최소 단위. 보통 64 B.
+*The minimum unit of data transferred between a cache and the next level.*
+
+**Hit / Miss (히트 / 미스)**: 요청한 데이터가 cache에 있으면 hit, 없으면 miss. Miss rate = 1 − Hit rate.
+
+**Hit time (히트 시간)**: hit일 때 데이터를 얻는 데 걸리는 시간 (tag 비교 포함).
+*The time to access the cache, including determining hit or miss.*
+
+**Miss penalty (미스 페널티)**: miss가 났을 때 하위 계층에서 block을 가져오는 데 **추가로** 드는 시간.
+*The additional time to fetch a block from the lower level.*
+
+<Aside type="note" title="cache가 잘 동작하는 이유: locality">
+프로그램은 최근에 쓴 데이터를 곧 다시 쓰고(temporal locality), 최근에 쓴 주소 근처를 곧 쓰는(spatial locality) 경향이 있다. locality는 10번 레슨에서 깊게 다룬다.
+</Aside>
+
+## AMAT (Average Memory Access Time)
+
+**AMAT (평균 메모리 접근 시간)**: 메모리 접근 한 번에 평균적으로 걸리는 시간.
+*The average time to access memory, considering both hits and misses.*
+
+모든 접근은 일단 cache를 확인해야 하므로 hit time은 항상 든다. 그중 miss rate 비율만큼은 miss penalty가 추가된다.
+
+$$
+\boxed{AMAT = \text{Hit time} + \text{Miss rate} \times \text{Miss penalty}}
+$$
+
+### 2단계 cache (L1 + L2)
+
+L1의 miss penalty는 곧 "L2에 접근하는 평균 시간"이므로 재귀적으로 펼친다.
+
+$$
+AMAT = HT_{L1} + MR_{L1} \times \underbrace{\left(HT_{L2} + MR_{L2,local} \times MP_{L2}\right)}_{\text{L1의 miss penalty}}
+$$
+
+**Local miss rate (로컬 미스율)**: 그 cache에 **도착한 접근** 중 miss 비율. L2의 local miss rate = L2 miss 수 / L2 접근 수(= L1 miss 수).
+
+**Global miss rate (글로벌 미스율)**: CPU가 낸 **전체 접근** 중 그 cache까지 miss가 난 비율.
+
+$$
+MR_{L2,global} = MR_{L1} \times MR_{L2,local}
+$$
+
+### CPI와 연결
+
+$$
+CPI = CPI_{base} + \sum_{\text{I-cache, D-cache}} \frac{\text{memory accesses}}{\text{instruction}} \times \text{Miss rate} \times \text{Miss penalty}
+$$
+
+hit time은 pipeline에 이미 포함되어 있다고 보고, **miss로 인한 stall만** 더한다.
+
+## Worked example: AMAT와 CPI
+
+**설정**
+- L1 hit time 1 cycle, L1 I-cache miss rate 2%, L1 D-cache miss rate 5%
+- L2 hit time 10 cycles, L2 local miss rate 20%
+- DRAM miss penalty 200 cycles
+- load/store 비율 35%, $CPI_{base} = 1.0$
+
+**Step 1. L1 miss penalty (= L2 평균 접근 시간)**
+
+$$
+MP_{L1} = 10 + 0.2 \times 200 = 50 \text{ cycles}
+$$
+
+**Step 2. AMAT (data 기준)**
+
+$$
+AMAT_D = 1 + 0.05 \times 50 = 3.5 \text{ cycles}
+$$
+
+L2가 없었다면 $1 + 0.05 \times 200 = 11$ cycles. L2가 AMAT를 3.1배 개선한다.
+
+**Step 3. L2 global miss rate**
+
+$$
+0.05 \times 0.2 = 0.01 = 1\%
+$$
+
+**Step 4. CPI**
+
+$$
+\text{I-cache stall} = 1.0 \times 0.02 \times 50 = 1.0, \qquad \text{D-cache stall} = 0.35 \times 0.05 \times 50 = 0.875
+$$
+
+$$
+CPI = 1.0 + 1.0 + 0.875 = 2.875
+$$
+
+| 구성 | Memory stall CPI | 총 CPI | 이상적 대비 |
+|---|---|---|---|
+| 완벽한 cache (miss 0) | 0 | 1.0 | 1.0× |
+| L1 + L2 | 1.875 | 2.875 | 2.9× 느림 |
+| L1만 (miss → DRAM 200) | 4 + 3.5 = 7.5 | 8.5 | 8.5× 느림 |
+| Cache 없음 | 1.35 × 200 = 270 | 271 | 271× 느림 |
+
+<Aside type="tip" title="Amdahl 관점">
+L1 + L2 구성에서도 CPI 2.875 중 **65%**(1.875)가 메모리 stall이다. pipeline hazard를 줄이는 것보다 cache miss를 줄이는 게 훨씬 큰 이득이다.
+</Aside>
+
+## 코드: AMAT / CPI 계산기
+
+```python
+def amat(ht, mr, mp):
+    return ht + mr * mp
+
+mp_l1 = amat(10, 0.20, 200)            # L1 miss penalty = L2의 AMAT
+print(f"L1 miss penalty = {mp_l1} cycles")
+print(f"AMAT_D (L1+L2)  = {amat(1, 0.05, mp_l1):.2f} cycles")
+print(f"AMAT_D (L1만)   = {amat(1, 0.05, 200):.2f} cycles")
+print(f"L2 global miss rate = {0.05 * 0.20 * 100:.1f}%")
+
+def cpi(base, i_mr, d_mr, ls_frac, mp):
+    return base + 1.0 * i_mr * mp + ls_frac * d_mr * mp
+
+print(f"\nCPI (L1+L2)  = {cpi(1.0, 0.02, 0.05, 0.35, mp_l1):.3f}")
+print(f"CPI (L1만)   = {cpi(1.0, 0.02, 0.05, 0.35, 200):.3f}")
+print(f"CPI (no $)   = {cpi(1.0, 1.0, 1.0, 0.35, 200):.3f}")
+
+# L2 local miss rate를 바꿔보면?
+for mr2 in [0.05, 0.1, 0.2, 0.4, 0.8]:
+    print(f"L2 local MR={mr2:.2f} -> AMAT_D={amat(1, 0.05, amat(10, mr2, 200)):.2f} cycles")
+```
+
+## 흔한 오해
+
+<Aside type="caution" title="Miss rate만 보면 된다?">
+봐야 하는 건 **AMAT**다. miss rate가 조금 낮아도 hit time이 길어지면 더 느려질 수 있다.
+</Aside>
+
+<Aside type="caution" title="L2 miss rate 20%는 너무 나쁘다?">
+L2의 local miss rate가 20~50%로 높아 보이는 건 정상이다. L2는 L1이 걸러낸 "어려운" 접근만 받기 때문이다. 전체 접근 기준(global)으로 보면 1% 수준이다.
+</Aside>
+
+## Efficient ML 연결
+
+**"연산보다 데이터 이동이 비싸다"** — MIT 6.5940 초반 강의에서 인용하는 Horowitz(ISSCC 2014, 45 nm)의 에너지 표다. 대략 이런 숫자다.
+
+| 연산 | 에너지 (대략) | 상대 비용 |
+|---|---|---|
+| 32-bit int ADD | 0.1 pJ | 1× |
+| 32-bit float MULT | 3.7 pJ | 37× |
+| 32-bit SRAM (8 KB) read | 5 pJ | 50× |
+| 32-bit **DRAM** read | 640 pJ | **6400×** |
+
+DRAM에서 숫자 하나 읽는 게 곱셈보다 100배 이상 비싸다. 배터리로 도는 edge 디바이스에서는 **DRAM 접근을 얼마나 줄이느냐가 곧 효율**이다.
+
+**MCU의 메모리 계층.** Cortex-M MCU는 보통 SRAM(수백 KB, activation)과 Flash(1~2 MB 정도, weight)로 구성되고 cache가 없거나 작다. 그래서 TinyML에서는 **peak SRAM 사용량**이 모델을 올릴 수 있는지를 결정한다 (MCUNet).
+
+**Edge LLM decoding.** 7B 모델을 INT4로 줄여도 약 3.5 GB라서 cache에 전혀 안 들어간다. 토큰 하나를 만들 때마다 weight 전체를 DRAM에서 읽어야 하므로 대략
+
+$$
+\text{tokens/s 상한} \approx \frac{\text{메모리 대역폭}}{\text{모델 크기 (bytes)}}
+$$
+
+대역폭이 약 50 GB/s인 노트북이면 3.5 GB 모델은 초당 15 토큰 정도가 상한이다. 연산이 아니라 메모리가 속도를 결정한다.
+
+## 체크 퀴즈
+
+<Quiz
+  q="Hit time 1 cycle, miss rate 5%, miss penalty 50 cycles일 때 AMAT는?"
+  options={['2.5 cycles', '3.5 cycles', '51 cycles', '1.05 cycles']}
+  answer={1}
+  explain="AMAT = 1 + 0.05 × 50 = 3.5. hit time은 miss든 hit든 항상 들기 때문에 더해야 한다. 2.5는 hit time을 빼먹은 값이다."
+/>
+
+<Quiz
+  q="L1 miss rate 5%, L2 local miss rate 20%일 때 L2의 global miss rate는?"
+  options={['25%', '1%', '20%', '4%']}
+  answer={1}
+  explain="global = L1 miss rate × L2 local miss rate = 0.05 × 0.2 = 0.01. 전체 접근 100번 중 L1을 놓친 5번이 L2로 가고, 그중 20%인 1번이 DRAM까지 간다."
+/>
+
+<Quiz
+  q="L2 hit time 10, L2 local miss rate 20%, DRAM penalty 200일 때 L1의 miss penalty는?"
+  options={['10 cycles', '50 cycles', '210 cycles', '40 cycles']}
+  answer={1}
+  explain="L1의 miss penalty는 L2의 AMAT다: 10 + 0.2 × 200 = 50. 40은 L2 hit time을 빼먹은 값이고, 210은 L2를 항상 miss로 본 값이다."
+/>
+
+<Quiz
+  q="Horowitz 에너지 표 기준으로, 32-bit DRAM read는 32-bit float 곱셈보다 대략 몇 배 비싼가?"
+  options={['약 2배', '약 10배', '약 170배', '약 6400배']}
+  answer={2}
+  explain="640 pJ / 3.7 pJ ≈ 170배. 6400배는 int ADD(0.1 pJ) 대비 값이다. 어느 쪽이든 데이터 이동이 연산보다 압도적으로 비싸다는 결론은 같다."
+/>
+
+## 더 읽을거리
+
+- [Memory hierarchy (Wikipedia)](https://en.wikipedia.org/wiki/Memory_hierarchy)
+- [Computing's Energy Problem (and what we can do about it), M. Horowitz, ISSCC 2014](https://ieeexplore.ieee.org/document/6757323)
+- [MCUNet: Tiny Deep Learning on IoT Devices (Lin et al., 2020)](https://arxiv.org/abs/2007.10319)

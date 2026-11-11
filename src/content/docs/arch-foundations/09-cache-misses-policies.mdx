@@ -1,0 +1,266 @@
+---
+title: "3C miss, 교체 정책, 쓰기 정책"
+description: "miss가 왜 났는지 분류하고, 어떤 block을 쫓아낼지와 쓰기를 어떻게 처리할지 정하기"
+track: arch-foundations
+est: 30min
+sidebar:
+  order: 9
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+miss를 줄이려면 먼저 miss가 **왜** 났는지 알아야 한다. 처음 보는 데이터라서? cache가 작아서? 자리 배치가 나빠서? 원인에 따라 처방이 완전히 다르다. cache를 키워야 할지, associativity를 늘려야 할지, 접근 패턴을 바꿔야 할지 결정하려면 miss를 분류할 수 있어야 한다.
+
+## Replacement policy (교체 정책)
+
+miss가 났는데 set이 꽉 차 있으면 하나를 쫓아내야 한다.
+
+**LRU, Least Recently Used (최근 최소 사용)**: 가장 오래전에 사용된 block을 교체.
+*Replaces the block that has been unused for the longest time.*
+
+| 정책 | 특징 |
+|---|---|
+| **LRU** | temporal locality를 잘 활용. way가 많으면 정확한 구현이 비싸서 실제로는 **pseudo-LRU** |
+| **Random** | 구현이 간단. way가 많으면 LRU와 성능 차이가 크지 않음 |
+| **FIFO** | 들어온 순서대로 내보냄 |
+
+direct-mapped는 후보가 하나라서 정책이 필요 없다.
+
+## Write policy (쓰기 정책)
+
+### Store hit일 때
+
+**Write-through (라이트 스루)**: cache와 하위 메모리에 **동시에** 쓴다. 단순하지만 메모리 traffic이 많다. 보통 write buffer와 같이 쓴다.
+*Writes update both the cache and the next lower level.*
+
+**Write-back (라이트 백)**: cache에만 쓰고, 그 block이 **교체될 때** 하위 메모리에 쓴다.
+*Writes update only the cache; modified blocks are written to the lower level when replaced.*
+
+**Dirty bit (더티 비트)**: line이 cache에 올라온 뒤 수정되었는지 표시하는 1 bit. write-back에서 교체 시 하위에 써야 하는지 판단한다.
+
+### Store miss일 때
+
+- **Write-allocate**: block을 cache로 가져온 뒤 쓴다 (보통 write-back과 짝)
+- **No-write-allocate**: cache는 건드리지 않고 하위 메모리에만 쓴다 (보통 write-through와 짝)
+
+## Miss의 3C 분류
+
+**Compulsory miss (강제 미스, cold miss)**: 그 block에 **처음** 접근할 때 생기는 miss. cache가 무한히 커도 생긴다.
+*A miss caused by the first access to a block that has never been in the cache.*
+
+**Capacity miss (용량 미스)**: cache가 프로그램이 쓰는 데이터를 **다 담을 수 없어서** 쫓겨났다가 다시 접근할 때 생기는 miss. fully associative여도 생긴다.
+*A miss occurring because the cache cannot contain all the blocks needed, even with full associativity.*
+
+**Conflict miss (충돌 미스)**: 전체 공간은 남는데 **같은 set에 너무 많은 block이 몰려서** 생기는 miss. 같은 크기의 fully associative라면 생기지 않았을 miss.
+*A miss that occurs because multiple blocks compete for the same set.*
+
+### 분류하는 방법 (시뮬레이션 기준)
+
+1. 처음 보는 block이면 → **compulsory**
+2. 같은 크기의 **fully associative LRU** cache에서도 miss면 → **capacity**
+3. 나머지 (fully associative에서는 hit였을 것) → **conflict**
+
+<Aside type="note" title="4번째 C">
+멀티코어에서는 다른 코어의 쓰기 때문에 내 복사본이 무효화되어 생기는 **coherence miss**가 있다. 17번 레슨에서 다룬다.
+</Aside>
+
+### 설계 파라미터가 3C에 미치는 영향
+
+| 변경 | Compulsory | Capacity | Conflict | 부작용 |
+|---|---|---|---|---|
+| Cache 크기 ↑ | – | ↓ | ↓ | hit time ↑, 면적/전력 ↑ |
+| Associativity ↑ | – | – | ↓ | hit time ↑, 비교기 ↑ |
+| Block 크기 ↑ | ↓ (spatial locality) | 너무 크면 ↑ | 너무 크면 ↑ | **miss penalty ↑**, 안 쓰는 데이터까지 가져옴 |
+
+## Worked example: 접근 시퀀스 추적
+
+**설정**: 4 block 용량의 cache, block address 시퀀스 **0, 8, 0, 6, 8**, LRU.
+
+### (a) Direct-mapped (4 sets)
+
+index = block address mod 4
+
+| 접근 | Index | 결과 | 이후 Set 상태 [0, 1, 2, 3] | 분류 |
+|---|---|---|---|---|
+| 0 | 0 | Miss | [0, –, –, –] | compulsory |
+| 8 | 0 | Miss | [**8**, –, –, –] (0 쫓겨남) | compulsory |
+| 0 | 0 | Miss | [**0**, –, –, –] (8 쫓겨남) | **conflict** |
+| 6 | 2 | Miss | [0, –, 6, –] | compulsory |
+| 8 | 0 | Miss | [**8**, –, 6, –] | **conflict** |
+
+→ **5 miss / 5 접근**. set 1, 3은 비어 있는데도 0과 8이 계속 싸운다.
+
+### (b) 2-way set-associative (2 sets)
+
+index = block address mod 2
+
+| 접근 | Set | 결과 | Set 0 상태 (LRU → MRU) | 분류 |
+|---|---|---|---|---|
+| 0 | 0 | Miss | [0] | compulsory |
+| 8 | 0 | Miss | [0, 8] | compulsory |
+| 0 | 0 | **Hit** | [8, 0] | – |
+| 6 | 0 | Miss | [0, 6] (LRU인 8 쫓겨남) | compulsory |
+| 8 | 0 | Miss | [6, 8] (LRU인 0 쫓겨남) | **conflict** |
+
+→ **4 miss**. 0, 8, 6이 전부 짝수라서 set 0에 몰렸다.
+
+### (c) Fully associative (1 set, 4 ways)
+
+| 접근 | 결과 | 상태 |
+|---|---|---|
+| 0 | Miss | [0] |
+| 8 | Miss | [0, 8] |
+| 0 | **Hit** | [8, 0] |
+| 6 | Miss | [8, 0, 6] |
+| 8 | **Hit** | [0, 6, 8] |
+
+→ **3 miss** (전부 compulsory)
+
+### 3C 집계
+
+| | Compulsory | Capacity | Conflict | 총 miss |
+|---|---|---|---|---|
+| Direct-mapped | 3 | 0 | 2 | 5 |
+| 2-way | 3 | 0 | 1 | 4 |
+| Fully assoc. | 3 | 0 | 0 | 3 |
+
+distinct block이 3개이고 cache가 4 block이므로 capacity miss는 0이다. 나머지는 전부 **배치 제약** 때문에 생긴 conflict miss다.
+
+## 코드: LRU cache 시뮬레이터 + 3C 분류
+
+```python
+from collections import OrderedDict
+
+class Cache:
+    def __init__(self, cache_bytes, block_bytes, ways):
+        self.B, self.W = block_bytes, ways
+        self.S = cache_bytes // (block_bytes * ways)
+        self.sets = [OrderedDict() for _ in range(self.S)]   # 앞 = LRU, 뒤 = MRU
+
+    def access(self, addr):
+        blk = addr // self.B
+        idx, tag = blk % self.S, blk // self.S
+        s = self.sets[idx]
+        if tag in s:
+            s.move_to_end(tag)
+            return True
+        if len(s) >= self.W:
+            s.popitem(last=False)          # LRU 쫓아내기
+        s[tag] = True
+        return False
+
+def classify(trace, cache_bytes, block_bytes, ways):
+    """3C 분류: 같은 크기 fully-associative LRU와 비교"""
+    real = Cache(cache_bytes, block_bytes, ways)
+    fa   = Cache(cache_bytes, block_bytes, cache_bytes // block_bytes)
+    seen = set()
+    c = dict(hit=0, compulsory=0, capacity=0, conflict=0)
+    seq = []
+    for a in trace:
+        blk = a // block_bytes
+        hit, fa_hit = real.access(a), fa.access(a)
+        if hit:                c["hit"] += 1;        seq.append("H")
+        elif blk not in seen:  c["compulsory"] += 1; seq.append("M(cold)")
+        elif not fa_hit:       c["capacity"] += 1;   seq.append("M(cap)")
+        else:                  c["conflict"] += 1;   seq.append("M(conf)")
+        seen.add(blk)
+    return c, seq
+
+# Worked example: block 0, 8, 0, 6, 8 / 4-block cache
+B = 16
+trace = [blk * B for blk in [0, 8, 0, 6, 8]]
+for w, name in [(1, "direct"), (2, "2-way"), (4, "fully")]:
+    c, seq = classify(trace, 4 * B, B, w)
+    print(f"{name:7s} {' '.join(seq):45s} {c}")
+
+# 배열 접근 패턴 (1KB cache, 16B block, int32 = 4B)
+def run(trace, ways=1, label=""):
+    c, _ = classify(trace, 1024, 16, ways)
+    miss = len(trace) - c["hit"]
+    print(f"{label:38s} miss rate={miss/len(trace)*100:6.1f}%   {c}")
+
+print()
+N = 1024
+run([4 * i for i in range(N)],          label="stride 1 (연속 접근)")
+run([16 * i for i in range(N)],         label="stride 16B (매번 새 block)")
+
+def dot_trace(base_a, base_b, n=256):    # a[i] * b[i]
+    t = []
+    for i in range(n):
+        t += [base_a + 4 * i, base_b + 4 * i]
+    return t
+run(dot_trace(0, 1024),      ways=1, label="direct, b = a + 1024 (cache 크기)")
+run(dot_trace(0, 1024),      ways=2, label="2-way,  b = a + 1024")
+run(dot_trace(0, 1024 + 16), ways=1, label="direct, b = a + 1040 (16B padding)")
+```
+
+볼 포인트:
+- stride 1은 4번 중 1번만 miss(25%, 전부 compulsory)다. block 하나(16 B)에 int가 4개 들어 있기 때문이다. stride 16 B는 **매번 miss(100%)**다.
+- 두 배열이 **정확히 cache 크기만큼** 떨어져 있으면 direct-mapped에서 a[i]와 b[i]가 같은 set을 두고 싸워서 **miss rate 100%**가 나온다. 2-way로 바꾸거나 **16 B만 padding**해도 25%로 떨어진다.
+
+## 흔한 오해
+
+<Aside type="caution" title="Associativity는 높을수록 무조건 좋다?">
+conflict miss는 줄지만 비교기가 늘고 MUX가 깊어져서 **hit time과 전력이 늘어난다.** 대략 8-way를 넘으면 miss rate 개선 폭이 작아진다. L1이 보통 8-way 정도에 머무는 이유다.
+</Aside>
+
+<Aside type="caution" title="Block이 클수록 좋다?">
+spatial locality 덕분에 compulsory miss는 줄지만, cache 크기가 고정이면 block 수가 줄어서 conflict/capacity miss가 늘고, **miss penalty가 커지고**, 안 쓸 데이터까지 가져와 대역폭을 낭비한다.
+</Aside>
+
+<Aside type="caution" title="Conflict miss는 direct-mapped에서만 생긴다?">
+2-way, 4-way에서도 생긴다 (위 예시 (b)). **fully associative에서만 정의상 0**이다.
+</Aside>
+
+## Efficient ML 연결
+
+**Quantization = 같은 cache에 더 많이 넣기.** FP32 → INT8이면 weight 크기가 1/4이 된다. 같은 cache/SRAM에 4배 많은 weight가 들어가므로 **capacity miss가 줄고**, DRAM에서 가져오는 byte도 1/4로 줄어서 miss penalty(전송량)도 줄어든다. quantization이 연산 자체를 빠르게 하는 효과만큼 메모리 계층에서 얻는 이득이 크다.
+
+**MCU의 scratchpad.** MCU SRAM, GPU shared memory, FPGA BRAM처럼 **프로그래머가 직접 관리하는** 빠른 메모리를 scratchpad memory라고 한다. 하드웨어 cache와 원리는 같지만 교체와 배치를 소프트웨어가 결정한다. TinyEngine 같은 TinyML 런타임은 컴파일 시점에 텐서 배치를 정적으로 계획해서 "miss"가 아예 안 생기게 만든다.
+
+**Edge LLM의 KV cache와 weight.** LLM decoding에서 weight는 토큰마다 한 번씩 전부 읽히고 다시 쓰이기까지 다른 weight를 수 GB 건드리므로, 사실상 **매번 capacity miss**다. 그래서 cache 최적화가 아니라 모델 크기 자체를 줄이는 방향(quantization, pruning)이 핵심이 된다.
+
+## 체크 퀴즈
+
+<Quiz
+  q="같은 크기의 fully associative LRU cache에서는 hit였을 접근이 실제 cache에서 miss가 났다. 이 miss의 종류는?"
+  options={['Compulsory', 'Capacity', 'Conflict', 'Coherence']}
+  answer={2}
+  explain="fully associative였다면 hit였다는 건 공간은 충분했는데 set 배치 제약 때문에 쫓겨났다는 뜻이므로 conflict miss다. fully associative에서도 miss였다면 capacity miss다."
+/>
+
+<Quiz
+  q="4-block direct-mapped cache에서 block 시퀀스 0, 8, 0, 6, 8을 접근하면 miss는 몇 번인가?"
+  options={['3', '4', '5', '2']}
+  answer={2}
+  explain="0과 8은 둘 다 index 0(mod 4)이라 서로를 계속 쫓아낸다. 0, 8, 0, 8이 전부 miss이고 6도 처음이라 miss → 5번. 4는 2-way, 3은 fully associative일 때의 값이다."
+/>
+
+<Quiz
+  q="Write-back cache에서 dirty bit의 역할은?"
+  options={['line이 유효한지 표시', 'line이 수정되었는지 표시해서 교체 시 하위 메모리에 써야 하는지 판단', 'LRU 순서 기록', 'tag 비교 결과 저장']}
+  answer={1}
+  explain="write-back은 cache에만 쓰므로, 교체할 때 그 line이 수정됐다면(dirty) 하위 메모리에 써줘야 한다. 유효 여부는 valid bit의 역할이다."
+/>
+
+<Quiz
+  q="Block 크기를 계속 키우면 생기는 문제가 아닌 것은?"
+  options={['miss penalty 증가', 'block 수 감소로 conflict/capacity miss 증가 가능', '안 쓰는 데이터까지 전송', 'compulsory miss 증가']}
+  answer={3}
+  explain="block이 커지면 한 번에 더 많은 인접 데이터를 가져오므로 compulsory miss는 오히려 줄어든다. 나머지 세 개는 실제 부작용이다."
+/>
+
+<Quiz
+  q="1 KB direct-mapped cache에서 a[i]와 b[i]를 번갈아 읽는데 b가 a로부터 정확히 1024 B 떨어져 있어 miss rate가 100%다. 가장 간단한 해결책은?"
+  options={['cache를 끈다', 'b의 시작 주소를 16 B 정도 padding해서 다른 set으로 보낸다', 'block 크기를 줄인다', 'stride를 늘린다']}
+  answer={1}
+  explain="a[i]와 b[i]가 같은 index를 공유해서 생긴 conflict miss다. 시작 주소를 block 하나만큼 밀면 서로 다른 set으로 가서 miss rate가 25%(compulsory만)로 떨어진다. 2-way로 바꿔도 해결된다."
+/>
+
+## 더 읽을거리
+
+- [Cache replacement policies (Wikipedia)](https://en.wikipedia.org/wiki/Cache_replacement_policies)
+- [Cache placement policies (Wikipedia)](https://en.wikipedia.org/wiki/Cache_placement_policies)
+- [What Every Programmer Should Know About Memory (Ulrich Drepper, 2007)](https://people.freebsd.org/~lstewart/articles/cpumemory.pdf)

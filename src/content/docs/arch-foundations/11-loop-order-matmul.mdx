@@ -1,0 +1,301 @@
+---
+title: "Loop order와 matmul miss 분석"
+description: "같은 O(N³) 행렬 곱이 루프 순서만으로 27배 차이 나는 이유를 종이 위에서 계산하기"
+track: arch-foundations
+est: 35min
+sidebar:
+  order: 11
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+행렬 곱 $C = AB$ ($N \times N$)를 C로 짜면 루프 3개짜리 코드다. 루프 순서는 6가지가 가능하고, **전부 같은 연산을 같은 횟수($N^3$번 MAC)** 한다. 그런데 클라우드 Xeon(gcc -O2, N = 1024)에서 직접 재보면
+
+| 루프 순서 | 시간 | 성능 |
+|---|---|---|
+| jki | 7.77 s | 0.28 GFLOP/s |
+| ijk | 0.80 s | 2.70 GFLOP/s |
+| **ikj** | **0.28 s** | **7.61 GFLOP/s** |
+
+**루프 순서만 바꿨는데 27배** 차이가 난다. Big-O는 연산 횟수만 세고 메모리 계층을 무시한다. 이 레슨에서는 루프 순서별 miss 수를 **실행하기 전에** 계산하는 법을 배운다.
+
+## Loop interchange
+
+**Loop interchange (루프 교환)**: 중첩 루프의 순서를 바꿔 메모리 접근 패턴을 개선하는 변환. 결과가 같아야 한다 (의존성 확인 필요).
+*Swapping the order of nested loops to improve access patterns without changing results.*
+
+## 분석 규칙
+
+$C[i][j] \mathrel{+}= A[i][k] \cdot B[k][j]$에서 **가장 안쪽 루프 변수**가 무엇이냐에 따라 각 배열의 stride가 정해진다. 분석은 가장 안쪽 루프 **1회 반복당 miss 수**로 한다.
+
+**가정**: $N$이 충분히 커서 column 하나 전체($N$개 line)는 cache에 안 들어간다. row 하나가 cache에 남는지는 경우를 나눠 본다.
+
+| 안쪽 변수가 그 배열에서 | stride | miss / iter |
+|---|---|---|
+| **열 인덱스**(두 번째 첨자) | 1 | $1/K$ |
+| **행 인덱스**(첫 번째 첨자) | $N$ | 1 |
+| **안 나옴** | – (register에 둠) | 0 |
+
+여기서 $K$ = cache line 하나에 든 원소 수 (float32 + 64 B line이면 16).
+
+## 루프 순서별 분석
+
+### ijk (그리고 jik): 안쪽 루프 k
+
+```c
+for (i...) for (j...) { sum = 0; for (k...) sum += A[i][k] * B[k][j]; C[i][j] = sum; }
+```
+
+| 배열 | 접근 | 안쪽 k에 대해 | miss / iter |
+|---|---|---|---|
+| A[i][k] | row 방향 | stride 1 | $1/K$ |
+| B[k][j] | **column 방향** | stride $N$ | **1** |
+| C[i][j] | 고정 | – | 0 |
+| **합계** | | | $1 + 1/K$ |
+
+### jki (그리고 kji): 안쪽 루프 i
+
+```c
+for (j...) for (k...) { r = B[k][j]; for (i...) C[i][j] += A[i][k] * r; }
+```
+
+| 배열 | 접근 | 안쪽 i에 대해 | miss / iter |
+|---|---|---|---|
+| A[i][k] | column 방향 | stride $N$ | 1 |
+| B[k][j] | 고정 | – | 0 |
+| C[i][j] | column 방향 | stride $N$ | 1 |
+| **합계** | | | **2** (최악) |
+
+### ikj (그리고 kij): 안쪽 루프 j
+
+```c
+for (i...) for (k...) { r = A[i][k]; for (j...) C[i][j] += r * B[k][j]; }
+```
+
+| 배열 | 접근 | 안쪽 j에 대해 | miss / iter |
+|---|---|---|---|
+| A[i][k] | 고정 | – | 0 |
+| B[k][j] | row 방향 | stride 1 | $1/K$ |
+| C[i][j] | row 방향 | stride 1 | $1/K$ 또는 ≈ 0 |
+| **합계** | | | $1/K \sim 2/K$ (최선) |
+
+C의 row i는 k 루프 내내 **같은 row**다. 그 row($N \cdot w$ byte)가 cache에 남아 있으면 첫 k에서만 miss라 ≈ 0이고, 안 남으면 매번 $1/K$다.
+
+### 정리 (K = 16)
+
+| 순서 | miss / iter | K = 16일 때 | ikj 대비 |
+|---|---|---|---|
+| jki, kji | 2 | 2.00 | 약 16~32× 나쁨 |
+| ijk, jik | $1 + 1/K$ | 1.06 | 약 8~17× 나쁨 |
+| **ikj, kij** | $1/K \sim 2/K$ | 0.06~0.125 | 1× |
+
+<Aside type="tip" title="외우는 법">
+**가장 안쪽 루프 변수가 모든 배열에서 마지막 첨자(열)로만 나오게** 하라. ikj에서 j는 B[k][j], C[i][j] 둘 다 마지막 첨자다.
+</Aside>
+
+## Worked example: 손 계산 vs 시뮬레이터
+
+설정: $N = 64$, float, cache 1 KB fully-associative LRU, line 32 B → **K = 8**, 총 line 32개.
+
+가정 확인:
+- column 하나 = 64 lines, cache 32 lines보다 크다 → column은 **안 남음**
+- row 하나 = 256 B = 8 lines → row는 **남을 수 있음**
+
+$N^3 = 262{,}144$
+
+**ijk**: B column이 매번 miss → $N^3 = 262{,}144$. A row(8 lines)는 (i, j)마다 다시 읽는데 사이에 B column 64 lines가 끼어서 쫓겨남 → $N^3/K = 32{,}768$. 이론 $\approx N^3(1 + 1/K) = 294{,}912$ (1.125 / iter).
+
+**jki**: A column, C column 둘 다 매번 miss → $2N^3 = 524{,}288$ (2.0 / iter).
+
+**ikj** (정확히 세기):
+- B: row k(8 lines)를 i마다 다시 읽음. B 전체 512 lines는 cache보다 훨씬 크므로 매번 miss → $64 \times 64 \times 8 = 32{,}768$
+- C: row i(8 lines)는 k 루프 내내 cache에 남음 → i마다 8 miss → $64 \times 8 = 512$
+- A: row i를 순차로 읽음 → $N^2 / K = 512$
+- 합계 = **33,792** (0.129 / iter)
+
+시뮬레이터 결과:
+
+```text
+order       misses  miss/iter        theory
+ijk         299008     1.1406       1 + 1/K
+jki         528384     2.0156             2
+ikj          33792     0.1289     1/K ~ 2/K
+```
+
+ikj는 손 계산이 **정확히** 맞고, ijk와 jki도 1~2% 안이다. jki → ikj로 바꾸면 miss가 **15.6배** 줄어든다.
+
+## 코드: matmul 접근 패턴 시뮬레이터
+
+몇 초 걸린다.
+
+```python
+from collections import OrderedDict
+
+class Cache:
+    def __init__(self, cache_bytes, line_bytes, ways=None):
+        lines = cache_bytes // line_bytes
+        self.W = ways or lines                 # None → fully associative
+        self.S = lines // self.W
+        self.L = line_bytes
+        self.sets = [OrderedDict() for _ in range(self.S)]
+        self.misses = 0
+
+    def access(self, addr):
+        blk = addr // self.L
+        s, tag = self.sets[blk % self.S], blk // self.S
+        if tag in s:
+            s.move_to_end(tag)
+        else:
+            self.misses += 1
+            if len(s) >= self.W:
+                s.popitem(last=False)
+            s[tag] = True
+
+def make_addr(N):
+    size = N * N * 4                            # float32, row-major
+    A = lambda i, k: 0        + (i * N + k) * 4
+    B = lambda k, j: size     + (k * N + j) * 4
+    C = lambda i, j: 2 * size + (i * N + j) * 4
+    return A, B, C
+
+def mm_trace(order, N, A, B, C):
+    """C[i][j] += A[i][k] * B[k][j] 의 메모리 접근 순서 (C는 read + write)"""
+    if order == "ijk":
+        for i in range(N):
+            for j in range(N):
+                for k in range(N):
+                    yield A(i, k); yield B(k, j)
+                yield C(i, j)
+    elif order == "jki":
+        for j in range(N):
+            for k in range(N):
+                yield B(k, j)
+                for i in range(N):
+                    yield A(i, k); yield C(i, j); yield C(i, j)
+    elif order == "ikj":
+        for i in range(N):
+            for k in range(N):
+                yield A(i, k)
+                for j in range(N):
+                    yield B(k, j); yield C(i, j); yield C(i, j)
+
+N, CACHE, LINE = 64, 1024, 32
+K = LINE // 4
+theory = {"ijk": "1 + 1/K", "jki": "2", "ikj": "1/K ~ 2/K"}
+print(f"N={N}, cache={CACHE}B fully-assoc LRU, line={LINE}B (K={K})")
+print(f"{'order':8s}{'misses':>10s}{'miss/iter':>11s}{'theory':>14s}")
+for order in ["ijk", "jki", "ikj"]:
+    A, B, C = make_addr(N)
+    c = Cache(CACHE, LINE)
+    for a in mm_trace(order, N, A, B, C):
+        c.access(a)
+    print(f"{order:8s}{c.misses:10d}{c.misses / N**3:11.4f}{theory[order]:>14s}")
+```
+
+## 실제 하드웨어에서: C 벤치마크
+
+Python으로는 인터프리터 오버헤드 때문에 cache 효과가 묻힌다. 실제 차이는 C로 봐야 한다.
+
+```c
+// gcc -O2 mm.c -o mm && ./mm
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#define N 1024
+static float A[N][N], B[N][N], C[N][N];
+
+static double now(void) {
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec + ts.tv_nsec * 1e-9;
+}
+static void ijk(void) {
+    for (int i = 0; i < N; i++)
+        for (int j = 0; j < N; j++) {
+            float sum = 0;
+            for (int k = 0; k < N; k++) sum += A[i][k] * B[k][j];
+            C[i][j] = sum;
+        }
+}
+static void jki(void) {
+    for (int j = 0; j < N; j++)
+        for (int k = 0; k < N; k++) {
+            float r = B[k][j];
+            for (int i = 0; i < N; i++) C[i][j] += A[i][k] * r;
+        }
+}
+static void ikj(void) {
+    for (int i = 0; i < N; i++)
+        for (int k = 0; k < N; k++) {
+            float r = A[i][k];
+            for (int j = 0; j < N; j++) C[i][j] += r * B[k][j];
+        }
+}
+int main(void) {
+    for (int i = 0; i < N; i++)
+        for (int j = 0; j < N; j++) { A[i][j] = rand() / (float)RAND_MAX; B[i][j] = rand() / (float)RAND_MAX; }
+    struct { const char *name; void (*f)(void); } v[] = {{"ijk", ijk}, {"jki", jki}, {"ikj", ikj}};
+    for (int t = 0; t < 3; t++) {
+        memset(C, 0, sizeof C);
+        double s = now(); v[t].f(); double e = now() - s;
+        printf("%-4s %7.3f s  %6.2f GFLOP/s\n", v[t].name, e, 2.0 * N * N * N / e / 1e9);
+    }
+    return 0;
+}
+```
+
+이론상 miss 비는 jki : ijk : ikj ≈ 2 : 1.06 : 0.06~0.125이고, 실측 시간 비는 7.77 : 0.80 : 0.28이다. 순서는 정확히 맞고, 정확한 배수가 다른 이유는 prefetcher와 SIMD 벡터화(ikj의 안쪽 루프는 연속 접근이라 컴파일러가 벡터화하기 쉽다) 때문이다.
+
+## 흔한 오해
+
+<Aside type="caution" title="Big-O가 같으면 속도도 비슷하다?">
+6가지 루프 순서 전부 $O(N^3)$인데 27배 차이가 났다. 현대 하드웨어에서는 **연산 횟수보다 데이터 이동**이 성능을 결정하는 경우가 많다.
+</Aside>
+
+<Aside type="caution" title="컴파일러가 알아서 루프 순서를 바꿔준다?">
+gcc -O2는 ijk를 ikj로 바꿔주지 않았다. 포인터 aliasing 가능성과 부동소수점 결합법칙 문제 때문에 컴파일러는 보수적이다. polyhedral 최적화가 있긴 하지만 믿을 수는 없다.
+</Aside>
+
+## Efficient ML 연결
+
+**TinyEngine의 loop reordering.** MIT 6.5940의 효율적 inference 시스템 강의에서 다루는 커널 최적화 목록 맨 앞이 **loop reordering**이다. MCU에서 conv를 짤 때도 원리는 같다: 안쪽 루프가 연속 메모리를 따라가게 순서를 정한다.
+
+**im2col + GEMM.** 많은 프레임워크가 conv를 행렬 곱(GEMM)으로 바꿔서 계산한다(im2col). 그러면 conv 최적화가 이 레슨의 matmul 최적화 문제로 바뀐다. 결국 대부분의 DL 연산 성능이 "행렬 곱을 메모리 친화적으로 하는 법"으로 귀결된다.
+
+## 체크 퀴즈
+
+<Quiz
+  q="C[i][j] += A[i][k] * B[k][j]를 ijk 순서로 돌릴 때(안쪽 루프 k) 가장 많은 miss를 내는 배열은?"
+  options={['A', 'B', 'C', '모두 같다']}
+  answer={1}
+  explain="안쪽 변수 k가 B에서는 첫 번째 첨자(행)라서 매 반복마다 N만큼 떨어진 주소를 읽는다 → iteration당 miss 1. A는 k가 열 인덱스라 1/K, C는 k가 안 나와서 0이다."
+/>
+
+<Quiz
+  q="K = 16일 때 ikj 순서의 안쪽 루프 1회당 miss 수 범위는?"
+  options={['2', '1.0625', '0.0625 ~ 0.125', '0']}
+  answer={2}
+  explain="ikj에서 안쪽 변수 j는 B와 C 모두에서 열 인덱스라 각각 1/K = 0.0625다. C의 row가 cache에 남으면 C 몫이 0에 가까워져서 0.0625, 안 남으면 0.125가 된다."
+/>
+
+<Quiz
+  q="다음 중 matmul에서 최악의 cache 성능을 보이는 루프 순서는?"
+  options={['ikj', 'kij', 'ijk', 'jki']}
+  answer={3}
+  explain="jki는 안쪽 변수 i가 A와 C 모두에서 행 인덱스라서 둘 다 column 방향 접근 → iteration당 miss 2. ikj, kij는 최선이고 ijk는 중간이다."
+/>
+
+<Quiz
+  q="N = 64, K = 8, cache에 row 하나는 남고 column은 안 남을 때 ikj의 총 miss 수에서 가장 큰 항은?"
+  options={['A의 N²/K', 'B의 N³/K', 'C의 N²/K', '모두 같다']}
+  answer={1}
+  explain="B의 row k는 i가 바뀔 때마다 다시 읽어야 하고 B 전체는 cache보다 크므로 N × N × (N/K) = N³/K = 32,768번 miss다. A와 C는 각각 N²/K = 512로 훨씬 작다."
+/>
+
+## 더 읽을거리
+
+- [Loop interchange (Wikipedia)](https://en.wikipedia.org/wiki/Loop_interchange)
+- [Computer Systems: A Programmer's Perspective, 6장 메모리 계층 (CMU 15-213 교재 사이트)](https://csapp.cs.cmu.edu/)
+- [MIT 6.5940 TinyML and Efficient Deep Learning Computing](https://efficientml.ai)

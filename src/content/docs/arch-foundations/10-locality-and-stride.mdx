@@ -1,0 +1,255 @@
+---
+title: "Locality, stride, working set"
+description: "메모리 레이아웃과 접근 순서가 cache 성능을 결정하는 원리"
+track: arch-foundations
+est: 30min
+sidebar:
+  order: 10
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+같은 데이터를 같은 양만큼 읽어도 **읽는 순서**에 따라 속도가 10배 이상 차이 난다. 4096×4096 float 행렬을 row 단위로 더하면 11 ms, column 단위로 더하면 148 ms가 걸린다(실측). cache는 하드웨어가 자동으로 관리하지만, cache가 잘 동작할지는 **코드의 접근 패턴**이 결정한다.
+
+## 직관
+
+**Spatial locality: 책 읽기.** 메모리는 1차원이다. 2D 배열은 한 줄씩 이어 붙여서 저장된다 (C, NumPy 기본값 = row-major).
+
+```text
+ 논리적 2D 배열 A[4][8]                메모리 (1차원)
+ ┌──┬──┬──┬──┬──┬──┬──┬──┐
+ │00│01│02│03│04│05│06│07│  row 0     [00 01 02 03][04 05 06 07][10 11 12 13][14 15 16 17]...
+ ├──┼──┼──┼──┼──┼──┼──┼──┤             └─ line 0 ─┘└─ line 1 ─┘└─ line 2 ─┘└─ line 3 ─┘
+ │10│11│12│13│14│15│16│17│  row 1      (cache line 16 B = float 4개)
+ ├──┼──┼──┼──┼──┼──┼──┼──┤
+ │20│21│22│23│24│25│26│27│  row 2
+ ├──┼──┼──┼──┼──┼──┼──┼──┤
+ │30│31│32│33│34│35│36│37│  row 3
+ └──┴──┴──┴──┴──┴──┴──┴──┘
+```
+
+- **Row 방향**으로 읽기 = 책을 줄 따라 읽기. line 하나를 가져오면 원소 4개를 다 쓴다.
+- **Column 방향**으로 읽기 = 매 줄 첫 글자만 읽고 다음 줄로 넘어가기. line 하나를 통째로 가져와서 원소 **1개만** 쓴다.
+
+**Temporal locality: 요리 재료.** 계란을 냉장고(DRAM)에서 꺼내 하나 깨고 다시 넣고, 또 꺼내서 하나 깨고 넣는 사람은 없다. 꺼낸 김에 필요한 만큼 다 쓴다.
+
+## 용어 정의
+
+**Locality of reference (참조 지역성)**: 프로그램이 짧은 시간 동안 주소 공간의 일부에 집중적으로 접근하는 성질.
+*The tendency of a program to access a relatively small portion of its address space at any instant.*
+
+**Temporal locality (시간 지역성)**: 최근에 접근한 데이터에 곧 다시 접근할 가능성이 높다.
+*If an item is referenced, it will tend to be referenced again soon.* 예: 루프 변수, 누적 변수, 반복해서 쓰는 weight
+
+**Spatial locality (공간 지역성)**: 최근에 접근한 주소 근처에 곧 접근할 가능성이 높다.
+*If an item is referenced, items with nearby addresses will tend to be referenced soon.* 예: 배열 순차 접근
+
+**Working set (워킹 셋)**: 일정 시간 구간 동안 프로그램이 실제로 사용하는 데이터의 집합.
+*The set of data a program actively uses during a time window.* working set이 cache에 들어가면 대부분 hit, 안 들어가면 capacity miss가 폭발한다.
+
+## 메모리 레이아웃
+
+**Row-major order (행 우선)**: 행 단위로 이어 저장. C/C++, NumPy 기본값.
+**Column-major order (열 우선)**: 열 단위로 이어 저장. Fortran, MATLAB, BLAS 관례.
+
+$M \times N$ 배열, 원소 크기 $w$ byte일 때
+
+$$
+\text{Row-major: } \text{addr}(A[i][j]) = \text{base} + (i \cdot N + j)\cdot w
+$$
+
+$$
+\text{Column-major: } \text{addr}(A[i][j]) = \text{base} + (j \cdot M + i)\cdot w
+$$
+
+**Leading dimension (ld, 선행 차원)**: 한 행에서 다음 행으로 넘어갈 때 건너뛰는 원소 수. 보통 $N$이지만 padding을 넣으면 $N$보다 클 수 있다.
+*The stride, in elements, between consecutive rows in memory.*
+
+## Stride와 miss rate
+
+**Stride (스트라이드)**: 연속된 두 접근 사이의 주소 간격.
+*The distance in memory between consecutive accesses.*
+
+cache line 크기 $B$, 원소 크기 $w$, 원소 단위 stride $s$일 때 line 하나에 들어가는 접근 수는 $B / (s\,w)$개다. line마다 첫 접근만 miss이므로 (재사용 없는 스트리밍 접근 기준)
+
+$$
+\text{Miss rate} \approx \min\left(1,\ \frac{s \cdot w}{B}\right)
+$$
+
+$K = B / w$ (line 하나에 든 원소 수)로 쓰면 stride 1일 때 miss rate는 $1/K$다. 이 $K$는 다음 두 레슨 내내 나온다.
+
+## Reuse distance: 언제 hit인가?
+
+**Reuse distance (재사용 거리)**: 같은 block에 대한 두 접근 사이에 접근한 **서로 다른 block의 수**.
+*The number of distinct blocks accessed between two consecutive accesses to the same block.*
+
+**정리**: line이 $L$개인 fully-associative LRU cache에서 어떤 접근이 hit일 필요충분조건은
+
+$$
+\text{reuse distance} \lt L
+$$
+
+LRU는 "최근에 쓴 서로 다른 $L$개 block"을 정확히 들고 있기 때문이다.
+
+<Aside type="tip" title="cache 최적화의 본질">
+loop interchange, tiling, fusion은 전부 **reuse distance를 줄이는** 기법이다. 같은 데이터를 다시 쓰기 전에 다른 데이터를 너무 많이 건드리지 않도록 접근 순서를 바꾸는 것이다.
+</Aside>
+
+## Worked example: 주소 계산과 working set
+
+`float A[4][8]`, row-major, base = 0x1000, cache line 16 B ($K = 4$), fully-associative LRU.
+
+**(a) A[2][3]의 주소**
+
+$$
+0x1000 + (2 \times 8 + 3) \times 4 = 0x1000 + 76 = 0x104C
+$$
+
+- 배열 시작 기준 line 번호: $\lfloor 76 / 16 \rfloor = 4$
+- line 안 offset: $76 \bmod 16 = 12$ byte → 3번째 float (0부터)
+- line 4 = A[2][0..3]. 위 그림과 일치한다.
+
+배열 전체는 128 B = **8 lines**, row $r$은 line $2r$, $2r+1$이다.
+
+**(b) Row 방향 순회**: 각 line의 첫 접근만 miss → 32 접근 중 **8 miss (25% = 1/K)**. line 1개만 있으면 된다.
+
+**(c) Column 방향 순회, cache 2 lines**
+
+| j | 접근 line (i = 0..3) | 결과 |
+|---|---|---|
+| 0 | 0, 2, 4, 6 | M M M M (cache: [4, 6]) |
+| 1 | 0, 2, 4, 6 | line 0은 이미 쫓겨남 → M M M M |
+| … | … | 전부 miss |
+
+→ **32 miss (100%)**. 같은 line을 다시 쓰기까지 reuse distance = 3인데 cache는 2 line뿐이다.
+
+**(d) Column 방향 순회, cache 4 lines**
+
+- j = 0: line 0, 2, 4, 6 → 4 miss
+- j = 1, 2, 3: 같은 line → 12 hit
+- j = 4: line 1, 3, 5, 7 → 4 miss
+- j = 5, 6, 7: 12 hit
+
+→ **8 miss (25%)**. row 순회와 같아졌다.
+
+<Aside type="note" title="교훈">
+column 순회 자체가 나쁜 게 아니라, **column 하나를 도는 working set(행 개수 M개의 line)**이 cache에 들어가느냐가 관건이다. M = 4096이면 4096 × 64 B = 256 KB라서 L1(32 KB)에 안 들어간다.
+</Aside>
+
+## Hardware prefetcher
+
+**Hardware prefetching (하드웨어 프리페칭)**: CPU가 접근 패턴(주로 일정한 stride)을 감지해 필요해지기 전에 다음 line을 미리 가져오는 기능.
+*Hardware that detects access patterns and fetches lines before they are requested.*
+
+순차/일정 stride 접근은 prefetcher 덕분에 miss penalty가 많이 가려진다. 실측 시간이 이론 miss 수에 정확히 비례하지 않는 주된 이유다.
+
+## 코드: row vs column, stride 실험
+
+```python
+import time
+import numpy as np
+
+def best(f, reps=5):
+    t_best = float("inf")
+    for _ in range(reps):
+        t = time.perf_counter(); f(); t_best = min(t_best, time.perf_counter() - t)
+    return t_best
+
+print("=== row vs column 순회: 4096x4096 float32 (64MB) ===")
+M = np.random.rand(4096, 4096).astype(np.float32)
+t_row = best(lambda: [M[i, :].sum() for i in range(4096)], 3)
+t_col = best(lambda: [M[:, j].sum() for j in range(4096)], 3)
+print(f"row 단위 (stride 4B)     : {t_row*1e3:8.1f} ms")
+print(f"column 단위 (stride 16KB): {t_col*1e3:8.1f} ms   → {t_col/t_row:.1f}x 느림")
+
+print("\n=== stride 실험: 64MB 배열에서 x[::s].sum() ===")
+x = np.ones(1 << 24, dtype=np.float32)
+print(f"{'stride':>7s}{'elems':>12s}{'time(ms)':>10s}{'ns/elem':>9s}")
+for s in [1, 2, 4, 8, 16, 32, 64]:
+    v = x[::s]
+    t = best(lambda: v.sum())
+    print(f"{s:7d}{v.size:12,d}{t*1e3:10.2f}{t/v.size*1e9:9.2f}")
+```
+
+클라우드 Xeon에서 실측한 결과:
+
+```text
+row 단위 (stride 4B)     :     11.0 ms
+column 단위 (stride 16KB):    147.9 ms   → 13.4x 느림
+
+ stride       elems  time(ms)  ns/elem
+      1  16,777,216      6.37     0.38
+      2   8,388,608      5.45     0.65
+      4   4,194,304      5.74     1.37
+      8   2,097,152      5.41     2.58
+     16   1,048,576      5.14     4.90
+     32     524,288      4.69     8.94
+     64     262,144      2.33     8.89
+```
+
+stride 1~16까지 **읽는 원소 수는 16배 줄었는데 시간은 거의 같다.** 64 B line = float 16개이므로 stride 16 이하이면 **모든 line을 건드리고**, DRAM에서 가져오는 데이터 양이 같기 때문이다. stride 32에서도 비슷한 건 adjacent-line prefetcher가 128 B(line 2개) 단위로 가져오기 때문이고, 64에서 비로소 절반이 된다.
+
+<Aside type="tip" title="한 줄 요약">
+시간은 **원소 수가 아니라 건드린 cache line 수**를 따라간다.
+</Aside>
+
+## 흔한 오해
+
+<Aside type="caution" title="Column 방향 접근은 무조건 나쁘다?">
+위 예시 (d)처럼 column 하나의 working set이 cache에 들어가면 괜찮다. 문제는 접근 방향이 아니라 **reuse distance와 cache 크기의 관계**다.
+</Aside>
+
+<Aside type="caution" title="Python list of lists도 연속 메모리다?">
+Python list는 **객체 포인터 배열**이라 실제 숫자는 힙 여기저기 흩어져 있다. cache 최적화를 논하려면 NumPy처럼 연속 버퍼를 써야 한다. 그리고 NumPy의 `A.T`는 복사가 아니라 **stride만 바꾼 view**라서, `A.T`를 row 방향으로 돌면 실제로는 column 방향 접근이다. 필요하면 `np.ascontiguousarray(A.T)`로 복사하자.
+</Aside>
+
+## Efficient ML 연결
+
+**AoS vs SoA.** `struct` 배열(AoS: x, y, z, mass가 객체별로 붙어 있음)에서 x만 다 더하면 line(float 16개)에 x가 4개뿐이라 line 활용률이 25%다. 필드별 배열(SoA)이면 100%다. 원칙은 **자주 같이 쓰는 데이터를 붙여 놓아라.**
+
+**텐서 레이아웃 NCHW vs NHWC.** DL에서 이 문제가 정확히 텐서 레이아웃이다.
+
+| 레이아웃 | 가장 안쪽(연속) 차원 | 유리한 연산 |
+|---|---|---|
+| NHWC | channel | pointwise (1×1) conv처럼 channel 방향 내적 |
+| NCHW | spatial (W) | depthwise conv처럼 channel별 공간 연산 |
+
+TinyEngine 같은 TinyML 런타임이 연산 종류에 따라 레이아웃을 다르게 고르는 이유다. 규칙은 하나다: **안쪽 루프가 도는 차원이 메모리에서 연속이어야 한다.**
+
+## 체크 퀴즈
+
+<Quiz
+  q="float A[4][8]이 row-major로 base 0x1000에 있을 때 A[2][3]의 주소는?"
+  options={['0x1013', '0x104C', '0x1038', '0x1098']}
+  answer={1}
+  explain="base + (i × N + j) × 4 = 0x1000 + (2 × 8 + 3) × 4 = 0x1000 + 76 = 0x104C. 0x1013은 원소 크기 4를 곱하지 않은 값이다."
+/>
+
+<Quiz
+  q="cache line 64 B, float32 배열을 stride 4(원소 단위)로 스트리밍할 때 miss rate는 대략?"
+  options={['1/16', '1/4', '1', '1/64']}
+  answer={1}
+  explain="miss rate ≈ s × w / B = 4 × 4 / 64 = 1/4. line 하나(float 16개)에서 4개를 쓰고 다음 line으로 넘어간다. 1/16은 stride 1일 때다."
+/>
+
+<Quiz
+  q="line 8개짜리 fully-associative LRU cache에서 어떤 block의 reuse distance가 10이면 그 재접근은?"
+  options={['hit', 'miss', '반반', 'prefetcher에 따라 무조건 hit']}
+  answer={1}
+  explain="reuse distance가 line 수보다 작아야 hit이다. 그 사이에 서로 다른 block 10개를 건드렸으므로 LRU에서 이미 쫓겨났다."
+/>
+
+<Quiz
+  q="64 MB 배열에서 x[::1]과 x[::16](float32, 64 B line)의 sum 시간이 비슷한 이유는?"
+  options={['NumPy가 stride를 무시해서', '두 경우 모두 모든 cache line을 건드려 DRAM 전송량이 같아서', 'stride 16이 SIMD에 더 유리해서', 'CPU 클럭이 올라가서']}
+  answer={1}
+  explain="line 하나에 float 16개가 들어가므로 stride 16 이하에서는 모든 line을 한 번씩 가져와야 한다. 원소 수가 16배 적어도 메모리에서 옮기는 byte가 같으면 시간도 비슷하다."
+/>
+
+## 더 읽을거리
+
+- [Locality of reference (Wikipedia)](https://en.wikipedia.org/wiki/Locality_of_reference)
+- [Row- and column-major order (Wikipedia)](https://en.wikipedia.org/wiki/Row-_and_column-major_order)
+- [What Every Programmer Should Know About Memory (Ulrich Drepper, 2007)](https://people.freebsd.org/~lstewart/articles/cpumemory.pdf)

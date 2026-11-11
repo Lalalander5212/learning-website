@@ -1,0 +1,337 @@
+---
+title: "Tiling과 loop fusion"
+description: "데이터를 cache 크기 조각으로 쪼개 재사용하고, 연산을 합쳐 메모리 왕복을 줄이기"
+track: arch-foundations
+est: 35min
+sidebar:
+  order: 12
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+루프 순서를 최선(ikj)으로 바꿔도 문제가 남는다. B의 row k는 i가 바뀔 때마다 다시 필요한데, 그 사이에 **B 전체($N^2$ 원소)**를 다 건드린다. B의 reuse distance가 B 전체 크기라서 B가 cache보다 크면 매번 다시 가져와야 한다. 또 `y = relu(a*x + b)`처럼 연산을 여러 번에 나눠 하면 중간 결과가 DRAM을 왕복한다. tiling과 fusion은 이 두 문제를 해결한다.
+
+## 직관: 벽 페인트칠
+
+벽 전체(100 m²)를 위에서 아래로 한 번 칠하고, 다시 처음부터 두 번째 코트를 칠한다고 해보자. 두 번째 코트를 시작할 때 사다리를 처음 위치로 다시 옮겨야 한다. 대신 벽을 1 m² 조각(tile)으로 나누고, 한 조각에서 필요한 코트를 다 칠하고 다음 조각으로 가면 사다리(cache)를 옮기는 횟수가 확 줄어든다.
+
+## Tiling (Blocking)
+
+**Tiling / Blocking (타일링 / 블로킹)**: 반복 공간을 cache에 들어가는 작은 블록(tile)으로 나눠서, 한 tile 안의 데이터를 cache에 있는 동안 최대한 재사용하는 기법.
+*Partitioning the iteration space into blocks that fit in cache so data is reused before eviction.*
+
+```c
+for (ii = 0; ii < N; ii += T)
+  for (kk = 0; kk < N; kk += T)
+    for (jj = 0; jj < N; jj += T)
+      // C_tile[ii][jj] += A_tile[ii][kk] × B_tile[kk][jj]   (T×T 행렬 곱)
+      for (i = ii; i < ii+T; i++)
+        for (k = kk; k < kk+T; k++) {
+          r = A[i][k];
+          for (j = jj; j < jj+T; j++) C[i][j] += r * B[k][j];
+        }
+```
+
+```text
+          kk                    jj                         jj
+       ┌──┬──┬──┬──┐        ┌──┬──┬──┬──┐             ┌──┬──┬──┬──┐
+  ii → │  │██│  │  │   ×    │  │  │  │  │  kk  ──▶     │  │  │  │  │
+       ├──┼──┼──┼──┤        ├──┼──┼──┼──┤             ├──┼──┼──┼──┤
+       │  │  │  │  │        │  │  │██│  │ ←      ii → │  │  │██│  │
+       └──┴──┴──┴──┘        └──┴──┴──┴──┘             └──┴──┴──┴──┘
+            A                    B                         C
+   T×T tile 3개(A, B, C 하나씩)만 cache에 있으면 그 안에서는 전부 hit
+```
+
+### Miss 수 유도
+
+**(1)** tile 하나 = T행 × T원소. 한 행의 T개 원소는 $T/K$개 line이므로 tile 하나를 가져오는 비용은
+
+$$
+T \times \frac{T}{K} = \frac{T^2}{K} \text{ misses}
+$$
+
+**(2)** 가장 안쪽 tile 연산 $(ii, kk, jj)$마다 B tile과 C tile을 새로 가져온다 (A tile은 jj 루프 동안 재사용). tile 연산 개수는 $(N/T)^3$이므로
+
+$$
+\text{Misses}_{tiled} \approx \left(\frac{N}{T}\right)^3 \times \frac{2T^2}{K} + \underbrace{\left(\frac{N}{T}\right)^2 \frac{T^2}{K}}_{\text{A tile}} = \frac{2N^3}{K\,T} + \frac{N^2}{K}
+$$
+
+**(3)** ijk와 비교하면
+
+$$
+\frac{\text{Misses}_{ijk}}{\text{Misses}_{tiled}} \approx \frac{N^3(1 + 1/K)}{2N^3/(KT)} = \frac{(K+1)\,T}{2}
+$$
+
+**T를 키울수록 miss가 1/T로 줄어든다.** tile 안에서 각 원소가 **T번 재사용**되기 때문이다.
+
+**(4) T를 고르는 조건**: 세 tile이 동시에 cache에 들어가야 한다.
+
+$$
+3\,T^2\,w \le C_{cache}
+$$
+
+LRU, 다른 변수, conflict 때문에 여유를 두는 게 좋다 (보통 cache의 절반~2/3).
+
+## Worked example: tile 크기 고르기
+
+$N = 1024$, float ($w = 4$), line 64 B ($K = 16$), **L1 = 32 KB**
+
+**Step 1. T 상한**
+
+$$
+3T^2 \times 4 \le 32768 \;\Rightarrow\; T^2 \le 2730 \;\Rightarrow\; T \le 52.2
+$$
+
+- T = 32 → $3 \times 32^2 \times 4 = 12$ KB ✓ (여유 있음, 2의 거듭제곱이라 line 정렬에도 좋음)
+- T = 64 → 48 KB ✗ (L1 초과. L2 1 MB 기준이면 OK)
+
+**Step 2. Miss 수 비교 (T = 32)**, $N^3 \approx 1.07 \times 10^9$
+
+| 순서 | 공식 | Miss 수 |
+|---|---|---|
+| jki | $2N^3$ | $2.15 \times 10^9$ |
+| ijk | $N^3(1 + 1/16)$ | $1.14 \times 10^9$ |
+| ikj | $\approx N^3/16$ | $6.7 \times 10^7$ |
+| tiled | $2N^3 / (16 \times 32)$ | $4.2 \times 10^6$ |
+
+**Step 3. 데이터 이동량** (miss 하나 = 64 B)
+
+- ijk: $1.14 \times 10^9 \times 64$ B ≈ **73 GB**
+- tiled: $4.2 \times 10^6 \times 64$ B ≈ **0.27 GB**
+
+같은 계산인데 L1으로 끌어오는 데이터 양이 **270배** 차이 난다.
+
+**Step 4. 실측** (gcc -O2, 클라우드 Xeon: L1d 32 KB / L2 1 MB per core / L3 33 MB)
+
+| N | ijk | ikj | tiled |
+|---|---|---|---|
+| 1024 (T = 32) | 0.80 s (2.7 GF/s) | **0.28 s (7.6)** | 0.34 s (6.3) |
+| 2048 (T = 64) | 17.7 s (0.97) | 3.64 s (4.7) | **1.90 s (9.1)** |
+
+<Aside type="caution" title="N = 1024에서는 tiled가 ikj보다 느리다">
+1. ikj는 B, C를 순차 스트리밍해서 hardware prefetcher가 miss penalty를 거의 가려준다.
+2. ikj의 안쪽 루프는 길이 1024라 SIMD 벡터화가 잘 되고, tiled는 길이 32라 루프 오버헤드 비중이 크다.
+3. N = 1024면 B(4 MB)가 L3(33 MB)에 다 들어가서 miss penalty 자체가 작다.
+
+N = 2048이 되면 B가 16 MB로 커지고 ikj가 4.7 GF/s로 떨어지지만, tiled는 9.1 GF/s로 **1.9배** 앞선다. miss 수는 이론으로 예측되지만 실제 이득은 prefetcher, 벡터화, 어느 계층에서 miss가 나는지에 따라 다르다. 그래서 실제 라이브러리는 tile 크기를 **측정(autotuning)**해서 고른다.
+</Aside>
+
+## Tiling + set-associative = conflict 함정
+
+tiling은 "tile 3개가 cache 크기 안에 들어간다"를 가정한다. 하지만 set-associative cache에서는 **행 간격이 2의 거듭제곱**이면 tile의 행들이 같은 set으로 몰릴 수 있다.
+
+시뮬레이터 설정: N = 64, 1 KB cache, 32 B line, **4-way** (8 sets), T = 8.
+
+- 행 간격 = 64 × 4 B = 256 B = **8 lines** → set이 8개이므로 tile의 8개 행이 **전부 같은 set**에 몰린다. 그런데 way는 4개뿐이다.
+- leading dimension을 72로 padding → 행 간격 = 288 B = **9 lines** → 행 $r$이 set $(9r) \bmod 8 = r \bmod 8$로 흩어진다.
+
+```text
+fully-assoc, ld=64 :  misses =  8704
+4-way,       ld=64 :  misses = 40960   ← 4.7배 증가 (conflict)
+4-way,       ld=72 :  misses =  9040   ← padding으로 회복
+```
+
+## Loop fusion
+
+**Loop fusion (루프 융합)**: 같은 데이터를 순회하는 여러 루프를 하나로 합쳐서, 데이터가 cache(또는 register)에 있는 동안 모든 연산을 끝내는 기법.
+*Merging adjacent loops over the same data so each element is processed fully while it is in cache.*
+
+```python
+import numpy as np
+x = np.arange(8, dtype=np.float32) - 4
+a, b = 1.5, -0.3
+relu = lambda v: np.maximum(v, 0)
+
+# Unfused: 배열 전체를 3번 왕복
+t1 = a * x          # x 읽기,  t1 쓰기
+t2 = t1 + b         # t1 읽기, t2 쓰기
+y  = relu(t2)       # t2 읽기, y 쓰기
+
+# Fused: 1번 왕복 (중간값은 register에)
+y2 = np.empty_like(x)
+for i in range(len(x)):
+    y2[i] = max(a * x[i] + b, 0.0)
+
+print(y, np.allclose(y, y2))
+```
+
+중간 배열 t1, t2의 reuse distance가 "배열 전체 크기"에서 "0"이 된다.
+
+### Worked example: 데이터 이동량
+
+x는 float 16M개 = **64 MB** (L3 33 MB보다 큼)
+
+| 방식 | DRAM 읽기 | DRAM 쓰기 | 합계 |
+|---|---|---|---|
+| Unfused (3 pass) | x, t1, t2 = 192 MB | t1, t2, y = 192 MB | **384 MB** |
+| Fused (1 pass) | x = 64 MB | y = 64 MB | **128 MB** |
+
+데이터 이동량이 **3배** 줄어든다. (실제로는 write-allocate 때문에 쓰기 전에 line을 읽어오는 비용도 있어서 차이가 더 날 수 있다.)
+
+NumPy는 연산마다 임시 배열을 만들어서 fusion을 못 한다. 그래서 아래 코드는 **64 KB chunk 단위로 쪼개서** 임시값이 cache 안에 머물게 했다 (tiling + fusion). 실측: 53 ms → 24 ms, **2.2배**.
+
+## 코드: tiling 시뮬레이터 + fusion 실측
+
+```python
+import time
+from collections import OrderedDict
+import numpy as np
+
+class Cache:
+    def __init__(self, cache_bytes, line_bytes, ways=None):
+        lines = cache_bytes // line_bytes
+        self.W = ways or lines
+        self.S = lines // self.W
+        self.L = line_bytes
+        self.sets = [OrderedDict() for _ in range(self.S)]
+        self.misses = 0
+    def access(self, addr):
+        blk = addr // self.L
+        s, tag = self.sets[blk % self.S], blk // self.S
+        if tag in s:
+            s.move_to_end(tag)
+        else:
+            self.misses += 1
+            if len(s) >= self.W:
+                s.popitem(last=False)
+            s[tag] = True
+
+def tiled_misses(N, T, cache_bytes, line, ways=None, ld=None, gap=96):
+    ld = ld or N
+    size = N * ld * 4
+    bA, bB, bC = 0, size + gap, 2 * (size + gap)
+    c = Cache(cache_bytes, line, ways)
+    for ii in range(0, N, T):
+        for kk in range(0, N, T):
+            for jj in range(0, N, T):
+                for i in range(ii, ii + T):
+                    for k in range(kk, kk + T):
+                        c.access(bA + (i * ld + k) * 4)
+                        for j in range(jj, jj + T):
+                            c.access(bB + (k * ld + j) * 4)
+                            c.access(bC + (i * ld + j) * 4)   # read
+                            c.access(bC + (i * ld + j) * 4)   # write
+    return c.misses
+
+N, T, CACHE, LINE = 64, 8, 1024, 32
+K = LINE // 4
+print(f"이론 2N^3/(KT) + N^2/K = {2 * N**3 // (K * T) + N * N // K}")
+print(f"fully-assoc, ld={N} : misses = {tiled_misses(N, T, CACHE, LINE)}")
+print(f"4-way,       ld={N} : misses = {tiled_misses(N, T, CACHE, LINE, ways=4)}")
+print(f"4-way,       ld={N + K} : misses = {tiled_misses(N, T, CACHE, LINE, ways=4, ld=N + K)}")
+
+# ---- loop fusion 실측 ----
+def best(f, reps=5):
+    t_best = float("inf")
+    for _ in range(reps):
+        t = time.perf_counter(); f(); t_best = min(t_best, time.perf_counter() - t)
+    return t_best
+
+x = np.ones(1 << 24, dtype=np.float32)   # 64 MB
+a, b = np.float32(1.5), np.float32(-0.3)
+y = np.empty_like(x)
+
+def unfused():
+    t1 = a * x
+    t2 = t1 + b
+    np.maximum(t2, 0, out=y)
+
+CH = 1 << 14                              # 16K floats = 64KB chunk
+buf = np.empty(CH, dtype=np.float32)
+def chunked_fused():
+    for s in range(0, x.size, CH):
+        np.multiply(x[s:s+CH], a, out=buf)
+        np.add(buf, b, out=buf)
+        np.maximum(buf, 0, out=y[s:s+CH])
+
+t_u, t_f = best(unfused), best(chunked_fused)
+print(f"\nunfused (3 passes over DRAM)  : {t_u*1e3:7.1f} ms")
+print(f"chunked (temporaries in cache): {t_f*1e3:7.1f} ms   → {t_u/t_f:.2f}x")
+```
+
+C로 tiled matmul을 직접 재보려면 11번 레슨의 `mm.c`에 아래 함수를 추가하고 `-DN=2048`로 컴파일하자.
+
+```c
+#define T 64
+static void tiled(void) {
+    for (int ii = 0; ii < N; ii += T)
+        for (int kk = 0; kk < N; kk += T)
+            for (int jj = 0; jj < N; jj += T)
+                for (int i = ii; i < ii + T; i++)
+                    for (int k = kk; k < kk + T; k++) {
+                        float r = A[i][k];
+                        for (int j = jj; j < jj + T; j++) C[i][j] += r * B[k][j];
+                    }
+}
+```
+
+## 흔한 오해
+
+<Aside type="caution" title="Tiling은 항상 빠르다?">
+N = 1024 실측에서 tiled가 ikj보다 느렸다. tiling은 working set이 해당 cache 계층을 **확실히 넘어설 때** 효과가 크다.
+</Aside>
+
+<Aside type="caution" title="Tile은 클수록 좋다?">
+$3T^2 w$가 cache를 넘으면 tile끼리 서로 쫓아내서 오히려 망한다. 그리고 행 간격이 2의 거듭제곱이면 tile이 cache 크기 안이어도 **conflict miss**로 망할 수 있다 (padding 실험).
+</Aside>
+
+## Efficient ML 연결
+
+**Operator fusion (conv + BN + ReLU).** DL 컴파일러(TensorRT, TVM, torch.compile)의 핵심 최적화가 **kernel fusion**이다. conv 결과를 DRAM에 썼다가 BN이 다시 읽고, 또 쓰고 ReLU가 다시 읽는 대신 한 커널에서 끝낸다. 위의 3배 트래픽 감소가 바로 그것이다.
+
+**FlashAttention = attention의 tiling + fusion.** 일반 attention은 $N \times N$ score 행렬 $QK^T$를 GPU DRAM(HBM)에 쓰고, softmax 하고, 다시 읽어서 V를 곱한다. FlashAttention은 Q, K, V를 SRAM에 들어가는 **tile로 쪼개고**, score 계산 → softmax → V 곱을 **한 커널에서** 끝내서 $N \times N$ 행렬을 DRAM에 아예 쓰지 않는다.
+
+**MCUNetV2 patch-based inference = 공간 방향 tiling.** 초반 layer의 feature map이 MCU SRAM에 안 들어가니까 입력을 patch로 쪼개서 앞쪽 layer를 patch 단위로 처리한다. peak memory가 크게 줄어드는 대신 patch 경계가 겹치는 부분을 중복 계산한다.
+
+**Tile 크기 autotuning.** 최적 tile 크기는 이론만으로 정해지지 않는다(위 실측). TVM/Ansor 같은 DL 컴파일러는 tile 크기, 루프 순서, unroll factor 조합을 **탐색하고 측정해서** 고른다.
+
+<Aside type="tip" title="Roofline 미리보기">
+tile 크기 T가 커지면 가져온 원소 하나당 연산 수가 T에 비례해서 늘어난다. "가져온 byte당 연산 수"가 **arithmetic intensity**이고, roofline 모델의 x축이다. tiling은 arithmetic intensity를 높여서 memory-bound에서 compute-bound로 넘어가는 기법이다.
+</Aside>
+
+## 체크 퀴즈
+
+<Quiz
+  q="L1 32 KB, float32 행렬 곱에서 A, B, C tile 3개가 동시에 L1에 들어가는 최대 정사각 tile 크기 T는 대략?"
+  options={['T ≈ 90', 'T ≈ 52', 'T ≈ 64', 'T ≈ 128']}
+  answer={1}
+  explain="3 × T² × 4 B ≤ 32768 이므로 T² ≤ 2730, T ≤ 52.2. 실제로는 여유를 두고 2의 거듭제곱인 32를 많이 쓴다. 64는 48 KB라 L1을 넘는다."
+/>
+
+<Quiz
+  q="tiled matmul의 miss 수가 대략 2N³/(K·T)일 때, T를 2배로 늘리면(cache에 여전히 들어간다고 가정) miss 수는?"
+  options={['2배', '절반', '4분의 1', '변화 없음']}
+  answer={1}
+  explain="miss 수가 T에 반비례하므로 T가 2배면 miss는 절반이다. tile 안에서 각 원소가 T번 재사용되기 때문이다. 단, tile 3개가 cache를 넘으면 이 식이 깨진다."
+/>
+
+<Quiz
+  q="y = relu(a*x + b)를 64 MB 배열에 3번의 별도 패스로 계산하면 fused 버전 대비 DRAM 트래픽은 대략 몇 배인가?"
+  options={['1배', '2배', '3배', '6배']}
+  answer={2}
+  explain="unfused는 패스마다 64 MB 읽기 + 64 MB 쓰기로 총 384 MB, fused는 x 읽기 + y 쓰기로 128 MB. 384 / 128 = 3배."
+/>
+
+<Quiz
+  q="4-way cache에서 tiled matmul의 miss가 fully associative보다 4.7배 많았다. 행 간격 256 B, set 8개, line 32 B일 때 원인과 해결책은?"
+  options={['tile이 너무 작다 → T를 키운다', 'tile의 8개 행이 전부 같은 set에 몰린다 → leading dimension을 padding한다', 'cache가 너무 크다 → 줄인다', 'line이 너무 크다 → 줄인다']}
+  answer={1}
+  explain="행 간격 256 B = 8 lines이고 set이 8개라서 모든 행이 같은 set으로 간다. way는 4개뿐이라 conflict가 난다. ld를 72로 늘려 행 간격을 9 lines로 만들면 행들이 서로 다른 set으로 흩어진다."
+/>
+
+<Quiz
+  q="FlashAttention이 일반 attention보다 빠른 핵심 이유는?"
+  options={['연산량(FLOPs)을 크게 줄여서', 'N×N score 행렬을 DRAM에 쓰지 않도록 tiling과 fusion으로 SRAM 안에서 끝내서', 'softmax를 생략해서', 'attention head 수를 줄여서']}
+  answer={1}
+  explain="FlashAttention은 연산 결과가 정확히 같고 FLOPs도 비슷하다. 차이는 데이터 이동이다. tile 단위로 SRAM에서 score, softmax, V 곱을 한 번에 끝내서 큰 중간 행렬의 DRAM 왕복을 없앤다."
+/>
+
+## 더 읽을거리
+
+- [Loop nest optimization (Wikipedia)](https://en.wikipedia.org/wiki/Loop_nest_optimization)
+- [FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness (Dao et al., 2022)](https://arxiv.org/abs/2205.14135)
+- [MCUNetV2: Memory-Efficient Patch-based Inference for Tiny Deep Learning (Lin et al., 2021)](https://arxiv.org/abs/2110.15352)
+- [TVM: An Automated End-to-End Optimizing Compiler for Deep Learning (Chen et al., 2018)](https://arxiv.org/abs/1802.04799)
