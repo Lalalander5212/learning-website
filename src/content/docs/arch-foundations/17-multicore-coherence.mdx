@@ -1,0 +1,300 @@
+---
+title: "Multicore, cache coherence, false sharing"
+description: "코어 여러 개가 메모리를 공유할 때의 speedup 한계, MESI 프로토콜, 그리고 보이지 않는 false sharing"
+track: arch-foundations
+est: 35min
+sidebar:
+  order: 17
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+코어를 N개 쓰면 N배 빨라질 것 같지만 실제로는 훨씬 덜 빨라진다. serial 부분, 동기화, 공유 메모리 대역폭에 더해, 각 코어가 private cache를 갖고 있어서 생기는 **coherence** 문제가 있다. 특히 false sharing은 코드만 봐서는 공유하는 게 하나도 없는데 성능이 몇 배 떨어지는 현상이라, 원리를 모르면 찾을 수가 없다.
+
+## 직관: 주방의 요리사 여러 명
+
+요리사(core) 4명이 각자 다른 요리(명령어 흐름)를 만든다. 냉장고(메인 메모리)는 같이 쓰고, 각자 앞에 작은 도마(L1/L2 cache)가 있다.
+
+- 요리사 A가 냉장고 우유를 자기 도마에 덜어놓고 반을 썼는데 B 도마에도 예전 우유가 있다면? B가 그걸 믿고 쓰면 안 된다. → **cache coherence**
+- A와 B가 **작은 화이트보드 하나**의 서로 다른 줄에 메모를 하는데 마커가 하나뿐이면, 다른 내용을 쓰는데도 마커를 계속 주고받아야 한다. → **false sharing**
+
+## Speedup과 efficiency
+
+**Multicore processor (멀티코어 프로세서)**: 하나의 칩에 독립적인 코어 여러 개를 두고 메모리를 공유하는 구조.
+*A chip with multiple independent cores sharing memory.*
+
+**Thread (스레드)**: 독립적인 명령어 흐름. 같은 프로세스의 thread들은 주소 공간을 공유한다.
+
+$$
+S(p) = \frac{T_1}{T_p}, \qquad E(p) = \frac{S(p)}{p}
+$$
+
+**Parallel efficiency (병렬 효율)**: 코어 하나가 평균적으로 얼마나 유용하게 쓰였는지. 1이면 완벽.
+
+**Amdahl's law (strong scaling)**: 문제 크기 고정, 병렬 비율 $f$
+
+$$
+S(p) = \frac{1}{(1-f) + f/p}
+$$
+
+**Gustafson's law (weak scaling)**: 코어가 늘면 병렬 부분의 일도 $p$배로 키운다
+
+$$
+S(p) = (1-f) + f \cdot p
+$$
+
+**Strong scaling**: 같은 문제를 더 많은 코어로 빨리 푸는 것. **Weak scaling**: 코어당 일의 양을 고정하고 코어와 문제를 같이 키우는 것.
+
+### 실제 speedup을 깎아먹는 것들
+
+1. **Serial 부분** (Amdahl)
+2. **동기화 비용**: lock, barrier, atomic 연산
+3. **Load imbalance (부하 불균형)**: 가장 늦게 끝나는 코어를 다 같이 기다림
+4. **공유 자원 포화**: 메모리 대역폭은 모든 코어가 같이 쓴다. memory-bound 작업은 대역폭이 차면 더 안 빨라진다.
+5. **Cache coherence 트래픽** (아래)
+
+## Worked example 1: Amdahl과 efficiency
+
+병렬 비율 $f = 0.95$
+
+| 코어 수 $p$ | Speedup | Efficiency |
+|---|---|---|
+| 2 | 1.90 | 95% |
+| 4 | 3.48 | 87% |
+| 8 | 5.93 | 74% |
+| 16 | 9.14 | 57% |
+| 64 | 15.42 | **24%** |
+
+검산 ($p = 8$): $0.05 + 0.95 / 8 = 0.16875$, $1 / 0.16875 \approx 5.93$
+
+64코어에서 코어 4개 중 3개는 사실상 논다. 서버급 CPU를 제대로 쓰려면 serial 부분이 1% 이하여야 한다.
+
+**메모리 대역폭 포화 (가상 숫자)**: 코어 하나가 스트리밍으로 15 GB/s를 쓰고 DRAM 전체 대역폭이 50 GB/s라면 memory-bound 작업의 speedup은
+
+$$
+S_{max} = \frac{50}{15} \approx 3.3
+$$
+
+코어가 16개여도 3.3배에서 멈춘다.
+
+## Cache coherence
+
+각 코어가 private L1/L2를 갖고 있으니 같은 주소의 복사본이 여러 cache에 있을 수 있다.
+
+```text
+ 시간 →
+ Core 0 L1:  X=0 ─────────── X=5 (write)
+ Core 1 L1:  X=0 ────────────────────── read X → 0 ✗ (stale!)
+ Memory:     X=0
+```
+
+**Cache coherence (캐시 일관성)**: 여러 cache에 같은 주소의 복사본이 있을 때 모든 코어가 그 주소에 대해 일관된 값을 보도록 보장하는 것.
+*Ensuring that all cores see a consistent view of a memory location cached in multiple places.*
+
+구현 방식:
+- **Snooping**: 모든 cache가 공유 버스를 엿듣다가 자기가 가진 line에 대한 쓰기를 보면 무효화. 코어 수가 적을 때.
+- **Directory-based**: line마다 누가 갖고 있는지 기록한 디렉터리를 두고 필요한 코어에게만 메시지. 코어가 많을 때.
+
+### MESI 프로토콜
+
+cache line마다 2 bit 상태를 둔다.
+
+| 상태 | 의미 | 다른 cache에 복사본? | 메모리와 같나? |
+|---|---|---|---|
+| **M** (Modified) | 내가 수정함, 유일한 최신본 | 없음 | 다름 (dirty) |
+| **E** (Exclusive) | 나만 가짐, 수정 안 함 | 없음 | 같음 |
+| **S** (Shared) | 여러 cache가 읽기용으로 가짐 | 있을 수 있음 | 같음 |
+| **I** (Invalid) | 무효 | – | – |
+
+<Aside type="tip" title="핵심 규칙">
+**쓰려면 M 상태가 되어야 하고, M이 되려면 다른 cache의 복사본을 전부 I로 만들어야 한다** (write-invalidate). 그래서 여러 코어가 같은 line에 번갈아 쓰면 line이 코어 사이를 계속 왕복한다.
+</Aside>
+
+**Coherence miss (일관성 미스)**: 다른 코어의 쓰기 때문에 내 복사본이 무효화되어 생기는 miss. 3C에 더해지는 **4번째 C**다.
+
+## Worked example 2: MESI 상태 추적
+
+변수 X가 있는 cache line을 두 코어가 접근한다. 처음엔 둘 다 I.
+
+| 단계 | 동작 | Core 0 | Core 1 | 일어나는 일 |
+|---|---|---|---|---|
+| 0 | (초기) | I | I | – |
+| 1 | C0 read X | **E** | I | 메모리에서 읽음. 다른 복사본이 없으니 Exclusive |
+| 2 | C1 read X | **S** | **S** | C1의 read를 C0가 snoop → 둘 다 Shared |
+| 3 | C0 write X | **M** | **I** | C0가 invalidate 방송 → C1 복사본 무효 |
+| 4 | C1 read X | **S** | **S** | C1 coherence miss. C0가 최신 값 제공 + write-back |
+| 5 | C1 write X | **I** | **M** | C1이 invalidate 방송 → C0 무효 |
+
+E 상태가 있는 이유: 나중에 C0가 쓸 때 **버스 메시지 없이** 바로 M으로 갈 수 있다 (아무도 복사본이 없다는 걸 이미 아니까).
+
+## False sharing
+
+**False sharing (거짓 공유)**: 서로 다른 코어가 **서로 다른 변수**를 쓰는데, 그 변수들이 **같은 cache line**에 있어서 coherence 트래픽이 발생하는 현상.
+*Performance loss when cores write to different variables that happen to share a cache line.*
+
+```c
+struct { long x; long y; } counters;     // x, y가 같은 64B line 안 (8 B 떨어짐)
+// Thread 0: for (...) counters.x++;
+// Thread 1: for (...) counters.y++;
+```
+
+두 thread는 논리적으로 공유하는 게 없다. 그런데 하드웨어는 64 B line 단위로 coherence를 관리해서 위 MESI 표의 3~5단계가 **증가 연산마다** 일어난다.
+
+**해결**: 각 코어가 쓰는 데이터를 서로 다른 line에 둔다.
+
+```c
+struct { long x; char pad[56]; long y; } __attribute__((aligned(64))) counters;  // 다른 line
+```
+
+## 코드
+
+### Python: thread 스케일링 (compute-bound vs memory-bound)
+
+NumPy ufunc는 C 안에서 GIL을 풀기 때문에 thread로도 진짜 병렬 실행된다.
+
+```python
+import os, time
+import numpy as np
+from concurrent.futures import ThreadPoolExecutor
+
+def best(f, reps=3):
+    t_best = float("inf")
+    for _ in range(reps):
+        t = time.perf_counter(); f(); t_best = min(t_best, time.perf_counter() - t)
+    return t_best
+
+big = np.random.rand(1 << 25).astype(np.float32)                          # 128 MB → DRAM
+chunks = [np.random.rand(1 << 17).astype(np.float32) for _ in range(16)]  # 각 512KB → cache
+outs = [np.empty_like(c) for c in chunks]
+
+def mem_task(chunk):                 # byte당 연산 거의 없음 → 메모리 대역폭 병목
+    return float(chunk.sum())
+
+def cpu_task(k):                     # cache에 있는 데이터에 sin/exp 반복 → 연산 병목
+    o = outs[k]
+    np.sin(chunks[k], out=o)
+    for _ in range(10):
+        np.sin(o, out=o); np.exp(o, out=o)
+    return 0
+
+def run(workers, kind):
+    if kind == "memory":
+        parts, task = np.array_split(big, workers * 8), mem_task
+    else:
+        parts, task = range(len(chunks)), cpu_task
+    with ThreadPoolExecutor(workers) as ex:
+        return best(lambda: list(ex.map(task, parts)))
+
+cores = os.cpu_count()
+print(f"cpu_count = {cores}")
+for kind in ["compute", "memory"]:
+    t1 = run(1, kind)
+    row = f"{kind:8s} 1 thread {t1*1e3:7.1f} ms"
+    for w in sorted({2, 4, 8, cores}):
+        if 1 < w <= cores:
+            tw = run(w, kind)
+            row += f" | {w}T {tw*1e3:6.1f} ms ({t1/tw:.2f}x)"
+    print(row)
+
+amdahl = lambda f, n: 1 / ((1 - f) + f / n)
+print("Amdahl f=0.95:", ", ".join(f"{n} cores→{amdahl(0.95, n):.2f}x" for n in [2, 4, 8, 16, 64]))
+```
+
+코어가 많은 노트북에서 돌리면 compute-bound는 코어 수를 따라 올라가다가, memory-bound는 **더 일찍 포화**되는 걸 볼 수 있다. (2코어 클라우드 VM에서는 노이즈가 커서 실행마다 1.4~2.2배로 흔들렸다.)
+
+### C: false sharing
+
+```c
+// gcc -O2 -pthread fs.c -o fs && ./fs
+#include <stdio.h>
+#include <pthread.h>
+#include <time.h>
+#define ITERS 200000000L
+static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec * 1e-9; }
+
+struct { volatile long x; volatile long y; } same_line;                                        // 같은 line
+struct { volatile long x; char pad[56]; volatile long y; } __attribute__((aligned(64))) padded; // 다른 line
+
+static void *inc(void *p) { volatile long *c = p; for (long i = 0; i < ITERS; i++) (*c)++; return NULL; }
+static double run2(volatile long *p, volatile long *q) {
+    pthread_t t1, t2; double t = now();
+    pthread_create(&t1, NULL, inc, (void *)p); pthread_create(&t2, NULL, inc, (void *)q);
+    pthread_join(t1, NULL); pthread_join(t2, NULL);
+    return now() - t;
+}
+int main(void) {
+    printf("same cache line : %.3f s\n", run2(&same_line.x, &same_line.y));
+    printf("padded (64B)    : %.3f s\n", run2(&padded.x, &padded.y));
+}
+```
+
+<Aside type="note" title="실측에 대한 메모">
+2-vCPU 클라우드 VM에서는 차이가 거의 안 났다 (0.51 s vs 0.46 s). vCPU 2개가 물리적으로 같은 코어의 hyperthread여서 L1을 공유하면 coherence 트래픽 자체가 없기 때문으로 보인다. 서로 다른 물리 코어가 있는 노트북에서 돌리면 보통 몇 배 차이가 난다.
+</Aside>
+
+## 흔한 오해
+
+<Aside type="caution" title="코어 N개 = N배 빠름?">
+Amdahl, 동기화, 부하 불균형, 메모리 대역폭, coherence 때문에 거의 항상 N배보다 작다. 64코어에서 효율 24%가 현실적인 숫자다.
+</Aside>
+
+<Aside type="caution" title="False sharing = 진짜로 같은 변수를 공유하는 것?">
+아니다. **서로 다른 변수**가 같은 cache line에 있을 때다. 코드만 보면 공유가 없어 보여서 찾기 어렵다.
+</Aside>
+
+<Aside type="caution" title="Python thread로 병렬화하면 된다?">
+순수 Python 코드는 GIL 때문에 thread를 늘려도 병렬이 안 된다. NumPy처럼 GIL을 푸는 C 확장이나 `multiprocessing`이 필요하다.
+</Aside>
+
+## Efficient ML 연결
+
+**분산 학습 = multicore 원리의 확장.** MIT 6.5940의 distributed training 강의에서 data parallelism, pipeline parallelism, tensor parallelism을 다룬다. GPU 여러 장 사이의 gradient 동기화(all-reduce)는 Amdahl의 serial 부분이자 "공유 자원 포화"와 같은 역할을 한다. GPU를 늘릴수록 통신 비율이 커져서 효율이 떨어지는 구조가 똑같다.
+
+**Edge 디바이스의 big.LITTLE.** 스마트폰 SoC는 큰 코어와 작은 코어를 섞어 쓴다. on-device inference에서 thread 수를 무조건 늘리면 작은 코어에 일이 배정돼 가장 늦은 코어를 기다리는 load imbalance가 생길 수 있다. 그래서 모바일 런타임은 thread 수와 코어 affinity를 따로 설정하게 해준다.
+
+**Data loader와 false sharing.** 여러 worker thread가 통계 카운터나 작은 버퍼를 같은 구조체 안에서 업데이트하면 false sharing이 생길 수 있다. 성능에 민감한 코드는 thread별 데이터를 64 B 정렬로 떨어뜨려 둔다.
+
+## 체크 퀴즈
+
+<Quiz
+  q="병렬 비율 95%인 프로그램을 8코어로 돌릴 때 parallel efficiency는 대략?"
+  options={['95%', '87%', '74%', '59%']}
+  answer={2}
+  explain="speedup = 1 / (0.05 + 0.95/8) ≈ 5.93, efficiency = 5.93 / 8 ≈ 74%. 87%는 4코어일 때의 값이다."
+/>
+
+<Quiz
+  q="MESI에서 Core 0만 line X를 갖고 있고 수정하지 않은 상태는?"
+  options={['M', 'E', 'S', 'I']}
+  answer={1}
+  explain="Exclusive는 나만 갖고 있고 메모리와 같은(clean) 상태다. 이 상태에서는 쓸 때 다른 코어에 메시지를 보내지 않고 바로 M으로 갈 수 있다."
+/>
+
+<Quiz
+  q="Core 0와 Core 1이 둘 다 S 상태로 X를 갖고 있을 때 Core 0가 X에 쓰면?"
+  options={['둘 다 S 유지', 'Core 0는 M, Core 1은 I', 'Core 0는 E, Core 1은 S', '둘 다 M']}
+  answer={1}
+  explain="쓰려면 M 상태가 되어야 하고, M이 되려면 다른 cache의 복사본을 무효화해야 한다(write-invalidate). 그래서 Core 1의 복사본은 I가 된다."
+/>
+
+<Quiz
+  q="thread 2개가 struct의 서로 다른 long 필드 x, y를 각각 계속 증가시킨다. x와 y가 8 B 떨어져 있을 때 생기는 현상은?"
+  options={['아무 문제 없음', 'false sharing: 같은 cache line이 코어 사이를 왕복', 'true sharing: 데이터 경쟁으로 값이 틀림', 'TLB miss 폭증']}
+  answer={1}
+  explain="두 변수가 같은 64 B line에 있어서 쓰기마다 상대 코어의 복사본이 무효화된다. 값은 맞지만(서로 다른 변수라 데이터 경쟁은 없음) 성능이 크게 떨어진다. 64 B padding으로 해결한다."
+/>
+
+<Quiz
+  q="DRAM 대역폭 50 GB/s, 코어 하나가 스트리밍으로 15 GB/s를 쓸 때 memory-bound 작업의 최대 speedup은 코어가 16개여도 대략?"
+  options={['16배', '3.3배', '1배', '50배']}
+  answer={1}
+  explain="50 / 15 ≈ 3.3. 모든 코어가 같은 메모리 대역폭을 나눠 쓰므로 대역폭이 차면 코어를 더 늘려도 빨라지지 않는다."
+/>
+
+## 더 읽을거리
+
+- [MESI protocol (Wikipedia)](https://en.wikipedia.org/wiki/MESI_protocol)
+- [False sharing (Wikipedia)](https://en.wikipedia.org/wiki/False_sharing)
+- [A Primer on Memory Consistency and Cache Coherence, 2nd ed. (Synthesis Lectures)](https://link.springer.com/book/10.1007/978-3-031-01764-3)

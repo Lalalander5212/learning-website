@@ -1,0 +1,231 @@
+---
+title: "GPU memory coalescing과 shared memory"
+description: "warp의 메모리 접근을 sector 단위로 세기, transpose를 shared memory tiling으로 고치기, bank conflict"
+track: arch-foundations
+est: 30min
+sidebar:
+  order: 19
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+GPU 커널 대부분은 연산이 아니라 **메모리**에 막힌다. 그런데 같은 양의 데이터를 읽어도 thread들이 어떤 주소를 동시에 요청하느냐에 따라 실제로 옮기는 byte가 최대 8배까지 차이 난다. coalescing을 모르면 GPU 대역폭의 12.5%만 쓰는 커널을 짜고도 이유를 모른다.
+
+## 직관: 보급 트럭
+
+GPU 메모리는 보급 트럭처럼 **연속된 상자 묶음**을 한 번에 실어 온다. 한 조(warp) 32명이 나란히 붙은 상자를 요청하면 트럭 한 대로 끝나고, 여기저기 흩어진 상자를 요청하면 트럭 32대가 필요하다. 각 트럭은 상자 하나만 쓰고 나머지는 버린다.
+
+## 정의
+
+**Memory coalescing (메모리 병합)**: 한 warp의 32개 thread가 동시에 요청한 메모리 주소들을 최소 개수의 메모리 transaction으로 합치는 것.
+*Combining the memory accesses of threads in a warp into as few transactions as possible.*
+
+GPU 메모리는 **32 B sector**(128 B cache line = sector 4개) 단위로 데이터를 옮긴다.
+
+$$
+\text{Coalescing efficiency} = \frac{\text{thread들이 요청한 byte}}{\text{옮긴 sector 수} \times 32\text{ B}}
+$$
+
+**규칙: 인접한 thread(lane)가 인접한 주소를 읽어야 한다.** `a[threadIdx.x]`가 이상적이다.
+
+<Aside type="caution" title="CPU 직관과 반대">
+CPU에서는 "thread 하나가 연속 구간을 쭉 처리"하는 게 좋았다 (10~12번 레슨). GPU에서 thread 0이 a[0..99], thread 1이 a[100..199]를 맡으면 **같은 순간** 32 thread가 100칸씩 떨어진 주소를 읽어서 coalescing이 깨진다. GPU에서는 **같은 순간에 warp 전체가 연속 구간을 읽는다**가 기준이다.
+</Aside>
+
+## Worked example 1: sector 단위로 세기
+
+warp 32 thread가 각각 float(4 B) 하나씩 load. 배열 시작 주소 0, sector = 32 B.
+
+**(a) `a[tid]`** → 주소 0, 4, 8, …, 124
+- 범위 0~127 → sector 0~3 → **4 sector (128 B)**
+- 효율 = 128 / 128 = **100%**
+
+**(b) `a[tid + 1]`** (1칸 어긋남) → 주소 4 ~ 131
+- sector 0 (0~31) ~ sector 4 (128~159) → **5 sector (160 B)**
+- 효율 = 128 / 160 = **80%**
+
+**(c) `a[2*tid]`** → 주소 0, 8, 16, …, 248
+- 범위 0~251 → sector 0~7 → **8 sector (256 B)**, sector마다 절반만 사용
+- 효율 = **50%**
+
+**(d) `a[32*tid]`** → 주소 0, 128, 256, …, 3968
+- thread마다 다른 sector → **32 sector (1024 B)**, sector당 4 B만 사용
+- 효율 = 128 / 1024 = **12.5%**
+
+**(e) 랜덤 인덱스** → 거의 확실히 **32 sector, 12.5%**
+
+| 패턴 | sector | 옮긴 byte | 효율 |
+|---|---|---|---|
+| `a[tid]` | 4 | 128 | 100% |
+| `a[tid+1]` | 5 | 160 | 80% |
+| `a[2*tid]` | 8 | 256 | 50% |
+| `a[32*tid]` | 32 | 1024 | 12.5% |
+| 랜덤 | 32 | 1024 | 12.5% |
+
+## Worked example 2: 행렬 transpose
+
+4096 × 4096 float, `out[j][i] = in[i][j]`. warp의 thread들이 연속된 j를 담당한다.
+
+- 읽기 `in[i][j..j+31]`: 한 행의 연속 원소 → **4 sector, 100%**
+- 쓰기 `out[j..j+31][i]`: 행 간격 4096 × 4 B = 16 KB → **32 sector, 12.5%**
+
+읽기와 쓰기 중 하나는 반드시 column 방향이 된다. 해결책은 12번 레슨의 tiling을 GPU에서 구현하는 것이다.
+
+## Shared memory tiling
+
+**Shared memory (공유 메모리)**: SM 안의 프로그래머 관리형 SRAM (scratchpad). block 안의 thread들이 공유한다.
+
+```cuda
+#define TILE 32
+__global__ void transpose(const float *in, float *out, int n) {
+    __shared__ float tile[TILE][TILE + 1];          // +1 padding: bank conflict 방지 (아래)
+    int x = blockIdx.x * TILE + threadIdx.x;
+    int y = blockIdx.y * TILE + threadIdx.y;
+    tile[threadIdx.y][threadIdx.x] = in[y * n + x];  // coalesced read
+    __syncthreads();
+    x = blockIdx.y * TILE + threadIdx.x;             // block 좌표를 뒤집음
+    y = blockIdx.x * TILE + threadIdx.y;
+    out[y * n + x] = tile[threadIdx.x][threadIdx.y]; // coalesced write (shared에서 전치해 꺼냄)
+}
+// 호출: transpose<<<dim3(n/32, n/32), dim3(32, 32)>>>(in, out, n);
+```
+
+block이 32 × 32 tile을 **coalesced로 읽어** shared memory에 넣고, `__syncthreads()` 후 shared memory에서 **전치된 순서로 꺼내** 다시 coalesced로 쓴다. global memory 읽기/쓰기가 둘 다 100%가 된다.
+
+## Bank conflict
+
+shared memory는 **32개 bank**로 나뉘고, 4 B 단위로 bank 0, 1, …, 31, 0, 1, …에 돌아가며 배치된다.
+
+$$
+\text{bank} = \left\lfloor \frac{\text{byte address}}{4} \right\rfloor \bmod 32
+$$
+
+**Bank conflict (뱅크 충돌)**: 한 warp의 여러 thread가 같은 bank의 서로 다른 주소에 동시에 접근해서 직렬화되는 현상.
+
+### Worked example 3: 왜 TILE + 1인가
+
+`tile[32][32]` float에서 warp가 한 **열**(`tile[t][c]`, t = 0..31)을 읽으면, 원소 주소(4 B 단위)는 $32t + c$이고
+
+$$
+\text{bank} = (32t + c) \bmod 32 = c \quad (\text{모든 } t\text{에 대해 같음})
+$$
+
+→ 32 thread가 전부 같은 bank → **32-way conflict**, 32배 직렬화.
+
+`tile[32][33]`으로 1칸 padding하면 주소가 $33t + c$가 되고
+
+$$
+\text{bank} = (33t + c) \bmod 32 = (t + c) \bmod 32
+$$
+
+→ t마다 다른 bank → **conflict 없음**.
+
+<Aside type="tip" title="같은 패턴, 세 번째 등장">
+cache set conflict(08, 09번), tiling conflict(12번), shared memory bank conflict(이 레슨). **2의 거듭제곱 간격 → 같은 slot에 몰림 → padding으로 해결**은 하드웨어 전반에 걸쳐 반복되는 패턴이다.
+</Aside>
+
+## 코드: coalescing / bank conflict 시뮬레이터
+
+```python
+import random
+WARP, SECTOR = 32, 32
+
+def warp_sectors(addrs, size=4):
+    """warp의 32개 주소가 건드리는 32B sector 수와 효율"""
+    sectors = set()
+    for a in addrs:
+        for byte in (a, a + size - 1):
+            sectors.add(byte // SECTOR)
+    useful = len({a + k for a in addrs for k in range(size)})   # 실제로 요청한 (서로 다른) byte
+    return len(sectors), useful / (len(sectors) * SECTOR)
+
+random.seed(0)
+patterns = {
+    "coalesced   a[tid]":    [4 * t for t in range(WARP)],
+    "misaligned  a[tid+1]":  [4 * (t + 1) for t in range(WARP)],
+    "stride 2    a[2*tid]":  [4 * 2 * t for t in range(WARP)],
+    "stride 32   a[32*tid]": [4 * 32 * t for t in range(WARP)],
+    "random      a[rand]":   [4 * random.randrange(1 << 20) for _ in range(WARP)],
+}
+for name, addrs in patterns.items():
+    s, eff = warp_sectors(addrs)
+    print(f"{name:24s} sectors={s:3d}  bytes={s*SECTOR:5d}  efficiency={eff*100:6.1f}%")
+
+# naive transpose
+N = 4096
+reads  = [4 * (0 * N + t) for t in range(WARP)]       # in[i][j..]
+writes = [4 * (t * N + 0) for t in range(WARP)]       # out[j..][i]
+(rs, re_), (ws, we) = warp_sectors(reads), warp_sectors(writes)
+print(f"\nnaive transpose: read {rs} sectors ({re_*100:.0f}%), write {ws} sectors ({we*100:.1f}%)")
+
+# shared memory bank conflict: tile[t][0]을 warp가 동시에 읽음
+def bank_conflict(width):
+    banks = [(t * width) % 32 for t in range(WARP)]
+    return max(banks.count(b) for b in set(banks))
+print(f"tile[32][32] 열 읽기: {bank_conflict(32)}-way conflict")
+print(f"tile[32][33] 열 읽기: {bank_conflict(33)}-way (padding으로 해결)")
+```
+
+## 흔한 오해
+
+<Aside type="caution" title="GPU에서도 thread 하나가 연속 구간을 처리하는 게 좋다?">
+CPU 직관과 **반대**다. GPU에서는 같은 순간에 인접 thread가 인접 주소를 읽어야 coalescing이 된다.
+</Aside>
+
+<Aside type="caution" title="shared memory는 항상 빠르다?">
+bank conflict가 나면 32배까지 직렬화된다. 2의 거듭제곱 폭의 2D 배열을 열 방향으로 읽으면 특히 위험하다.
+</Aside>
+
+## Efficient ML 연결
+
+**왜 unstructured pruning은 GPU에서 안 빨라지나.** weight의 70%를 아무 데나 0으로 만들면 연산량은 줄지만, 남은 weight 위치가 불규칙해서 **메모리 접근이 흩어지고**(위 랜덤 패턴, 12.5%) thread마다 일의 양이 달라진다(divergence, load imbalance). 결국 dense 연산보다 느린 경우가 많다. 그래서 MIT 6.5940 pruning 강의에서 **structured pruning**(channel 단위로 통째로 제거)과 NVIDIA의 **2:4 structured sparsity**(연속 4개 중 정확히 2개만 0 → Sparse Tensor Core가 규칙적으로 처리)를 강조한다. GPU의 메모리 제약이 pruning 알고리즘 설계를 결정한다.
+
+**FlashAttention의 GPU 구현.** FlashAttention은 attention을 tile로 쪼개 **shared memory**에 올리고, global memory 읽기를 **coalesced**로 맞추고, warp 단위로 행렬 곱 조각을 Tensor Core에 넘긴다. coalescing, shared memory, bank conflict, occupancy가 전부 들어간다.
+
+**KV cache 레이아웃.** LLM 서빙에서 KV cache를 어떤 순서(head, token, dim)로 저장하느냐가 attention kernel의 coalescing을 결정한다. PagedAttention의 block 크기와 레이아웃도 이 제약을 고려해서 정해진다.
+
+## 체크 퀴즈
+
+<Quiz
+  q="warp의 32 thread가 float 배열에서 a[2*tid]를 읽으면 옮기는 32 B sector 수와 효율은?"
+  options={['4 sector, 100%', '8 sector, 50%', '16 sector, 25%', '32 sector, 12.5%']}
+  answer={1}
+  explain="주소 0~248(8 B 간격)이 범위 256 B, 즉 sector 8개에 걸친다. 요청한 byte는 128이므로 128 / 256 = 50%."
+/>
+
+<Quiz
+  q="a[tid + 1]처럼 시작이 4 B 어긋난 coalesced 접근의 효율은?"
+  options={['100%', '80%', '50%', '12.5%']}
+  answer={1}
+  explain="주소 4~131이 sector 0~4, 즉 5개(160 B)에 걸친다. 요청 128 B / 160 B = 80%. 정렬이 맞지 않으면 sector 하나가 더 필요하다."
+/>
+
+<Quiz
+  q="naive transpose에서 out[j][i] 쓰기의 효율이 12.5%인 이유는?"
+  options={['쓰기는 원래 느려서', 'warp의 인접 thread가 행 간격(16 KB)만큼 떨어진 주소에 써서 thread마다 sector가 달라서', 'bank conflict 때문에', 'shared memory를 안 써서 연산이 느려서']}
+  answer={1}
+  explain="인접 thread가 out의 서로 다른 행에 쓰므로 주소가 16 KB씩 떨어진다. 32개 sector를 옮기는데 sector마다 4 B만 쓴다. shared memory tiling은 이 접근 패턴 문제를 고치는 해결책이다."
+/>
+
+<Quiz
+  q="shared memory tile[32][32] float에서 warp가 한 열을 읽으면 몇-way bank conflict인가?"
+  options={['1-way (없음)', '2-way', '16-way', '32-way']}
+  answer={3}
+  explain="tile[t][c]의 word 주소는 32t + c이므로 bank = c로 모든 t가 같은 bank에 몰린다. tile[32][33]으로 padding하면 bank = (t + c) mod 32로 흩어진다."
+/>
+
+<Quiz
+  q="unstructured pruning으로 weight의 70%를 0으로 만들어도 GPU에서 잘 빨라지지 않는 주된 이유는?"
+  options={['0을 곱하는 것도 시간이 들어서', '남은 weight의 위치가 불규칙해 메모리 접근이 흩어지고(coalescing 실패) thread별 일의 양이 달라져서', 'Tensor Core가 0을 지원하지 않아서', 'pruning 후 모델이 커져서']}
+  answer={1}
+  explain="불규칙한 sparse 구조는 coalescing과 균형 잡힌 thread 배분을 깨뜨린다. 그래서 2:4 structured sparsity처럼 하드웨어가 규칙적으로 처리할 수 있는 형태가 필요하다."
+/>
+
+## 더 읽을거리
+
+- [CUDA C++ Best Practices Guide: Coalesced Access to Global Memory (NVIDIA)](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+- [An Efficient Matrix Transpose in CUDA C/C++ (NVIDIA Developer Blog)](https://developer.nvidia.com/blog/efficient-matrix-transpose-cuda-cc/)
+- [Accelerating Sparse Deep Neural Networks (Mishra et al., 2021, NVIDIA 2:4 sparsity)](https://arxiv.org/abs/2104.08378)
+- [FlashAttention (Dao et al., 2022)](https://arxiv.org/abs/2205.14135)

@@ -18,6 +18,7 @@ export default defineConfig({
   integrations: [
     starlight({
       title: 'Vasco Learn',
+      expressiveCode: { shiki: { langAlias: { cuda: 'cpp' } } },
       locales: { root: { label: '한국어', lang: 'ko' } },
       pagination: false, // 레슨 하단의 이전/다음은 직접 그림
       customCss: [
