@@ -1,0 +1,64 @@
+---
+import { getCollection } from 'astro:content';
+import { TRACKS } from '../tracks.mjs';
+const lessons = (await getCollection('docs'))
+  .filter((e) => e.data.track)
+  .sort((a, b) => a.id.localeCompare(b.id))
+  .map((e) => ({ id: e.id, title: e.data.title, track: e.data.track, href: `${import.meta.env.BASE_URL}${e.id}/` }));
+const data = JSON.stringify({ tracks: TRACKS, lessons });
+---
+<div id="dash" data-json={data}>
+  <div class="dash-stats">
+    <div class="dash-stat"><b id="s-done">0</b><span>완료한 레슨</span></div>
+    <div class="dash-stat"><b id="s-pct">0%</b><span>전체 진행률</span></div>
+    <div class="dash-stat"><b id="s-streak">0</b><span>연속 학습일 🔥</span></div>
+  </div>
+  <h2>다음에 할 것</h2>
+  <p id="next">—</p>
+  <h2>트랙</h2>
+  <div id="tracks"></div>
+  <div class="dash-tools">
+    <button class="lw-btn" id="exp">진행상황 Export</button>
+    <button class="lw-btn" id="imp">Import</button>
+    <input type="file" id="impf" accept="application/json" hidden />
+  </div>
+</div>
+<script>
+  import { load, save, today } from './progress';
+  const root = document.getElementById('dash')!;
+  const { tracks, lessons } = JSON.parse(root.dataset.json!);
+  function render() {
+    const p = load();
+    const done = lessons.filter((l: any) => p.done[l.id]);
+    document.getElementById('s-done')!.textContent = `${done.length}/${lessons.length}`;
+    document.getElementById('s-pct')!.textContent = lessons.length ? `${Math.round((done.length / lessons.length) * 100)}%` : '0%';
+    // streak: 오늘(또는 어제)부터 거꾸로 연속된 날 수
+    const days = new Set(Object.values(p.done));
+    let streak = 0; const d = new Date();
+    if (!days.has(today())) d.setDate(d.getDate() - 1);
+    while (days.has(d.toLocaleDateString('en-CA'))) { streak++; d.setDate(d.getDate() - 1); }
+    document.getElementById('s-streak')!.textContent = String(streak);
+    const next = lessons.find((l: any) => !p.done[l.id]);
+    document.getElementById('next')!.innerHTML = next
+      ? `<a href="${next.href}">${next.title}</a> <span class="lw-meta">(${tracks.find((t: any) => t.id === next.track)?.title ?? next.track})</span>`
+      : '전부 완료! 새 레슨 요청하기 🎉';
+    document.getElementById('tracks')!.innerHTML = tracks.map((t: any) => {
+      const ls = lessons.filter((l: any) => l.track === t.id);
+      const n = ls.filter((l: any) => p.done[l.id]).length;
+      const pct = ls.length ? (n / ls.length) * 100 : 0;
+      return `<div class="track ${ls.length ? '' : 'empty'}"><div class="track-head"><span>${t.title}</span><span class="lw-meta">${ls.length ? `${n}/${ls.length}` : '준비 중'}</span></div><div class="bar"><i style="width:${pct}%"></i></div></div>`;
+    }).join('');
+  }
+  document.getElementById('exp')!.onclick = () => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(load(), null, 2)], { type: 'application/json' }));
+    a.download = `learning-progress-${today()}.json`; a.click();
+  };
+  const f = document.getElementById('impf') as HTMLInputElement;
+  document.getElementById('imp')!.onclick = () => f.click();
+  f.onchange = async () => {
+    try { const p = JSON.parse(await f.files![0].text()); save({ done: p.done || {}, quiz: p.quiz || {} }); render(); }
+    catch { alert('JSON 파일이 이상함'); }
+  };
+  render();
+</script>

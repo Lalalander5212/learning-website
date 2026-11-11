@@ -1,0 +1,24 @@
+---
+// <Quiz q="질문" options={['a','b','c']} answer={1} explain="해설" />
+interface Props { q: string; options: string[]; answer: number; explain?: string }
+const { q, options, answer, explain } = Astro.props;
+---
+<div class="quiz not-content" data-answer={answer}>
+  <p class="q">Q. {q}</p>
+  <ul>{options.map((o, i) => <li><button class="opt" data-i={i}>{o}</button></li>)}</ul>
+  {explain && <p class="explain">💡 {explain}</p>}
+</div>
+<script>
+  document.querySelectorAll<HTMLElement>('.quiz').forEach((el) => {
+    if (el.dataset.bound) return; el.dataset.bound = '1';
+    const ans = Number(el.dataset.answer);
+    el.querySelectorAll<HTMLButtonElement>('button.opt').forEach((b) => {
+      b.addEventListener('click', () => {
+        const i = Number(b.dataset.i);
+        b.classList.add(i === ans ? 'right' : 'wrong');
+        if (i === ans) el.querySelectorAll('button.opt').forEach((x) => ((x as HTMLButtonElement).disabled = true));
+        el.classList.add('answered');
+      });
+    });
+  });
+</script>

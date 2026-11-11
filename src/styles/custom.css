@@ -1,0 +1,26 @@
+.lw-done-wrap { margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid var(--sl-color-hairline); display: flex; align-items: center; gap: 1rem; }
+.lw-btn { cursor: pointer; border: 1px solid var(--sl-color-accent); background: transparent; color: var(--sl-color-accent-high); padding: .5rem 1.1rem; border-radius: 999px; font-weight: 600; font-size: var(--sl-text-sm); }
+.lw-btn[data-done='true'] { background: var(--sl-color-accent); color: var(--sl-color-black); }
+.lw-meta { color: var(--sl-color-gray-3); font-size: var(--sl-text-sm); }
+.sidebar-content a.lw-checked::after { content: ' ✓'; color: var(--sl-color-accent-high); font-weight: 700; }
+
+.quiz { border: 1px solid var(--sl-color-hairline); border-radius: .6rem; padding: 1rem 1.2rem; margin: 1.5rem 0; }
+.quiz .q { font-weight: 600; margin: 0 0 .6rem; }
+.quiz ul { list-style: none; padding: 0; margin: 0; display: grid; gap: .4rem; }
+.quiz li { margin: 0 !important; }
+.quiz button.opt { width: 100%; text-align: left; cursor: pointer; padding: .5rem .8rem; border-radius: .4rem; border: 1px solid var(--sl-color-gray-5); background: var(--sl-color-gray-7, transparent); color: inherit; font: inherit; }
+.quiz button.opt.right { border-color: #3fb950; background: rgba(63,185,80,.15); }
+.quiz button.opt.wrong { border-color: #f85149; background: rgba(248,81,73,.12); }
+.quiz .explain { display: none; margin-top: .7rem; font-size: var(--sl-text-sm); color: var(--sl-color-gray-2); }
+.quiz.answered .explain { display: block; }
+
+.dash-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: .8rem; margin: 1rem 0 2rem; }
+.dash-stat { margin: 0 !important; border: 1px solid var(--sl-color-hairline); border-radius: .6rem; padding: .8rem 1rem; }
+.dash-stat b { display: block; font-size: 1.6rem; color: var(--sl-color-white); }
+.dash-stat span { font-size: var(--sl-text-xs); color: var(--sl-color-gray-3); }
+.track { margin: 1rem 0; }
+.track-head { display: flex; justify-content: space-between; font-weight: 600; }
+.bar { height: 8px; background: var(--sl-color-gray-6); border-radius: 99px; overflow: hidden; margin-top: .35rem; }
+.bar > i { display: block; height: 100%; background: var(--sl-color-accent); width: 0; transition: width .4s; }
+.track.empty { opacity: .45; }
+.dash-tools { display: flex; gap: .6rem; margin-top: 2rem; flex-wrap: wrap; }
