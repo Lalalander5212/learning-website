@@ -2,6 +2,7 @@
 title: "GPU memory coalescing과 shared memory"
 description: "warp의 메모리 접근을 sector 단위로 세기, transpose를 shared memory tiling으로 고치기, bank conflict"
 track: arch-foundations
+module: parallel
 est: 30min
 sidebar:
   order: 19
@@ -123,7 +124,7 @@ $$
 → t마다 다른 bank → **conflict 없음**.
 
 <Aside type="tip" title="같은 패턴, 세 번째 등장">
-cache set conflict(08, 09번), tiling conflict(12번), shared memory bank conflict(이 레슨). **2의 거듭제곱 간격 → 같은 slot에 몰림 → padding으로 해결**은 하드웨어 전반에 걸쳐 반복되는 패턴이다.
+cache set conflict(08, 09번 레슨), tiling conflict(12번 레슨), shared memory bank conflict(이 레슨). **2의 거듭제곱 간격 → 같은 slot에 몰림 → padding으로 해결**은 하드웨어 전반에 걸쳐 반복되는 패턴이다.
 </Aside>
 
 ## 코드: coalescing / bank conflict 시뮬레이터

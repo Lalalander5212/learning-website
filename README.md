@@ -11,19 +11,32 @@ npm run dev
 ```
 
 ## 레슨 추가
+작성 규칙과 올리는 절차는 [CLAUDE.md](./CLAUDE.md)에 있음. 요약:
+
 `src/content/docs/<track>/NN-slug.mdx`
 ```yaml
 ---
 title: 제목
-track: edge-llm      # src/tracks.mjs 의 id
+description: 한 줄 요약
+track: edge-llm      # src/tracks.mjs 의 id (폴더명과 같게)
+module: kv-cache     # 트랙에 modules가 있으면 필수
 est: 30min
 prereq: [llm-internals/01-attention]   # 선택. 먼저 보면 좋은 레슨 id
-sidebar: { order: 2 }
+sidebar: { order: 2 }                  # 파일 번호와 같게
 ---
 ```
-퀴즈: `<Quiz q="..." options={['a','b']} answer={0} explain="..." />` (answer는 0부터)
+퀴즈: `<Quiz q="..." options={['a','b']} answer={0} explain="..." />` (answer는 0부터. 보기는 화면에서 섞임)
+
+올리기 전에:
+```bash
+npm run check   # 레슨 검증
+npm run build
+```
 
 ## 구조
+- `src/tracks.mjs`: 트랙과 모듈. `src/lib/lesson-files.mjs`가 이걸로 사이드바를 만듦
+- `src/lib/remark-lesson-links.mjs`: 본문의 "NN번 레슨"을 링크로 바꿈
+- `scripts/check-lessons.mjs`: 레슨 검증 (CI에서 빌드 전에 실행)
 - `src/lib/store.ts`: 진행상황 저장 (localStorage `lw-progress-v2`), 복습 간격, 기기 간 merge
 - `src/lib/sync.ts`: 비공개 GitHub Gist sync (설정 페이지에서 토큰 연결)
 - `src/lib/lesson.ts`, `review.ts`, `quiz.ts`: 레슨 페이지, 복습 페이지, 퀴즈 동작

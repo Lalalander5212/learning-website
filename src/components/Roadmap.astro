@@ -2,6 +2,17 @@
 import { getLessons, TRACKS } from '../lib/lessons';
 const lessons = await getLessons();
 const title = (id: string) => lessons.find((l) => l.id === id);
+type L = (typeof lessons)[number];
+// 연속한 같은 모듈의 레슨을 한 묶음으로
+const segments = (ls: L[]) => {
+  const out: { module?: string; title?: string; lessons: L[] }[] = [];
+  for (const l of ls) {
+    const last = out[out.length - 1];
+    if (last && last.module === l.module) last.lessons.push(l);
+    else out.push({ module: l.module, title: l.moduleTitle, lessons: [l] });
+  }
+  return out;
+};
 ---
 <div id="roadmap" class="not-content">
   {TRACKS.map((t) => {
@@ -12,24 +23,29 @@ const title = (id: string) => lessons.find((l) => l.id === id);
         {ls.length === 0 ? (
           <p class="rm-empty">아직 레슨 없음</p>
         ) : (
-          <ol class="rm-list">
-            {ls.map((l) => (
-              <li class="rm-item" data-id={l.id} data-track={l.track}>
-                <a class="rm-title" href={l.href}>{l.title}</a>
-                <span class="rm-meta">
-                  {l.est && <span>{l.est}</span>}
-                  <span class="rm-quiz"></span>
-                  <span class="rm-flag"></span>
-                </span>
-                {l.prereq.length > 0 && (
-                  <span class="rm-pre">
-                    먼저:
-                    {l.prereq.map((p) => title(p) ? <a href={title(p)!.href} data-pre={p}>{title(p)!.title}</a> : null)}
-                  </span>
-                )}
-              </li>
-            ))}
-          </ol>
+          segments(ls).map((seg) => (
+            <>
+              {seg.title && <h3 class="rm-mod" id={`${t.id}-${seg.module}`}>{seg.title} <span class="rm-count" data-module={`${t.id}-${seg.module}`}></span></h3>}
+              <ol class="rm-list">
+                {seg.lessons.map((l) => (
+                  <li class="rm-item" data-id={l.id} data-track={l.track} data-module={l.module ? `${l.track}-${l.module}` : undefined}>
+                    <a class="rm-title" href={l.href}>{l.title}</a>
+                    <span class="rm-meta">
+                      {l.est && <span>{l.est}</span>}
+                      <span class="rm-quiz"></span>
+                      <span class="rm-flag"></span>
+                    </span>
+                    {l.prereq.length > 0 && (
+                      <span class="rm-pre">
+                        먼저:
+                        {l.prereq.map((p) => title(p) ? <a href={title(p)!.href} data-pre={p}>{title(p)!.title}</a> : null)}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ol>
+            </>
+          ))
         )}
       </section>
     );
@@ -52,7 +68,7 @@ const title = (id: string) => lessons.find((l) => l.id === id);
       li.querySelectorAll<HTMLElement>('[data-pre]').forEach((a) => a.classList.toggle('is-done', isDone(s, a.dataset.pre!)));
     });
     document.querySelectorAll<HTMLElement>('.rm-count').forEach((c) => {
-      const ls = items.filter((li) => li.dataset.track === c.dataset.track);
+      const ls = items.filter((li) => (c.dataset.module ? li.dataset.module === c.dataset.module : li.dataset.track === c.dataset.track));
       c.textContent = ls.length ? `${ls.filter((li) => isDone(s, li.dataset.id!)).length}/${ls.length}` : '';
     });
   }

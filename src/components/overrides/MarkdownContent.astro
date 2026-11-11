@@ -14,6 +14,7 @@ const prereqs = lesson ? lesson.prereq.map((id) => lessons.find((l) => l.id === 
 {lesson && (
   <div class="lw-head not-content">
     <a class="lw-chip" href={url('roadmap/') + '#' + lesson.track}>{lesson.trackTitle} {lesson.pos}/{lesson.total}</a>
+    {lesson.module && <a class="lw-chip" href={url('roadmap/') + '#' + lesson.track + '-' + lesson.module}>{lesson.moduleTitle}</a>}
     {lesson.est && <span class="lw-chip">{lesson.est}</span>}
     <a class="lw-chip" id="lw-quizchip" href="#" hidden></a>
     {prereqs.length > 0 && (

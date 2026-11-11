@@ -2,6 +2,7 @@
 title: "Roofline으로 DL 레이어 분석하기"
 description: "conv, depthwise, linear, LLM prefill/decode를 roofline 위에 올려 latency와 tokens/s를 추정하기"
 track: arch-foundations
+module: roofline
 est: 35min
 sidebar:
   order: 22
@@ -208,15 +209,15 @@ decode 단계는 연산 유닛의 1%도 못 쓰는 memory-bound다. 연산을 �
 
 ## Efficient ML 연결 (Part A 총정리)
 
-| Part A 개념 | DL에서의 역할 |
-|---|---|
-| Latency vs throughput (01) | TTFT/TPOT vs tokens/s, batch 선택 |
-| Iron Law, Amdahl (02, 03) | MACs × utilization, non-matmul 연산이 병목 |
-| Pipelining (04~06) | systolic array, pipeline parallelism, speculative decoding |
-| Cache, locality (07~12) | tiling, fusion, FlashAttention, 텐서 레이아웃 |
-| Virtual memory (13~15) | PagedAttention, pinned memory, mmap |
-| SIMD, GPU (16~19) | quantization과 lane 수, Tensor Core, structured sparsity |
-| Roofline (20~22) | 모든 최적화가 roofline 위에서 어디로 움직이는지 |
+| Part A 개념 | 레슨 | DL에서의 역할 |
+|---|---|---|
+| Latency vs throughput | 01번 레슨 | TTFT/TPOT vs tokens/s, batch 선택 |
+| Iron Law, Amdahl | 02, 03번 레슨 | MACs × utilization, non-matmul 연산이 병목 |
+| Pipelining | 04~06번 레슨 | systolic array, pipeline parallelism, speculative decoding |
+| Cache, locality | 07~12번 레슨 | tiling, fusion, FlashAttention, 텐서 레이아웃 |
+| Virtual memory | 13~15번 레슨 | PagedAttention, pinned memory, mmap |
+| SIMD, GPU | 16~19번 레슨 | quantization과 lane 수, Tensor Core, structured sparsity |
+| Roofline | 20~22번 레슨 | 모든 최적화가 roofline 위에서 어디로 움직이는지 |
 
 MIT 6.5940의 기법들(pruning, quantization, NAS, distillation, efficient attention, TinyEngine)을 볼 때마다 "이게 **FLOPs**를 줄이나, **bytes**를 줄이나, **utilization**을 올리나?"를 물어보자. 그러면 그 기법이 어떤 하드웨어, 어떤 batch 크기에서 효과가 있을지 예측할 수 있다.
 

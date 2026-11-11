@@ -3,18 +3,20 @@ import starlight from '@astrojs/starlight';
 import { unified } from '@astrojs/markdown-remark';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
-import fs from 'node:fs';
-import { TRACKS } from './src/tracks.mjs';
+import { TRACKS, trackSidebar } from './src/lib/lesson-files.mjs';
+import { remarkLessonLinks } from './src/lib/remark-lesson-links.mjs';
 
-const hasLessons = (id) => {
-  const dir = new URL(`./src/content/docs/${id}/`, import.meta.url);
-  return fs.existsSync(dir) && fs.readdirSync(dir).some((f) => /\.mdx?$/.test(f));
-};
+const BASE = '/learning-website';
 
 export default defineConfig({
   site: 'https://lalalander5212.github.io',
-  base: '/learning-website',
-  markdown: { processor: unified({ remarkPlugins: [remarkMath], rehypePlugins: [rehypeKatex] }) },
+  base: BASE,
+  markdown: {
+    processor: unified({
+      remarkPlugins: [remarkMath, [remarkLessonLinks, { base: BASE }]], // "NN번 레슨" → 링크
+      rehypePlugins: [rehypeKatex],
+    }),
+  },
   integrations: [
     starlight({
       title: 'Vasco Learn',
@@ -36,10 +38,8 @@ export default defineConfig({
         { label: '대시보드', link: '/' },
         { label: '복습', link: '/review/' },
         { label: '로드맵', link: '/roadmap/' },
-        ...TRACKS.filter((t) => hasLessons(t.id)).map((t) => ({
-          label: t.title,
-          items: [{ autogenerate: { directory: t.id } }],
-        })),
+        // 트랙 → 모듈 → 레슨. 레슨 파일을 추가/이동하면 dev 서버를 재시작해야 반영됨
+        ...TRACKS.map((t) => trackSidebar(t)).filter(Boolean),
         { label: '설정', link: '/settings/' },
       ],
     }),

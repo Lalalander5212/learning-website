@@ -261,11 +261,14 @@ a.dash-title:hover { text-decoration: underline; text-decoration-thickness: 3px;
 .trk.is-empty .trk-name { color: var(--sl-color-gray-3); font-weight: 500; }
 
 /* ── 로드맵 ───────────────────────────────────────────── */
-.rm-track { margin-top: 2.5rem; scroll-margin-top: 5rem; }
+.rm-track { margin-top: 2.5rem; scroll-margin-top: 5rem; counter-reset: rm; }
 .rm-track:first-child { margin-top: 0; }
 .rm-count { margin-inline-start: 0.4rem; font-weight: 500; color: var(--sl-color-gray-3); }
 .rm-empty { margin: 0; font-size: var(--sl-text-sm); color: var(--sl-color-gray-3); }
-.rm-list { list-style: none; margin: 0; padding: 0; counter-reset: rm; }
+.rm-list { list-style: none; margin: 0; padding: 0; }
+.rm-mod { margin: 1.75rem 0 0.9rem; font-size: var(--sl-text-sm); font-weight: 700; letter-spacing: 0.02em; color: var(--sl-color-gray-2); scroll-margin-top: 5rem; }
+.rm-track > h2 + .rm-mod { margin-top: 1rem; }
+.rm-list + .rm-list { margin-top: 1.4rem; }
 .rm-item { position: relative; counter-increment: rm; padding: 0 0 1.4rem 2.75rem; }
 .rm-item::before {
   content: counter(rm); position: absolute; left: 0; top: 0.1rem;
