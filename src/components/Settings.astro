@@ -1,0 +1,130 @@
+---
+---
+<div id="settings" class="not-content">
+  <section>
+    <h2>학습</h2>
+    <label class="set-row">
+      <input type="checkbox" id="set-gate" />
+      <span>퀴즈를 다 풀어야 레슨을 완료할 수 있게 하기</span>
+    </label>
+  </section>
+
+  <section>
+    <h2>기기 간 동기화</h2>
+    <p class="set-help">
+      비공개 GitHub Gist 하나에 진행상황을 저장해서 폰과 노트북이 같은 기록을 보게 함.
+      토큰은 이 브라우저에만 저장되고 GitHub로만 전송됨.
+    </p>
+    <div id="sync-off">
+      <ol class="set-steps">
+        <li><a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">GitHub에서 fine-grained 토큰 만들기</a></li>
+        <li>Repository access는 “Public repositories”로 두고, Account permissions에서 <b>Gists</b>만 “Read and write”로 설정</li>
+        <li>만든 토큰을 아래에 붙여넣기. 다른 기기에서도 같은 토큰을 넣으면 됨</li>
+      </ol>
+      <div class="set-inline">
+        <input type="password" id="sync-token" placeholder="github_pat_..." autocomplete="off" spellcheck="false" aria-label="GitHub 토큰" />
+        <button class="lw-btn primary" id="sync-connect" type="button">연결</button>
+      </div>
+    </div>
+    <div id="sync-on" hidden>
+      <p id="sync-state"></p>
+      <div class="set-inline">
+        <button class="lw-btn" id="sync-now" type="button">지금 동기화</button>
+        <button class="lw-btn" id="sync-disconnect" type="button">연결 해제</button>
+      </div>
+    </div>
+    <p class="set-msg" id="sync-msg" role="status"></p>
+  </section>
+
+  <section>
+    <h2>백업</h2>
+    <div class="set-inline">
+      <button class="lw-btn" id="exp" type="button">파일로 내보내기</button>
+      <button class="lw-btn" id="imp" type="button">파일에서 가져오기</button>
+      <input type="file" id="impf" accept="application/json" hidden />
+    </div>
+    <p class="set-msg" id="bk-msg" role="status"></p>
+  </section>
+
+  <section>
+    <h2>초기화</h2>
+    <p class="set-help">이 브라우저의 진행상황, 퀴즈 기록, 메모를 전부 지움. 동기화가 켜져 있으면 먼저 연결을 해제해야 다시 내려받지 않음.</p>
+    <button class="lw-btn danger" id="reset" type="button">전부 지우기</button>
+  </section>
+</div>
+<script>
+  import { load, save, update, merge, normalize, empty, today } from '../lib/store';
+  import { getCfg, connect, disconnect, syncNow } from '../lib/sync';
+
+  const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+  const gate = $<HTMLInputElement>('set-gate');
+  const msg = $('sync-msg');
+
+  function render() {
+    gate.checked = load().settings.gate;
+    const c = getCfg();
+    $('sync-off').hidden = !!c;
+    $('sync-on').hidden = !c;
+    if (c) {
+      const when = c.last ? new Date(c.last).toLocaleString('ko-KR', { month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '아직 없음';
+      $('sync-state').textContent = c.err ? `동기화 실패: ${c.err}` : `연결됨. 마지막 동기화: ${when}`;
+      $('sync-state').classList.toggle('is-err', !!c.err);
+    }
+  }
+  gate.addEventListener('change', () => update((s) => { s.settings = { gate: gate.checked, t: Date.now() }; }));
+
+  async function run(btn: HTMLButtonElement, busy: string, fn: () => Promise<void>, ok: string) {
+    const label = btn.textContent;
+    btn.disabled = true; btn.textContent = busy; msg.textContent = '';
+    try { await fn(); msg.textContent = ok; }
+    catch (e: any) { msg.textContent = e?.message === 'Failed to fetch' ? 'GitHub에 연결하지 못함. 네트워크를 확인' : e?.message || '실패함'; }
+    finally { btn.disabled = false; btn.textContent = label; render(); }
+  }
+  $('sync-connect').addEventListener('click', () => {
+    const token = $<HTMLInputElement>('sync-token').value.trim();
+    if (!token) { msg.textContent = '토큰을 붙여넣어야 함'; return; }
+    run($<HTMLButtonElement>('sync-connect'), '연결 중', () => connect(token), '');
+  });
+  $('sync-now').addEventListener('click', () => run($<HTMLButtonElement>('sync-now'), '동기화 중', syncNow, '동기화됨'));
+  $('sync-disconnect').addEventListener('click', () => { disconnect(); msg.textContent = '연결 해제됨. Gist에 올라간 기록은 GitHub에 그대로 남아 있음'; });
+
+  // 백업
+  const bk = $('bk-msg');
+  $('exp').addEventListener('click', () => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(load(), null, 2)], { type: 'application/json' }));
+    a.download = `learning-progress-${today()}.json`;
+    a.click();
+    bk.textContent = '내보냄';
+  });
+  const f = $<HTMLInputElement>('impf');
+  $('imp').addEventListener('click', () => f.click());
+  f.addEventListener('change', async () => {
+    try {
+      const incoming = normalize(JSON.parse(await f.files![0].text()));
+      save(merge(load(), incoming));
+      bk.textContent = '가져옴. 기존 기록과 합쳐짐';
+    } catch { bk.textContent = '읽을 수 없는 파일. 내보내기로 만든 JSON 파일이어야 함'; }
+    f.value = '';
+  });
+
+  // 초기화는 두 번 눌러야 실행
+  const reset = $<HTMLButtonElement>('reset');
+  let armed: number | undefined;
+  reset.addEventListener('click', () => {
+    if (!armed) {
+      reset.textContent = '한 번 더 누르면 지워짐';
+      armed = window.setTimeout(() => { armed = undefined; reset.textContent = '전부 지우기'; }, 4000);
+      return;
+    }
+    clearTimeout(armed); armed = undefined;
+    save(empty());
+    try { localStorage.removeItem('lw-scroll'); } catch {}
+    reset.textContent = '지워짐';
+    setTimeout(() => (reset.textContent = '전부 지우기'), 2000);
+  });
+
+  window.addEventListener('lw:change', render);
+  window.addEventListener('lw:sync', render);
+  render();
+</script>

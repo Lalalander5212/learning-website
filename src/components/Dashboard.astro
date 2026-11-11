@@ -1,64 +1,163 @@
 ---
-import { getCollection } from 'astro:content';
-import { TRACKS } from '../tracks.mjs';
-const lessons = (await getCollection('docs'))
-  .filter((e) => e.data.track)
-  .sort((a, b) => a.id.localeCompare(b.id))
-  .map((e) => ({ id: e.id, title: e.data.title, track: e.data.track, href: `${import.meta.env.BASE_URL}${e.id}/` }));
-const data = JSON.stringify({ tracks: TRACKS, lessons });
+import { getLessons, url, TRACKS } from '../lib/lessons';
+const lessons = (await getLessons()).map(({ id, title, track, trackTitle, est, href, pos, total }) => ({ id, title, track, trackTitle, est, href, pos, total }));
+const data = JSON.stringify({ tracks: TRACKS, lessons, review: url('review/'), roadmap: url('roadmap/') });
 ---
-<div id="dash" data-json={data}>
-  <div class="dash-stats">
-    <div class="dash-stat"><b id="s-done">0</b><span>완료한 레슨</span></div>
-    <div class="dash-stat"><b id="s-pct">0%</b><span>전체 진행률</span></div>
-    <div class="dash-stat"><b id="s-streak">0</b><span>연속 학습일 🔥</span></div>
-  </div>
-  <h2>다음에 할 것</h2>
-  <p id="next">—</p>
-  <h2>트랙</h2>
-  <div id="tracks"></div>
-  <div class="dash-tools">
-    <button class="lw-btn" id="exp">진행상황 Export</button>
-    <button class="lw-btn" id="imp">Import</button>
-    <input type="file" id="impf" accept="application/json" hidden />
-  </div>
+<div id="dash" class="not-content" data-json={data}>
+  <section class="dash-next" id="d-next"></section>
+  <section class="dash-review" id="d-review"></section>
+  <p class="dash-figures" id="d-figs"></p>
+
+  <section>
+    <h2>최근 활동</h2>
+    <div class="heat-wrap" id="d-heat"></div>
+  </section>
+
+  <section>
+    <h2>트랙</h2>
+    <div id="d-tracks"></div>
+  </section>
 </div>
 <script>
-  import { load, save, today } from './progress';
+  import { load, isDone, streak, dueKeys, nextDue, firstTryRate, today, addDays, dstr, fmtDate } from '../lib/store';
+
   const root = document.getElementById('dash')!;
-  const { tracks, lessons } = JSON.parse(root.dataset.json!);
-  function render() {
-    const p = load();
-    const done = lessons.filter((l: any) => p.done[l.id]);
-    document.getElementById('s-done')!.textContent = `${done.length}/${lessons.length}`;
-    document.getElementById('s-pct')!.textContent = lessons.length ? `${Math.round((done.length / lessons.length) * 100)}%` : '0%';
-    // streak: 오늘(또는 어제)부터 거꾸로 연속된 날 수
-    const days = new Set(Object.values(p.done));
-    let streak = 0; const d = new Date();
-    if (!days.has(today())) d.setDate(d.getDate() - 1);
-    while (days.has(d.toLocaleDateString('en-CA'))) { streak++; d.setDate(d.getDate() - 1); }
-    document.getElementById('s-streak')!.textContent = String(streak);
-    const next = lessons.find((l: any) => !p.done[l.id]);
-    document.getElementById('next')!.innerHTML = next
-      ? `<a href="${next.href}">${next.title}</a> <span class="lw-meta">(${tracks.find((t: any) => t.id === next.track)?.title ?? next.track})</span>`
-      : '전부 완료! 새 레슨 요청하기 🎉';
-    document.getElementById('tracks')!.innerHTML = tracks.map((t: any) => {
-      const ls = lessons.filter((l: any) => l.track === t.id);
-      const n = ls.filter((l: any) => p.done[l.id]).length;
-      const pct = ls.length ? (n / ls.length) * 100 : 0;
-      return `<div class="track ${ls.length ? '' : 'empty'}"><div class="track-head"><span>${t.title}</span><span class="lw-meta">${ls.length ? `${n}/${ls.length}` : '준비 중'}</span></div><div class="bar"><i style="width:${pct}%"></i></div></div>`;
-    }).join('');
+  const { tracks, lessons, review, roadmap } = JSON.parse(root.dataset.json!);
+  const ids = new Set<string>(lessons.map((l: any) => l.id));
+  const valid = (id: string) => ids.has(id);
+  const el = (tag: string, cls = '', text = '') => {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text) e.textContent = text;
+    return e;
+  };
+
+  function renderNext(s: any) {
+    const box = document.getElementById('d-next')!;
+    box.replaceChildren();
+    const doneN = lessons.filter((l: any) => isDone(s, l.id)).length;
+    const next = lessons.find((l: any) => !isDone(s, l.id));
+    if (!lessons.length) {
+      box.append(el('p', 'dash-title', '아직 레슨이 없음'));
+      return;
+    }
+    if (!next) {
+      box.append(el('p', 'dash-title', '올라온 레슨을 전부 끝냄'));
+      box.append(el('p', 'dash-sub', '새 레슨이 올라오면 여기에 뜸. 그동안은 복습이나 로드맵을 보면 됨.'));
+      return;
+    }
+    const a = el('a', 'dash-title', next.title) as HTMLAnchorElement;
+    a.href = next.href;
+    box.append(a);
+    box.append(el('p', 'dash-sub', `${next.trackTitle} ${next.pos}/${next.total}${next.est ? `, ${next.est}` : ''}`));
+    const b = el('a', 'lw-btn primary', doneN ? '이어서 하기' : '첫 레슨 시작') as HTMLAnchorElement;
+    b.href = next.href;
+    b.id = 'd-continue';
+    box.append(b);
   }
-  document.getElementById('exp')!.onclick = () => {
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([JSON.stringify(load(), null, 2)], { type: 'application/json' }));
-    a.download = `learning-progress-${today()}.json`; a.click();
-  };
-  const f = document.getElementById('impf') as HTMLInputElement;
-  document.getElementById('imp')!.onclick = () => f.click();
-  f.onchange = async () => {
-    try { const p = JSON.parse(await f.files![0].text()); save({ done: p.done || {}, quiz: p.quiz || {} }); render(); }
-    catch { alert('JSON 파일이 이상함'); }
-  };
+
+  function renderReview(s: any) {
+    const box = document.getElementById('d-review')!;
+    box.replaceChildren();
+    const due = dueKeys(s, valid).length;
+    if (due) {
+      box.append(el('span', 'dash-due', `오늘 복습할 문제 ${due}개`));
+      const b = el('a', 'lw-btn', '복습 시작') as HTMLAnchorElement;
+      b.href = review;
+      box.append(b);
+    } else {
+      const nd = nextDue(s, valid);
+      box.append(el('span', 'dash-muted', nd ? `오늘 복습할 문제 없음. 다음 복습은 ${fmtDate(nd.date)}, ${nd.count}문제` : '퀴즈를 풀면 복습 일정이 여기에 잡힘'));
+    }
+  }
+
+  function renderFigures(s: any) {
+    const p = document.getElementById('d-figs')!;
+    p.replaceChildren();
+    const doneN = lessons.filter((l: any) => isDone(s, l.id)).length;
+    const fig = (num: string, label: string) => {
+      const span = el('span', 'fig');
+      span.append(el('b', '', num), ` ${label}`);
+      p.append(span);
+    };
+    fig(`${doneN}/${lessons.length}`, '레슨 완료');
+    fig(`${streak(s)}일`, '연속 학습');
+    const rate = firstTryRate(s);
+    fig(rate === null ? '–' : `${rate}%`, '퀴즈 첫 시도 정답률');
+  }
+
+  function renderHeat(s: any) {
+    const wrap = document.getElementById('d-heat')!;
+    wrap.replaceChildren();
+    const WEEKS = 26;
+    const now = new Date();
+    const start = new Date(now);
+    start.setDate(now.getDate() - now.getDay() - (WEEKS - 1) * 7); // 일요일 시작
+    const months = el('div', 'heat-months');
+    const grid = el('div', 'heat');
+    const t = today();
+    let lastMonth = -1;
+    for (let w = 0; w < WEEKS; w++) {
+      const first = new Date(start);
+      first.setDate(start.getDate() + w * 7);
+      const m = el('span', '', first.getMonth() !== lastMonth && first.getDate() <= 7 ? `${first.getMonth() + 1}월` : '');
+      if (m.textContent) lastMonth = first.getMonth();
+      months.append(m);
+      for (let d = 0; d < 7; d++) {
+        const day = addDays(dstr(first), d);
+        const cell = el('i');
+        if (day > t) cell.className = 'future';
+        else {
+          const n = s.activity[day] || 0;
+          cell.dataset.lv = String(n === 0 ? 0 : n < 3 ? 1 : n < 6 ? 2 : n < 10 ? 3 : 4);
+          cell.title = `${fmtDate(day)}: 활동 ${n}개`;
+          if (day === t) cell.classList.add('today');
+        }
+        grid.append(cell);
+      }
+    }
+    wrap.append(months, grid);
+    wrap.scrollLeft = wrap.scrollWidth;
+  }
+
+  function renderTracks(s: any) {
+    const box = document.getElementById('d-tracks')!;
+    box.replaceChildren();
+    const next = lessons.find((l: any) => !isDone(s, l.id));
+    for (const t of tracks) {
+      const ls = lessons.filter((l: any) => l.track === t.id);
+      const row = el('div', 'trk' + (ls.length ? '' : ' is-empty'));
+      const name = el('a', 'trk-name', t.title) as HTMLAnchorElement;
+      name.href = `${roadmap}#${t.id}`;
+      const cells = el('div', 'trk-cells');
+      for (const l of ls) {
+        const c = el('a', 'trk-cell') as HTMLAnchorElement;
+        c.href = l.href;
+        c.title = l.title;
+        c.setAttribute('aria-label', `${l.title}${isDone(s, l.id) ? ' (완료)' : ''}`);
+        if (isDone(s, l.id)) c.classList.add('is-done');
+        else if (next && l.id === next.id) c.classList.add('is-next');
+        cells.append(c);
+      }
+      const n = ls.filter((l: any) => isDone(s, l.id)).length;
+      row.append(name, cells, el('span', 'trk-n', ls.length ? `${n}/${ls.length}` : '준비 중'));
+      box.append(row);
+    }
+  }
+
+  function render() {
+    const s = load();
+    renderNext(s); renderReview(s); renderFigures(s); renderHeat(s); renderTracks(s);
+  }
+  window.addEventListener('lw:change', render);
   render();
+
+  // Enter로 바로 이어서 하기
+  document.addEventListener('keydown', (e) => {
+    const t = e.target as HTMLElement;
+    if (e.key !== 'Enter' || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (t && t !== document.body && /^(A|BUTTON|INPUT|TEXTAREA|SELECT|SUMMARY)$/.test(t.tagName)) return;
+    if (document.querySelector('dialog[open]')) return;
+    (document.getElementById('d-continue') as HTMLAnchorElement | null)?.click();
+  });
 </script>

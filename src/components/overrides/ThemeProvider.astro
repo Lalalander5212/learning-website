@@ -1,0 +1,12 @@
+---
+// 기본값은 다크. 토글로 바꾼 값은 localStorage('starlight-theme')에 남음.
+---
+{/* FOUC 방지를 위해 인라인 */}
+<script is:inline>
+  (() => {
+    let t = null;
+    try { t = localStorage.getItem('starlight-theme'); } catch {}
+    document.documentElement.dataset.theme = t === 'light' ? 'light' : 'dark';
+    window.StarlightThemeProvider = { updatePickers() {} };
+  })();
+</script>

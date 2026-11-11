@@ -1,0 +1,61 @@
+---
+import { getLessons, TRACKS } from '../lib/lessons';
+const lessons = await getLessons();
+const title = (id: string) => lessons.find((l) => l.id === id);
+---
+<div id="roadmap" class="not-content">
+  {TRACKS.map((t) => {
+    const ls = lessons.filter((l) => l.track === t.id);
+    return (
+      <section class="rm-track" id={t.id}>
+        <h2>{t.title} <span class="rm-count" data-track={t.id}></span></h2>
+        {ls.length === 0 ? (
+          <p class="rm-empty">아직 레슨 없음</p>
+        ) : (
+          <ol class="rm-list">
+            {ls.map((l) => (
+              <li class="rm-item" data-id={l.id} data-track={l.track}>
+                <a class="rm-title" href={l.href}>{l.title}</a>
+                <span class="rm-meta">
+                  {l.est && <span>{l.est}</span>}
+                  <span class="rm-quiz"></span>
+                  <span class="rm-flag"></span>
+                </span>
+                {l.prereq.length > 0 && (
+                  <span class="rm-pre">
+                    먼저:
+                    {l.prereq.map((p) => title(p) ? <a href={title(p)!.href} data-pre={p}>{title(p)!.title}</a> : null)}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ol>
+        )}
+      </section>
+    );
+  })}
+</div>
+<script>
+  import { load, isDone, quizCount, fmtDate } from '../lib/store';
+  function render() {
+    const s = load();
+    const items = [...document.querySelectorAll<HTMLElement>('.rm-item')];
+    const next = items.find((li) => !isDone(s, li.dataset.id!));
+    items.forEach((li) => {
+      const id = li.dataset.id!;
+      const done = isDone(s, id);
+      li.classList.toggle('is-done', done);
+      li.classList.toggle('is-next', li === next);
+      const q = quizCount(s, id);
+      li.querySelector('.rm-quiz')!.textContent = q ? `퀴즈 ${q}개 풂` : '';
+      li.querySelector('.rm-flag')!.textContent = done ? `${fmtDate(s.done[id].d!)} 완료` : li === next ? '다음 차례' : '';
+      li.querySelectorAll<HTMLElement>('[data-pre]').forEach((a) => a.classList.toggle('is-done', isDone(s, a.dataset.pre!)));
+    });
+    document.querySelectorAll<HTMLElement>('.rm-count').forEach((c) => {
+      const ls = items.filter((li) => li.dataset.track === c.dataset.track);
+      c.textContent = ls.length ? `${ls.filter((li) => isDone(s, li.dataset.id!)).length}/${ls.length}` : '';
+    });
+  }
+  window.addEventListener('lw:change', render);
+  render();
+</script>

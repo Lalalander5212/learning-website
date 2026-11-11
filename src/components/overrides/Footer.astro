@@ -1,0 +1,76 @@
+---
+// 모든 페이지에 들어가는 공통 요소: 단축키 도움말, 사이드바 표시, sync
+import Default from '@astrojs/starlight/components/Footer.astro';
+import { url } from '../../lib/lessons';
+---
+<Default />
+<p class="lw-foot">
+  <button type="button" id="lw-help-open">단축키 보기 <kbd>?</kbd></button>
+</p>
+<dialog id="lw-help" data-home={url('')} data-review={url('review/')}>
+  <h2>단축키</h2>
+  <dl>
+    <div><dt><kbd>J</kbd> <kbd>K</kbd></dt><dd>다음 레슨, 이전 레슨</dd></div>
+    <div><dt><kbd>D</kbd></dt><dd>레슨 완료하고 다음으로</dd></div>
+    <div><dt><kbd>1</kbd>–<kbd>4</kbd></dt><dd>화면에 보이는 퀴즈의 답 고르기</dd></div>
+    <div><dt><kbd>Enter</kbd></dt><dd>복습에서 다음 문제</dd></div>
+    <div><dt><kbd>H</kbd></dt><dd>대시보드</dd></div>
+    <div><dt><kbd>R</kbd></dt><dd>복습</dd></div>
+    <div><dt><kbd>T</kbd></dt><dd>라이트/다크 전환</dd></div>
+    <div><dt><kbd>/</kbd></dt><dd>검색</dd></div>
+  </dl>
+  <form method="dialog"><button class="lw-btn">닫기</button></form>
+</dialog>
+<script>
+  import { load, isDone, dueKeys } from '../../lib/store';
+  import { isTyping, toggleTheme } from '../../lib/ui';
+  import { initAutoSync } from '../../lib/sync';
+
+  const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+  const idOf = (a: HTMLAnchorElement) =>
+    decodeURI(new URL(a.href).pathname).replace(base, '').replace(/^\/|\/$/g, '');
+
+  // 사이드바: 완료한 레슨 표시, 트랙별 n/N, 복습할 문제 수
+  function paintSidebar() {
+    const s = load();
+    document.querySelectorAll<HTMLElement>('.sidebar-content details').forEach((group) => {
+      const links = [...group.querySelectorAll<HTMLAnchorElement>('a[href]')];
+      let n = 0;
+      links.forEach((a) => {
+        const d = isDone(s, idOf(a));
+        a.classList.toggle('lw-checked', d);
+        if (d) n++;
+      });
+      const label = group.querySelector('.group-label');
+      if (!label) return;
+      let c = label.querySelector<HTMLElement>('.lw-count');
+      if (!c) { c = document.createElement('span'); c.className = 'lw-count'; label.append(c); }
+      c.textContent = `${n}/${links.length}`;
+    });
+    const due = dueKeys(s).length;
+    document.querySelectorAll<HTMLAnchorElement>('.sidebar-content a[href$="/review/"]').forEach((a) => {
+      let c = a.querySelector<HTMLElement>('.lw-due');
+      if (!c) { c = document.createElement('span'); c.className = 'lw-due'; a.append(c); }
+      c.textContent = due ? String(due) : '';
+      c.hidden = !due;
+    });
+  }
+  paintSidebar();
+  window.addEventListener('lw:change', paintSidebar);
+
+  const help = document.getElementById('lw-help') as HTMLDialogElement;
+  document.getElementById('lw-help-open')?.addEventListener('click', () => help.showModal());
+  help.addEventListener('click', (e) => { if (e.target === help) help.close(); });
+
+  document.addEventListener('keydown', (e) => {
+    if (isTyping(e)) return;
+    const k = e.key.toLowerCase();
+    if (e.key === '?') { e.preventDefault(); help.open ? help.close() : help.showModal(); }
+    else if (help.open) return;
+    else if (k === 't') toggleTheme();
+    else if (k === 'h') location.href = help.dataset.home!;
+    else if (k === 'r') location.href = help.dataset.review!;
+  });
+
+  initAutoSync();
+</script>

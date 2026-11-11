@@ -1,0 +1,14 @@
+---
+// 드롭다운 대신 라이트/다크 스위치. 손잡이 안의 아이콘이 현재 모드를 보여줌.
+---
+<button class="lw-theme" type="button" role="switch" aria-checked="true" aria-label="다크 모드" title="라이트/다크 전환 (T)">
+  <span class="knob">
+    <svg class="sun" viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><circle cx="12" cy="12" r="4.5" fill="currentColor"/><g stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8"/></g></svg>
+    <svg class="moon" viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5a8.5 8.5 0 1 0 10.7 10.7Z"/></svg>
+  </span>
+</button>
+<script>
+  import { toggleTheme, paintTheme } from '../../lib/ui';
+  document.querySelectorAll('.lw-theme').forEach((b) => b.addEventListener('click', toggleTheme));
+  paintTheme();
+</script>

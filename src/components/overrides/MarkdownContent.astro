@@ -1,0 +1,61 @@
+---
+// 레슨 페이지에만 헤더(트랙 위치, 시간, 퀴즈, 선수 레슨)와 완료 영역을 붙임
+import Default from '@astrojs/starlight/components/MarkdownContent.astro';
+import { getLessons, url } from '../../lib/lessons';
+
+const { entry } = Astro.locals.starlightRoute;
+const lessons = await getLessons();
+const i = lessons.findIndex((l) => l.id === entry.id);
+const lesson = i >= 0 ? lessons[i] : null;
+const prev = i > 0 ? lessons[i - 1] : null;
+const next = lesson && i < lessons.length - 1 ? lessons[i + 1] : null;
+const prereqs = lesson ? lesson.prereq.map((id) => lessons.find((l) => l.id === id)).filter((l) => !!l) : [];
+---
+{lesson && (
+  <div class="lw-head not-content">
+    <a class="lw-chip" href={url('roadmap/') + '#' + lesson.track}>{lesson.trackTitle} {lesson.pos}/{lesson.total}</a>
+    {lesson.est && <span class="lw-chip">{lesson.est}</span>}
+    <a class="lw-chip" id="lw-quizchip" href="#" hidden></a>
+    {prereqs.length > 0 && (
+      <p class="lw-pre">
+        먼저 보면 좋은 레슨:
+        {prereqs.map((p) => <a href={p!.href} data-pre={p!.id}>{p!.title}</a>)}
+      </p>
+    )}
+  </div>
+)}
+<Default><slot /></Default>
+{lesson && (
+  <div
+    class="lw-lesson not-content"
+    data-lesson-id={lesson.id}
+    data-next={next?.href ?? ''}
+    data-prev={prev?.href ?? ''}
+    data-home={url('')}
+  >
+    <details class="lw-notes">
+      <summary>내 메모</summary>
+      <textarea id="lw-note" rows="5" placeholder="이 레슨에서 기억해둘 것. 자동 저장됨"></textarea>
+    </details>
+
+    <div class="lw-end">
+      <button class="lw-btn primary lw-main" type="button">완료하고 다음 레슨</button>
+      <p class="lw-status" id="lw-status"></p>
+    </div>
+
+    <nav class="lw-nav" aria-label="레슨 이동">
+      {prev ? <a href={prev.href} rel="prev"><small>이전</small>{prev.title}</a> : <span />}
+      {next ? <a href={next.href} rel="next" class="is-next"><small>다음</small>{next.title}</a> : <span />}
+    </nav>
+
+    <div class="lw-mobilebar">
+      <span class="lw-pct" id="lw-pct">0%</span>
+      <button class="lw-btn primary lw-main" type="button">완료하고 다음 레슨</button>
+    </div>
+    <div class="lw-readbar" aria-hidden="true"><i id="lw-readfill"></i></div>
+  </div>
+)}
+<script>
+  import { initLesson } from '../../lib/lesson';
+  initLesson();
+</script>
