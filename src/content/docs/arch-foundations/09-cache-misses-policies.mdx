@@ -2,6 +2,7 @@
 title: "3C miss, 교체 정책, 쓰기 정책"
 description: "miss가 왜 났는지 분류하고, 어떤 block을 쫓아낼지와 쓰기를 어떻게 처리할지 정하기"
 track: arch-foundations
+module: cache
 est: 30min
 sidebar:
   order: 9
@@ -226,38 +227,75 @@ spatial locality 덕분에 compulsory miss는 줄지만, cache 크기가 고정�
 
 <Quiz
   q="같은 크기의 fully associative LRU cache에서는 hit였을 접근이 실제 cache에서 miss가 났다. 이 miss의 종류는?"
-  options={['Compulsory', 'Capacity', 'Conflict', 'Coherence']}
-  answer={2}
+  options={['Conflict', 'Compulsory', 'Capacity', 'Coherence']}
+  answer={0}
   explain="fully associative였다면 hit였다는 건 공간은 충분했는데 set 배치 제약 때문에 쫓겨났다는 뜻이므로 conflict miss다. fully associative에서도 miss였다면 capacity miss다."
 />
 
 <Quiz
-  q="4-block direct-mapped cache에서 block 시퀀스 0, 8, 0, 6, 8을 접근하면 miss는 몇 번인가?"
-  options={['3', '4', '5', '2']}
+  q="4-block direct-mapped cache에서 block 시퀀스 2, 6, 3, 2, 7, 6을 접근하면 miss는 몇 번인가?"
+  options={['4', '5', '6', '3']}
   answer={2}
-  explain="0과 8은 둘 다 index 0(mod 4)이라 서로를 계속 쫓아낸다. 0, 8, 0, 8이 전부 miss이고 6도 처음이라 miss → 5번. 4는 2-way, 3은 fully associative일 때의 값이다."
+  explain="index = block mod 4이므로 2와 6은 set 2, 3과 7은 set 3을 두고 다툰다. 2 M, 6 M(2 쫓아냄), 3 M, 2 M(6 쫓아냄), 7 M(3 쫓아냄), 6 M(2 쫓아냄)으로 6번 모두 miss다. 4는 2-way나 fully associative일 때의 값으로, 그 차이 2번이 conflict miss다."
 />
 
 <Quiz
   q="Write-back cache에서 dirty bit의 역할은?"
-  options={['line이 유효한지 표시', 'line이 수정되었는지 표시해서 교체 시 하위 메모리에 써야 하는지 판단', 'LRU 순서 기록', 'tag 비교 결과 저장']}
-  answer={1}
+  options={['line이 유효한지 표시', 'LRU 순서 기록', 'tag 비교 결과 저장', 'line이 수정되었는지 표시해서 교체 시 하위 메모리에 써야 하는지 판단']}
+  answer={3}
   explain="write-back은 cache에만 쓰므로, 교체할 때 그 line이 수정됐다면(dirty) 하위 메모리에 써줘야 한다. 유효 여부는 valid bit의 역할이다."
 />
 
 <Quiz
   q="Block 크기를 계속 키우면 생기는 문제가 아닌 것은?"
-  options={['miss penalty 증가', 'block 수 감소로 conflict/capacity miss 증가 가능', '안 쓰는 데이터까지 전송', 'compulsory miss 증가']}
-  answer={3}
+  options={['miss penalty 증가', 'compulsory miss 증가', 'block 수 감소로 conflict/capacity miss 증가 가능', '안 쓰는 데이터까지 전송']}
+  answer={1}
   explain="block이 커지면 한 번에 더 많은 인접 데이터를 가져오므로 compulsory miss는 오히려 줄어든다. 나머지 세 개는 실제 부작용이다."
 />
 
 <Quiz
-  q="1 KB direct-mapped cache에서 a[i]와 b[i]를 번갈아 읽는데 b가 a로부터 정확히 1024 B 떨어져 있어 miss rate가 100%다. 가장 간단한 해결책은?"
-  options={['cache를 끈다', 'b의 시작 주소를 16 B 정도 padding해서 다른 set으로 보낸다', 'block 크기를 줄인다', 'stride를 늘린다']}
-  answer={1}
-  explain="a[i]와 b[i]가 같은 index를 공유해서 생긴 conflict miss다. 시작 주소를 block 하나만큼 밀면 서로 다른 set으로 가서 miss rate가 25%(compulsory만)로 떨어진다. 2-way로 바꿔도 해결된다."
+  q="4 KB direct-mapped cache(line 64 B)에서 a[i]와 b[i]를 번갈아 읽는데 b가 a로부터 정확히 4096 B 떨어져 있어 miss rate가 100%다. 가장 간단한 해결책은?"
+  options={['b의 시작 주소를 64 B(line 하나) 밀어서 다른 set으로 보낸다', 'cache를 끈다', 'line 크기를 줄인다', '배열을 더 크게 만든다']}
+  answer={0}
+  explain="a[i]와 b[i]가 cache 크기만큼 떨어져 있어 index가 같고 tag만 달라 생긴 conflict miss다. 시작 주소를 line 하나만큼 밀면 서로 다른 set으로 가서 compulsory miss만 남는다. 2-way로 바꿔도 해결된다."
 />
+
+## 서술형
+
+### 문제. 세 block이 두 자리를 두고 다툴 때
+
+4-block 용량의 cache에 block address 시퀀스 **0, 4, 8, 0, 4, 12, 8, 0**을 접근한다. 교체 정책은 LRU다.
+
+(a) direct-mapped(4 sets), 2-way(2 sets), fully associative(1 set) 각각에서 hit/miss를 추적하고 3C로 분류하라.
+
+(b) 2-way가 direct-mapped보다 하나도 나아지지 않은 이유는?
+
+(c) block 0에 대한 접근은 전부 write이고 나머지는 read다. write-back + write-allocate일 때, 시퀀스가 끝날 때까지 메모리에 write-back되는 횟수를 세 구성에서 각각 구하라. write-through라면 메모리 쓰기는 몇 번인가?
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** distinct block은 0, 4, 8, 12의 4개이고 cache도 4 block이므로 capacity miss는 없다.
+
+| 구성 | 결과 | compulsory | conflict | 총 miss |
+|---|---|---|---|---|
+| Direct-mapped | 전부 miss (모두 index 0) | 4 | 4 | 8 |
+| 2-way | 전부 miss (모두 set 0) | 4 | 4 | 8 |
+| Fully assoc. | 0, 4, 8 M / 0, 4 H / 12 M / 8, 0 H | 4 | 0 | 4 |
+
+2-way의 set 0을 따라가면 (LRU → MRU 순서): [0] → [0, 4] → [4, 8] → [8, 0] → [0, 4] → [4, 12] → [12, 8] → [8, 0]. 매번 바로 다음에 필요한 block을 쫓아낸다.
+
+**(b)** 모든 block이 4의 배수라 2-way에서도 전부 set 0으로 간다. 순환하는 block이 3개(0, 4, 8)인데 자리는 2개라서, LRU는 항상 "가장 오래전에 쓴" block, 즉 곧 다시 쓸 block을 쫓아낸다. 순환하는 working set이 way 수보다 하나만 커도 LRU의 hit rate는 0이 된다. 이때는 random 교체가 오히려 낫다.
+
+**(c)** block 0은 접근 1, 4, 8에서 쓰이며 dirty가 된다.
+
+- Direct-mapped: 접근 2(block 4)와 접근 5(block 4)가 dirty인 0을 쫓아냄 → **2번**
+- 2-way: 접근 3(block 8)과 접근 6(block 12)이 0을 쫓아냄 → **2번**
+- Fully assoc.: 0이 한 번도 쫓겨나지 않음 → **0번** (마지막 dirty line은 나중에 교체될 때 쓰임)
+
+write-through라면 write마다 메모리에 쓰므로 **3번**이다. conflict miss는 읽기 트래픽뿐 아니라 write-back 트래픽도 늘린다.
+
+</details>
 
 ## 더 읽을거리
 

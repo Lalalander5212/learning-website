@@ -9,6 +9,7 @@ export const collections = {
     schema: docsSchema({
       extend: z.object({
         track: z.string().optional(), // 레슨이면 필수
+        module: z.string().optional(), // 트랙 안의 묶음. src/tracks.mjs의 modules[].id
         est: z.string().optional(),   // 예상 소요시간 "30min"
         prereq: z.array(z.string()).optional(), // 먼저 보면 좋은 레슨 id들 (예: llm-internals/01-attention)
       }),

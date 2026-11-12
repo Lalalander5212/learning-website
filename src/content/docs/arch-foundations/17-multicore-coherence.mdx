@@ -2,6 +2,7 @@
 title: "Multicore, cache coherence, false sharing"
 description: "코어 여러 개가 메모리를 공유할 때의 speedup 한계, MESI 프로토콜, 그리고 보이지 않는 false sharing"
 track: arch-foundations
+module: parallel
 est: 35min
 sidebar:
   order: 17
@@ -259,39 +260,78 @@ Amdahl, 동기화, 부하 불균형, 메모리 대역폭, coherence 때문에 �
 ## 체크 퀴즈
 
 <Quiz
-  q="병렬 비율 95%인 프로그램을 8코어로 돌릴 때 parallel efficiency는 대략?"
-  options={['95%', '87%', '74%', '59%']}
-  answer={2}
-  explain="speedup = 1 / (0.05 + 0.95/8) ≈ 5.93, efficiency = 5.93 / 8 ≈ 74%. 87%는 4코어일 때의 값이다."
+  q="병렬 비율 90%인 프로그램을 8코어로 돌릴 때 parallel efficiency는 대략?"
+  options={['90%', '59%', '47%', '4.7%']}
+  answer={1}
+  explain="speedup = 1 / (0.1 + 0.9/8) ≈ 4.71, efficiency = 4.71 / 8 ≈ 59%. 4.7%는 speedup을 그대로 %로 읽은 실수이고, 90%는 병렬 비율을 efficiency로 착각한 값이다."
 />
 
 <Quiz
   q="MESI에서 Core 0만 line X를 갖고 있고 수정하지 않은 상태는?"
-  options={['M', 'E', 'S', 'I']}
-  answer={1}
+  options={['E', 'M', 'S', 'I']}
+  answer={0}
   explain="Exclusive는 나만 갖고 있고 메모리와 같은(clean) 상태다. 이 상태에서는 쓸 때 다른 코어에 메시지를 보내지 않고 바로 M으로 갈 수 있다."
 />
 
 <Quiz
   q="Core 0와 Core 1이 둘 다 S 상태로 X를 갖고 있을 때 Core 0가 X에 쓰면?"
-  options={['둘 다 S 유지', 'Core 0는 M, Core 1은 I', 'Core 0는 E, Core 1은 S', '둘 다 M']}
-  answer={1}
+  options={['둘 다 S 유지', 'Core 0는 E, Core 1은 S', '둘 다 M', 'Core 0는 M, Core 1은 I']}
+  answer={3}
   explain="쓰려면 M 상태가 되어야 하고, M이 되려면 다른 cache의 복사본을 무효화해야 한다(write-invalidate). 그래서 Core 1의 복사본은 I가 된다."
 />
 
 <Quiz
   q="thread 2개가 struct의 서로 다른 long 필드 x, y를 각각 계속 증가시킨다. x와 y가 8 B 떨어져 있을 때 생기는 현상은?"
-  options={['아무 문제 없음', 'false sharing: 같은 cache line이 코어 사이를 왕복', 'true sharing: 데이터 경쟁으로 값이 틀림', 'TLB miss 폭증']}
-  answer={1}
+  options={['아무 문제 없음', 'true sharing: 데이터 경쟁으로 값이 틀림', 'false sharing: 같은 cache line이 코어 사이를 왕복', 'TLB miss 폭증']}
+  answer={2}
   explain="두 변수가 같은 64 B line에 있어서 쓰기마다 상대 코어의 복사본이 무효화된다. 값은 맞지만(서로 다른 변수라 데이터 경쟁은 없음) 성능이 크게 떨어진다. 64 B padding으로 해결한다."
 />
 
 <Quiz
-  q="DRAM 대역폭 50 GB/s, 코어 하나가 스트리밍으로 15 GB/s를 쓸 때 memory-bound 작업의 최대 speedup은 코어가 16개여도 대략?"
-  options={['16배', '3.3배', '1배', '50배']}
+  q="DRAM 대역폭 80 GB/s, 코어 하나가 스트리밍으로 12 GB/s를 쓴다. 8코어에서 memory-bound 작업의 최대 speedup은 대략?"
+  options={['8배', '6.7배', '1배', '12배']}
   answer={1}
-  explain="50 / 15 ≈ 3.3. 모든 코어가 같은 메모리 대역폭을 나눠 쓰므로 대역폭이 차면 코어를 더 늘려도 빨라지지 않는다."
+  explain="코어 8개가 원하는 대역폭은 96 GB/s지만 DRAM이 80 GB/s밖에 못 준다. speedup ≤ 80 / 12 ≈ 6.7. 코어 수보다 대역폭 상한이 먼저 걸린다."
 />
+
+## 서술형
+
+### 문제. serial, compute, memory가 섞인 프로그램
+
+싱글 스레드로 10 s 걸리는 프로그램이 있다.
+
+| 부분 | 시간 (1코어) | 성격 |
+|---|---|---|
+| A | 1 s | serial (병렬화 불가) |
+| B | 6 s | compute-bound, 완벽히 병렬화 가능 |
+| C | 3 s | memory-bound. 코어 하나가 10 GB/s를 쓰고, 시스템 전체 대역폭은 40 GB/s |
+
+(a) 8코어에서 실행 시간, speedup, parallel efficiency는?
+
+(b) 16코어라면?
+
+(c) 16코어에서 더 빨라지려면 무엇을 줄여야 하는가?
+
+(d) 이 프로그램이 스레드마다 처리한 개수를 `long count[8]`(스레드 i가 `count[i]`만 증가)에 센다. 성능 문제가 생기는가? 어떻게 고치는가?
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)**
+
+- A: 1 s 그대로
+- B: $6 / 8 = 0.75$ s
+- C: 대역폭 상한으로 최대 $40 / 10 = 4$배 → $3 / 4 = 0.75$ s
+
+합계 **2.5 s**, speedup $10 / 2.5 = 4$, efficiency $4 / 8 = 50\%$.
+
+**(b)** A 1 s, B $6 / 16 = 0.375$ s, C는 여전히 0.75 s → **2.125 s**, speedup 약 4.7, efficiency 약 29%. 코어를 2배로 늘렸는데 18%만 빨라졌다.
+
+**(c)** 16코어에서 시간의 47%가 serial(A), 35%가 memory-bound(C)다. A를 줄이거나(알고리즘 변경, 다른 일과 겹치기), C의 byte를 줄여야 한다(fusion, tiling, 작은 데이터 타입). B를 더 병렬화하는 건 의미가 없다.
+
+**(d)** `long` 8개 = 64 B = cache line 하나에 다 들어간다. 스레드 8개가 같은 line에 계속 쓰므로 **false sharing**이 생겨 line이 코어 사이를 왕복한다. 고치는 방법: 스레드마다 64 B 간격을 두거나(`struct { long c; char pad[56]; } count[8]`), 스레드 안에서는 지역 변수에 세고 마지막에 한 번만 합친다.
+
+</details>
 
 ## 더 읽을거리
 

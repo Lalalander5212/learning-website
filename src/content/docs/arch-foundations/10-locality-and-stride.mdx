@@ -2,6 +2,7 @@
 title: "Locality, stride, working set"
 description: "메모리 레이아웃과 접근 순서가 cache 성능을 결정하는 원리"
 track: arch-foundations
+module: cache
 est: 30min
 sidebar:
   order: 10
@@ -221,32 +222,64 @@ TinyEngine 같은 TinyML 런타임이 연산 종류에 따라 레이아웃을 �
 ## 체크 퀴즈
 
 <Quiz
-  q="float A[4][8]이 row-major로 base 0x1000에 있을 때 A[2][3]의 주소는?"
-  options={['0x1013', '0x104C', '0x1038', '0x1098']}
-  answer={1}
-  explain="base + (i × N + j) × 4 = 0x1000 + (2 × 8 + 3) × 4 = 0x1000 + 76 = 0x104C. 0x1013은 원소 크기 4를 곱하지 않은 값이다."
+  q="float A[6][10]이 row-major로 base 0x2000에 있을 때 A[3][7]의 주소는?"
+  options={['0x2025', '0x20B4', '0x2094', '0x2148']}
+  answer={2}
+  explain="base + (i × N + j) × 4 = 0x2000 + (3 × 10 + 7) × 4 = 0x2000 + 148 = 0x2094. 0x2025는 원소 크기 4를 곱하지 않은 값, 0x20B4는 column-major로 계산한 값, 0x2148은 10진수 148을 hex로 그대로 붙인 값이다."
 />
 
 <Quiz
-  q="cache line 64 B, float32 배열을 stride 4(원소 단위)로 스트리밍할 때 miss rate는 대략?"
-  options={['1/16', '1/4', '1', '1/64']}
+  q="cache line 64 B, float64(8 B) 배열을 stride 3(원소 단위)으로 스트리밍할 때 miss rate는 대략?"
+  options={['1/8', '3/8', '1/24', '1']}
   answer={1}
-  explain="miss rate ≈ s × w / B = 4 × 4 / 64 = 1/4. line 하나(float 16개)에서 4개를 쓰고 다음 line으로 넘어간다. 1/16은 stride 1일 때다."
+  explain="miss rate ≈ s × w / B = 3 × 8 / 64 = 3/8. 접근 간격이 24 B라서 line 하나(64 B)에서 평균 64 / 24 ≈ 2.7번 접근한다. 1/8은 stride 1일 때의 값이다."
 />
 
 <Quiz
-  q="line 8개짜리 fully-associative LRU cache에서 어떤 block의 reuse distance가 10이면 그 재접근은?"
-  options={['hit', 'miss', '반반', 'prefetcher에 따라 무조건 hit']}
-  answer={1}
-  explain="reuse distance가 line 수보다 작아야 hit이다. 그 사이에 서로 다른 block 10개를 건드렸으므로 LRU에서 이미 쫓겨났다."
+  q="line 16개짜리 fully-associative LRU cache에서 어떤 block의 reuse distance가 12면 그 재접근은?"
+  options={['hit', 'miss', '반반', 'prefetcher가 없으면 무조건 miss']}
+  answer={0}
+  explain="reuse distance가 line 수보다 작으면 hit이다. 그 사이에 서로 다른 block 12개만 건드렸으므로 LRU가 16개를 들고 있는 동안 아직 쫓겨나지 않았다."
 />
 
 <Quiz
   q="64 MB 배열에서 x[::1]과 x[::16](float32, 64 B line)의 sum 시간이 비슷한 이유는?"
-  options={['NumPy가 stride를 무시해서', '두 경우 모두 모든 cache line을 건드려 DRAM 전송량이 같아서', 'stride 16이 SIMD에 더 유리해서', 'CPU 클럭이 올라가서']}
-  answer={1}
+  options={['NumPy가 stride를 무시해서', 'stride 16이 SIMD에 더 유리해서', 'CPU 클럭이 올라가서', '두 경우 모두 모든 cache line을 건드려 DRAM 전송량이 같아서']}
+  answer={3}
   explain="line 하나에 float 16개가 들어가므로 stride 16 이하에서는 모든 line을 한 번씩 가져와야 한다. 원소 수가 16배 적어도 메모리에서 옮기는 byte가 같으면 시간도 비슷하다."
 />
+
+## 서술형
+
+### 문제. column 순회가 괜찮아지는 조건
+
+`float A[M][2048]` (row-major) 행렬을 읽는다. cache는 32 KB fully-associative LRU, line 64 B다.
+
+(a) row 방향으로 전체를 읽을 때 miss rate는?
+
+(b) $M = 2048$일 때 column 방향(`for j: for i:`)으로 전체를 읽으면 miss rate는? 이유를 working set으로 설명하라.
+
+(c) column 방향으로 읽어도 miss rate가 row 방향과 같아지려면 $M$이 최대 얼마여야 하는가?
+
+(d) 입자 $10^6$개의 `x, y, z, mass`(각 float)를 저장한다. 모든 입자의 `x`만 더할 때 AoS(`struct {x, y, z, mass} p[N]`)와 SoA(`x[N], y[N], ...`)에서 메모리로부터 가져오는 byte는 각각 얼마인가?
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** line 하나에 float 16개 → $1/16 = 6.25\%$, 전부 compulsory.
+
+**(b)** column 하나를 도는 동안 행마다 다른 line을 건드리므로 working set은 2048 lines = 128 KB. cache는 $32768 / 64 = 512$ lines뿐이다. 다음 column에서 같은 line(바로 옆 원소)으로 돌아올 때는 reuse distance가 2047이라 이미 쫓겨났다 → **miss rate ≈ 100%**.
+
+**(c)** column 하나의 working set($M$개 line)이 512 lines 안에 들어가면, 다음 15개 column은 같은 line을 hit한다. $M \le 512$면 miss rate가 $1/16$로 row 순회와 같다. (실제 cache는 set-associative라서 행 간격이 2의 거듭제곱이면 이보다 작은 $M$에서도 conflict가 날 수 있다.)
+
+**(d)**
+
+- AoS: `x`가 16 B 간격이라 모든 line을 건드린다 → $10^6 \times 16$ B = **16 MB**, line 활용률 25%
+- SoA: `x`만 연속 → $10^6 \times 4$ B = **4 MB**, 활용률 100%
+
+같은 연산인데 메모리 트래픽이 4배 차이 난다. NCHW와 NHWC 선택도 같은 문제다.
+
+</details>
 
 ## 더 읽을거리
 

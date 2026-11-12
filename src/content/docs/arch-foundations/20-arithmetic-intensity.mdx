@@ -2,6 +2,7 @@
 title: "Arithmetic intensity: 연산당 데이터"
 description: "FLOPs ÷ bytes로 커널이 연산에 막히는지 메모리에 막히는지 판단하는 첫 단계"
 track: arch-foundations
+module: roofline
 est: 30min
 sidebar:
   order: 20
@@ -55,7 +56,9 @@ $$
 
 float32 (4 B) 기준. 각 배열은 메모리에서 한 번씩 읽고 쓴다고 가정한다.
 
-### 1. Vector add: $c_i = a_i + b_i$
+### 1. Vector add
+
+$c_i = a_i + b_i$
 
 - FLOPs: 원소당 1
 - Bytes: 원소당 읽기 2개 + 쓰기 1개 = 12 B
@@ -64,7 +67,9 @@ $$
 AI = \frac{1}{12} \approx 0.083
 $$
 
-### 2. SAXPY: $y_i = \alpha x_i + y_i$
+### 2. SAXPY
+
+$y_i = \alpha x_i + y_i$
 
 - FLOPs: 원소당 2 (곱셈 + 덧셈)
 - Bytes: x 읽기, y 읽기, y 쓰기 = 12 B
@@ -73,7 +78,9 @@ $$
 AI = \frac{2}{12} \approx 0.167
 $$
 
-### 3. Dot product: $s = \sum_i a_i b_i$
+### 3. Dot product
+
+$s = \sum_i a_i b_i$
 
 - FLOPs: 원소당 2
 - Bytes: a, b 읽기 = 8 B (s는 register)
@@ -82,7 +89,9 @@ $$
 AI = \frac{2}{8} = 0.25
 $$
 
-### 4. GEMV (행렬 × 벡터): $y = Wx$, $W$는 $M \times N$
+### 4. GEMV (행렬 × 벡터)
+
+$y = Wx$, $W$는 $M \times N$
 
 - FLOPs: $2MN$
 - Bytes: $W$가 지배적, $M N w$ (x, y는 무시할 만큼 작음)
@@ -93,7 +102,9 @@ $$
 
 FP32면 0.5, FP16이면 **1**, INT4 weight(0.5 B)면 4.
 
-### 5. GEMM (행렬 × 행렬): $C = AB$, 모두 $N \times N$
+### 5. GEMM (행렬 × 행렬)
+
+$C = AB$, 모두 $N \times N$
 
 - FLOPs: $2N^3$
 - 최소 Bytes: A, B 읽기 + C 쓰기 = $3N^2 w$
@@ -222,39 +233,70 @@ FLOPs는 **개수**(일의 양), FLOP/s는 **속도**(하드웨어 성능)다. �
 ## 체크 퀴즈
 
 <Quiz
-  q="float32 vector add c[i] = a[i] + b[i]의 arithmetic intensity는?"
-  options={['1 FLOP/B', '0.25 FLOP/B', '약 0.083 FLOP/B', '3 FLOP/B']}
-  answer={2}
-  explain="원소당 1 FLOP, bytes는 a, b 읽기와 c 쓰기로 4 × 3 = 12 B. 1/12 ≈ 0.083. 0.25는 dot product(2 FLOP / 8 B)의 값이다."
-/>
-
-<Quiz
-  q="FP16 weight를 쓰는 batch 1 GEMV(y = Wx)의 AI는 대략?"
-  options={['0.25', '1', '16', '171']}
-  answer={1}
-  explain="FLOPs = 2MN, bytes ≈ weight 크기 = 2MN (FP16 = 2 B). AI ≈ 2MN / 2MN = 1. weight 하나를 읽어서 곱셈-덧셈 한 번(2 FLOP)만 하기 때문이다."
-/>
-
-<Quiz
-  q="LLM linear layer(FP16, 4096×4096)에서 batch를 1에서 64로 늘리면 AI는 대략 어떻게 되나?"
-  options={['변화 없음', '약 8배', '약 64배 (≈ 62)', '약 4096배']}
-  answer={2}
-  explain="AI ≈ 2B/w = B (FP16)이므로 batch에 거의 비례한다. 정확히는 X, Y 크기도 분모에 있어서 B = 64일 때 약 62다."
-/>
-
-<Quiz
-  q="같은 GEMV에서 weight를 FP16에서 INT4로 quantize하면 AI는?"
-  options={['1/4로 줄어든다', '변화 없다', '4배가 된다', '16배가 된다']}
-  answer={2}
-  explain="FLOPs는 그대로인데 weight bytes가 2 B에서 0.5 B로 1/4이 되므로 AI는 4배가 된다. memory-bound 커널에서는 이게 거의 그대로 속도 향상으로 이어진다."
-/>
-
-<Quiz
-  q="FP32 tiled matmul에서 tile 크기 T일 때 cache 기준 AI가 대략 T/4인 이유는?"
-  options={['tile 안에서 각 원소가 약 T번 재사용되고, 원소 하나가 4 B라서', 'T가 클수록 FLOPs가 늘어나서', 'cache line이 4개라서', 'T가 SIMD 폭이라서']}
+  q="FP16 원소별 연산 z[i] = x[i] * y[i] + w[i]의 arithmetic intensity는? (FMA는 2 FLOP)"
+  options={['0.25 FLOP/B', '0.125 FLOP/B', '0.33 FLOP/B', '2 FLOP/B']}
   answer={0}
-  explain="원소 하나를 cache로 가져오면 tile 안에서 T번의 MAC(2T FLOP)에 쓰이고, 그 원소는 4 B다. A와 B tile을 둘 다 가져와야 하므로 대략 2T FLOP / (2 × 4 B) = T/4."
+  explain="원소당 2 FLOP, bytes는 x, y, w 읽기 3개와 z 쓰기 1개로 4 × 2 B = 8 B. 2 / 8 = 0.25. 0.125는 FP32로 계산한 값, 0.33은 z 쓰기를 빼먹은 값이다."
 />
+
+<Quiz
+  q="INT8 weight를 쓰는 batch 1 GEMV(y = Wx)의 AI는 대략?"
+  options={['0.5', '1', '8', '2']}
+  answer={3}
+  explain="FLOPs = 2MN, bytes ≈ weight 크기 = MN × 1 B. AI ≈ 2MN / MN = 2. 같은 GEMV가 FP16이면 1, FP32면 0.5다. weight bytes가 줄면 AI가 바로 올라간다."
+/>
+
+<Quiz
+  q="LLM linear layer(FP16, 8192×8192)에 batch 32 토큰을 넣으면 AI는 대략?"
+  options={['약 1', '약 32', '약 64', '약 8192']}
+  answer={1}
+  explain="AI = 2BMN / (2(MN + BM + BN)) ≈ B. 정확히는 32 × 8192 / (8192 + 64) ≈ 31.8. 같은 weight를 토큰 32개가 재사용하기 때문이다. 64는 FP16의 2 B를 나누지 않은 값이다."
+/>
+
+<Quiz
+  q="같은 batch 1 GEMV에서 weight를 FP16에서 INT8로 quantize하면 AI는?"
+  options={['1/2로 줄어든다', '4배가 된다', '2배가 된다', '변화 없다']}
+  answer={2}
+  explain="FLOPs는 그대로인데 weight bytes가 2 B에서 1 B로 절반이 되므로 AI는 2배다. 4배는 FP16에서 INT4로 갈 때의 값이다."
+/>
+
+<Quiz
+  q="FP16(2 B) tiled matmul에서 tile 크기 T = 64일 때 cache 기준 AI는 대략?"
+  options={['16', '32', '64', '128']}
+  answer={1}
+  explain="원소 하나를 cache로 가져오면 tile 안에서 T번 재사용되어 원소당 약 T FLOP, 원소 크기는 2 B이므로 AI ≈ T / 2 = 32. 16은 FP32(T / 4)로 계산한 값이다."
+/>
+
+## 서술형
+
+### 문제. batch를 키워도 안 올라가는 AI
+
+Llama-2-7B와 비슷한 모델이다: layer 32개, hidden $d = 4096$, 파라미터 $7 \times 10^9$, weight와 KV cache 모두 FP16. 토큰 하나의 KV cache는 layer마다 K, V 각각 $d$개다.
+
+(a) decode step에서 linear layer 전체의 FLOPs와 weight bytes를 batch $B$로 써라. AI는 대략?
+
+(b) decode step에서 attention(헤드를 합친 것으로 생각)은 시퀀스마다 자기 KV cache를 읽는다. context 길이가 $L$일 때 시퀀스 하나, layer 하나의 FLOPs는 $QK^T$와 $\text{softmax} \cdot V$에서 약 $4Ld$다. bytes는? AI는? batch를 키우면 AI가 바뀌는가?
+
+(c) $B = 64$, $L = 2048$일 때 한 step의 전체 FLOPs, 전체 bytes, 전체 AI를 구하라. linear layer만 봤을 때의 AI와 비교하라.
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** FLOPs $\approx 2 \times 7 \times 10^9 \times B$, weight bytes $= 7 \times 10^9 \times 2 = 14$ GB (batch와 무관). AI $\approx B$.
+
+**(b)** K와 V를 FP16으로 읽으므로 bytes $= 2 \times L \times d \times 2 = 4Ld$. AI $= 4Ld / 4Ld = 1$. 시퀀스마다 **자기 KV cache**를 읽으므로 batch를 키워도 bytes가 같이 늘어나서 AI는 1에 머문다. weight처럼 여러 요청이 공유하는 데이터가 아니다.
+
+**(c)**
+
+| 부분 | FLOPs | Bytes |
+|---|---|---|
+| linear | $2 \times 7 \times 10^9 \times 64 \approx 8.96 \times 10^{11}$ | $1.4 \times 10^{10}$ |
+| attention | $4 \times 2048 \times 4096 \times 32 \times 64 \approx 6.87 \times 10^{10}$ | $\approx 6.87 \times 10^{10}$ |
+| 합계 | $\approx 9.65 \times 10^{11}$ | $\approx 8.27 \times 10^{10}$ |
+
+전체 AI $\approx 11.7$. linear만 보면 64인데, KV cache bytes(약 69 GB)가 weight(14 GB)의 5배라서 전체 AI가 크게 떨어진다. batch와 context가 커지면 KV cache가 메모리 트래픽의 대부분이 된다. GQA(KV head 공유), KV cache quantization, PagedAttention이 중요한 이유다.
+
+</details>
 
 ## 더 읽을거리
 

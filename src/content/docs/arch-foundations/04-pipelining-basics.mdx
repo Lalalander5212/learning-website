@@ -2,6 +2,7 @@
 title: "Pipelining 기초: 5-stage와 speedup 공식"
 description: "명령어 처리를 단계로 쪼개 겹치면 throughput이 오르는 원리와 그 한계"
 track: arch-foundations
+module: pipeline
 est: 30min
 sidebar:
   order: 4
@@ -227,23 +228,23 @@ $$
 ## 체크 퀴즈
 
 <Quiz
-  q="Stage 지연이 200, 100, 200, 200, 100 ps이고 pipeline register 오버헤드가 20 ps일 때 클럭 주기는?"
-  options={['160 ps', '200 ps', '220 ps', '820 ps']}
-  answer={2}
-  explain="클럭은 가장 느린 stage에 register 오버헤드를 더한 값이다: max(200,100,200,200,100) + 20 = 220 ps. 160 ps는 평균 지연이라 가장 느린 stage를 담을 수 없다."
+  q="Stage 지연이 250, 150, 300, 200, 150 ps이고 pipeline register 오버헤드가 25 ps일 때 클럭 주기는?"
+  options={['210 ps', '300 ps', '1075 ps', '325 ps']}
+  answer={3}
+  explain="클럭은 가장 느린 stage에 register 오버헤드를 더한 값이다: 300 + 25 = 325 ps. 210 ps는 평균 지연이라 가장 느린 stage를 담을 수 없고, 300 ps는 오버헤드를 빠뜨렸고, 1075 ps는 single-cycle처럼 전부 더한 값이다."
 />
 
 <Quiz
-  q="5-stage pipeline에서 hazard 없이 명령어 100개를 실행하면 몇 사이클이 걸리나?"
-  options={['500', '104', '105', '100']}
-  answer={1}
-  explain="k + N - 1 = 5 + 100 - 1 = 104. 첫 명령어가 5 사이클 걸리고 나머지 99개가 한 사이클씩 뒤따른다. 500은 pipeline이 없을 때 multi-cycle CPU 기준 값이다."
+  q="6-stage pipeline에서 hazard 없이 명령어 200개를 실행하면 몇 사이클이 걸리나?"
+  options={['205', '1200', '206', '200']}
+  answer={0}
+  explain="k + N - 1 = 6 + 200 - 1 = 205. 첫 명령어가 6 사이클 걸리고 나머지 199개가 한 사이클씩 뒤따른다. 1200은 pipeline 없이 명령어마다 6 사이클을 쓴 값이고, 206은 1을 빼지 않은 값이다."
 />
 
 <Quiz
   q="Pipelining을 적용하면 명령어 하나의 latency는 보통 어떻게 되나?"
-  options={['stage 수만큼 줄어든다', '같거나 약간 늘어난다', '절반이 된다', '0이 된다']}
-  answer={1}
+  options={['stage 수만큼 줄어든다', '절반이 된다', '같거나 약간 늘어난다', '0이 된다']}
+  answer={2}
   explain="명령어 하나는 여전히 모든 stage를 거쳐야 하고, 각 stage가 가장 느린 stage의 시간과 register 오버헤드만큼 걸리므로 latency는 같거나 늘어난다. 빨라지는 건 throughput이다."
 />
 
@@ -256,10 +257,52 @@ $$
 
 <Quiz
   q="다음 중 파이프라인 speedup이 이상적인 k배에 못 미치는 이유가 아닌 것은?"
-  options={['stage 지연 불균형', 'pipeline register 오버헤드', 'hazard로 인한 stall', 'pipelining 때문에 명령어 수(IC)가 늘어남']}
-  answer={3}
+  options={['pipelining 때문에 명령어 수(IC)가 늘어남', 'stage 지연 불균형', 'pipeline register 오버헤드', 'hazard로 인한 stall']}
+  answer={0}
   explain="Pipelining은 하드웨어 구현 방식이라 실행되는 명령어 수(IC)는 바뀌지 않는다. 나머지 세 개는 실제로 speedup을 깎는 요인이다."
 />
+
+## 서술형
+
+### 문제. 가장 느린 stage 쪼개기
+
+single-cycle CPU의 각 단계 지연이 IF 200, ID 150, EX 250, MEM 200, WB 100 ps다. pipeline register 오버헤드는 20 ps, hazard는 없다고 가정한다.
+
+(a) single-cycle의 클럭 주기와, 이 다섯 단계를 그대로 5-stage pipeline으로 만들었을 때의 클럭 주기를 구하라. 명령어가 아주 많을 때 speedup과 명령어 하나의 latency는?
+
+(b) 가장 느린 단계를 반으로 쪼개 6-stage pipeline을 만들었다. 새 클럭과 speedup은? 다음 병목은 어디인가?
+
+(c) 명령어 20개짜리 짧은 코드를 한 번만 실행할 때, single-cycle 대비 5-stage와 6-stage의 speedup은 각각 얼마인가?
+
+(d) 같은 fill/drain 구조가 GPipe에도 있다. 모델을 GPU 4장에 나눌 때 bubble 비율을 10% 이하로 만들려면 micro-batch가 최소 몇 개 필요한가?
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** single-cycle은 모든 단계를 한 사이클에 하므로 $200 + 150 + 250 + 200 + 100 = 900$ ps. 5-stage는 $\max + t_{reg} = 250 + 20 = 270$ ps.
+
+$$
+\text{Speedup}_{N\to\infty} = \frac{900}{270} \approx 3.33, \qquad \text{latency} = 5 \times 270 = 1350 \text{ ps}
+$$
+
+**(b)** EX를 125 ps 두 개로 쪼개면 최대 stage가 200 ps(IF, MEM)가 되어 클럭은 220 ps. Speedup $= 900 / 220 \approx 4.09$. 다음 병목은 IF와 MEM(각 200 ps)이고, 이 둘을 쪼개지 않으면 클럭은 더 못 줄인다.
+
+**(c)** single-cycle: $20 \times 900 = 18000$ ps.
+
+- 5-stage: $(5 + 20 - 1) \times 270 = 6480$ ps → $18000 / 6480 \approx 2.78$배
+- 6-stage: $(6 + 20 - 1) \times 220 = 5500$ ps → $18000 / 5500 \approx 3.27$배
+
+둘 다 무한히 긴 코드에서의 speedup(3.33, 4.09)보다 작다. fill/drain 비용이 명령어 수에 비해 크기 때문이다.
+
+**(d)** bubble 비율 $(k - 1) / (m + k - 1)$에 $k = 4$를 넣으면
+
+$$
+\frac{3}{m + 3} \le 0.1 \;\Rightarrow\; m + 3 \ge 30 \;\Rightarrow\; m \ge 27
+$$
+
+micro-batch가 27개면 $3 / 30 = 10\%$다.
+
+</details>
 
 ## 더 읽을거리
 

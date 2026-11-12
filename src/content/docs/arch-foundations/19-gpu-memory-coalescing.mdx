@@ -2,6 +2,7 @@
 title: "GPU memory coalescing과 shared memory"
 description: "warp의 메모리 접근을 sector 단위로 세기, transpose를 shared memory tiling으로 고치기, bank conflict"
 track: arch-foundations
+module: parallel
 est: 30min
 sidebar:
   order: 19
@@ -123,7 +124,7 @@ $$
 → t마다 다른 bank → **conflict 없음**.
 
 <Aside type="tip" title="같은 패턴, 세 번째 등장">
-cache set conflict(08, 09번), tiling conflict(12번), shared memory bank conflict(이 레슨). **2의 거듭제곱 간격 → 같은 slot에 몰림 → padding으로 해결**은 하드웨어 전반에 걸쳐 반복되는 패턴이다.
+cache set conflict(08, 09번 레슨), tiling conflict(12번 레슨), shared memory bank conflict(이 레슨). **2의 거듭제곱 간격 → 같은 slot에 몰림 → padding으로 해결**은 하드웨어 전반에 걸쳐 반복되는 패턴이다.
 </Aside>
 
 ## 코드: coalescing / bank conflict 시뮬레이터
@@ -189,39 +190,65 @@ bank conflict가 나면 32배까지 직렬화된다. 2의 거듭제곱 폭의 2D
 ## 체크 퀴즈
 
 <Quiz
-  q="warp의 32 thread가 float 배열에서 a[2*tid]를 읽으면 옮기는 32 B sector 수와 효율은?"
-  options={['4 sector, 100%', '8 sector, 50%', '16 sector, 25%', '32 sector, 12.5%']}
-  answer={1}
-  explain="주소 0~248(8 B 간격)이 범위 256 B, 즉 sector 8개에 걸친다. 요청한 byte는 128이므로 128 / 256 = 50%."
+  q="warp의 32 thread가 double(8 B) 배열에서 a[tid]를 읽으면 옮기는 32 B sector 수와 효율은?"
+  options={['4 sector, 100%', '32 sector, 25%', '8 sector, 100%', '8 sector, 50%']}
+  answer={2}
+  explain="32 × 8 B = 256 B가 연속이므로 sector 8개를 꽉 채워 쓴다. 효율은 100%다. 4 sector는 float(4 B)일 때의 값이다. 원소가 커지면 sector 수는 늘지만 연속이면 낭비는 없다."
 />
 
 <Quiz
-  q="a[tid + 1]처럼 시작이 4 B 어긋난 coalesced 접근의 효율은?"
+  q="warp의 32 thread가 float 배열에서 a[tid + 8]을 읽는다(배열 시작은 32 B 정렬). 효율은?"
   options={['100%', '80%', '50%', '12.5%']}
-  answer={1}
-  explain="주소 4~131이 sector 0~4, 즉 5개(160 B)에 걸친다. 요청 128 B / 160 B = 80%. 정렬이 맞지 않으면 sector 하나가 더 필요하다."
+  answer={0}
+  explain="시작 주소가 8 × 4 = 32 B로 sector 경계와 정확히 맞으므로 sector 1~4, 4개만 옮긴다. 효율 100%다. 80%는 a[tid + 1]처럼 sector 경계에서 어긋날 때의 값이다. 어긋남의 크기보다 sector 경계에 맞는지가 중요하다."
 />
 
 <Quiz
   q="naive transpose에서 out[j][i] 쓰기의 효율이 12.5%인 이유는?"
-  options={['쓰기는 원래 느려서', 'warp의 인접 thread가 행 간격(16 KB)만큼 떨어진 주소에 써서 thread마다 sector가 달라서', 'bank conflict 때문에', 'shared memory를 안 써서 연산이 느려서']}
-  answer={1}
+  options={['쓰기는 원래 느려서', 'bank conflict 때문에', 'shared memory를 안 써서 연산이 느려서', 'warp의 인접 thread가 행 간격(16 KB)만큼 떨어진 주소에 써서 thread마다 sector가 달라서']}
+  answer={3}
   explain="인접 thread가 out의 서로 다른 행에 쓰므로 주소가 16 KB씩 떨어진다. 32개 sector를 옮기는데 sector마다 4 B만 쓴다. shared memory tiling은 이 접근 패턴 문제를 고치는 해결책이다."
 />
 
 <Quiz
-  q="shared memory tile[32][32] float에서 warp가 한 열을 읽으면 몇-way bank conflict인가?"
-  options={['1-way (없음)', '2-way', '16-way', '32-way']}
-  answer={3}
-  explain="tile[t][c]의 word 주소는 32t + c이므로 bank = c로 모든 t가 같은 bank에 몰린다. tile[32][33]으로 padding하면 bank = (t + c) mod 32로 흩어진다."
+  q="shared memory tile[32][48] float에서 warp가 한 열을 읽으면 몇-way bank conflict인가?"
+  options={['1-way (없음)', '16-way', '2-way', '32-way']}
+  answer={1}
+  explain="tile[t][c]의 word 주소는 48t + c이고 bank는 (48t + c) mod 32다. 48t mod 32는 t가 짝수면 0, 홀수면 16이라 bank가 두 개뿐이고, 각각 thread 16개가 몰린다. 32-way는 행 길이가 32의 배수일 때다. 행 길이가 홀수(33 등)여야 32개 bank로 고르게 흩어진다."
 />
 
 <Quiz
   q="unstructured pruning으로 weight의 70%를 0으로 만들어도 GPU에서 잘 빨라지지 않는 주된 이유는?"
-  options={['0을 곱하는 것도 시간이 들어서', '남은 weight의 위치가 불규칙해 메모리 접근이 흩어지고(coalescing 실패) thread별 일의 양이 달라져서', 'Tensor Core가 0을 지원하지 않아서', 'pruning 후 모델이 커져서']}
-  answer={1}
+  options={['남은 weight의 위치가 불규칙해 메모리 접근이 흩어지고(coalescing 실패) thread별 일의 양이 달라져서', '0을 곱하는 것도 시간이 들어서', 'Tensor Core가 0을 지원하지 않아서', 'pruning 후 모델이 커져서']}
+  answer={0}
   explain="불규칙한 sparse 구조는 coalescing과 균형 잡힌 thread 배분을 깨뜨린다. 그래서 2:4 structured sparsity처럼 하드웨어가 규칙적으로 처리할 수 있는 형태가 필요하다."
 />
+
+## 서술형
+
+### 문제. 입자 데이터 레이아웃과 transpose 트래픽
+
+(a) 입자 하나가 `struct { float x, y, z, m; }`(16 B)로 저장된 배열 `p[]`(AoS)가 있다. warp의 thread가 `p[tid].x`만 읽을 때 sector 수와 효율은? 같은 데이터를 SoA(`x[]`, `y[]`, ...)로 저장하고 `x[tid]`를 읽으면?
+
+(b) AoS 그대로 두되 각 thread가 `float4` 한 번에 입자 하나를 통째로 읽어서 x, y, z, m을 전부 쓴다면 효율은?
+
+(c) 4096 × 4096 float 행렬(64 MB)을 naive transpose하면 읽기는 100%, 쓰기는 12.5% 효율이다. 실제로 옮기는 byte는? shared memory tiling 버전과 비교하고, 1 TB/s GPU에서 각각의 최소 시간을 구하라.
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** AoS: thread 간격 16 B → 32 × 16 = 512 B 범위 → sector **16개**, 요청 128 B / 512 B = **25%**. SoA: `x`가 연속 → sector **4개**, **100%**.
+
+**(b)** thread마다 16 B를 연속으로 읽으므로 warp 전체가 512 B 연속 구간을 읽는다 → sector 16개, 요청도 512 B → **100%**. 구조체의 필드를 전부 쓴다면 AoS도 vector load로 coalescing을 맞출 수 있다. 일부 필드만 쓰면 SoA가 낫다.
+
+**(c)**
+
+- naive: 읽기 64 MB + 쓰기 $64 \times 8 = 512$ MB(효율 12.5%) = **576 MB** → 0.576 ms
+- tiled: 읽기 64 MB + 쓰기 64 MB = **128 MB** → 0.128 ms
+
+**4.5배** 차이다. 연산은 하나도 없는 kernel이라 시간은 전부 데이터 이동이다.
+
+</details>
 
 ## 더 읽을거리
 

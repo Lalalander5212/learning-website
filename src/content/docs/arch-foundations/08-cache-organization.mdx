@@ -2,6 +2,7 @@
 title: "Cache 구조: tag / index / offset"
 description: "주소 하나가 cache의 어느 set, 어느 tag로 가는지 비트 단위로 계산하기"
 track: arch-foundations
+module: cache
 est: 35min
 sidebar:
   order: 8
@@ -272,23 +273,23 @@ for w in [1, 2]:
 
 <Quiz
   q="Cache 4 KB, block 64 B, 4-way set-associative일 때 set 개수는?"
-  options={['64', '16', '256', '4']}
-  answer={1}
+  options={['64', '256', '16', '4']}
+  answer={2}
   explain="S = C / (B × A) = 4096 / (64 × 4) = 16. 64는 associativity를 빼먹고 line 수를 구한 값이다."
 />
 
 <Quiz
   q="32-bit 주소, cache 32 KB, block 64 B, 8-way일 때 offset / index / tag 비트 수는?"
-  options={['6 / 9 / 17', '6 / 6 / 20', '5 / 6 / 21', '6 / 3 / 23']}
-  answer={1}
+  options={['6 / 6 / 20', '6 / 9 / 17', '5 / 6 / 21', '6 / 3 / 23']}
+  answer={0}
   explain="offset = log2(64) = 6. set 수 = 32768 / (64 × 8) = 64이므로 index = 6. tag = 32 - 6 - 6 = 20. 6 / 9 / 17은 direct-mapped(512 sets)일 때의 값이다."
 />
 
 <Quiz
-  q="1 KB direct-mapped cache, block 16 B, 16-bit 주소에서 0x1A2B의 index는?"
-  options={['2', '34', '6', '11']}
-  answer={1}
-  explain="block address = 0x1A2B / 16 = 418, set 수 = 64, index = 418 mod 64 = 34. 6은 tag, 11은 offset, 2는 2-way일 때의 index다."
+  q="2 KB 2-way set-associative cache, block 32 B, 16-bit 주소에서 0x3C7D의 index는?"
+  options={['15', '29', '35', '3']}
+  answer={3}
+  explain="block address = 0x3C7D / 32 = 483, set 수 = 2048 / (32 × 2) = 32이므로 index = 483 mod 32 = 3. 15는 tag(483 / 32), 29는 offset(0x3C7D mod 32), 35는 direct-mapped(64 sets)로 계산한 index다."
 />
 
 <Quiz
@@ -299,11 +300,44 @@ for w in [1, 2]:
 />
 
 <Quiz
-  q="Direct-mapped cache에서 0x1A2B와 0x1E2B(1 KB 차이)를 번갈아 접근하면 어떤 일이 생기나?"
-  options={['둘 다 hit', '같은 set을 두고 서로를 계속 쫓아내서 매번 miss', '서로 다른 set이라 영향 없음', 'offset이 달라서 같은 line을 공유']}
-  answer={1}
-  explain="둘은 index(34)가 같고 tag(6과 7)만 다르다. direct-mapped는 set당 자리가 하나라서 번갈아 접근할 때마다 서로를 쫓아낸다. 2-way면 둘 다 들어간다."
+  q="2 KB direct-mapped cache, block 32 B, 16-bit 주소다. 0x1000과 번갈아 접근할 때 서로를 계속 쫓아내는 주소는?"
+  options={['0x1400', '0x1010', '0x1800', '0x1040']}
+  answer={2}
+  explain="index는 block address mod 64, 즉 주소 비트 5..10이다. 0x1800은 0x1000과 정확히 2 KB(cache 크기) 차이라서 index가 같고 tag만 달라 서로를 쫓아낸다. 0x1400은 1 KB 차이라 index가 32 다르고, 0x1040은 index가 2 다르고, 0x1010은 같은 block 안이라 오히려 hit다."
 />
+
+## 서술형
+
+### 문제. 64 KB 4-way cache 설계 분석
+
+32-bit 주소, 데이터 용량 64 KB, 4-way set-associative, line 64 B, write-back cache다.
+
+(a) set 수와 offset / index / tag 비트 수를 구하라.
+
+(b) 주소 0x00403A7C의 offset, index, tag를 구하라.
+
+(c) float 배열을 일정한 간격으로 읽는다. 간격이 몇 byte의 배수이면 모든 접근이 같은 set으로 가는가? 그런 주소를 몇 개 이상 번갈아 읽으면 conflict miss가 나기 시작하는가?
+
+(d) line마다 tag, valid bit, dirty bit를 저장한다. 이 메타데이터의 총 크기와 데이터 용량 대비 비율은?
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** $S = 65536 / (64 \times 4) = 256$ sets. offset $= \log_2 64 = 6$, index $= \log_2 256 = 8$, tag $= 32 - 8 - 6 = 18$ bit.
+
+**(b)** 0x00403A7C를 offset 6 bit, index 8 bit로 자른다.
+
+- offset = 0x7C mod 64 = 0x3C = **60**
+- block address = 0x00403A7C >> 6 = 0x100E9 → index = 0xE9 = **233**
+- tag = 0x00403A7C >> 14 = **0x100**
+
+검산: $(0x100 \times 256 + 233) \times 64 + 60 = 0x00403A7C$.
+
+**(c)** index는 비트 6..13이므로, 주소 차이가 $2^{14} = 16$ KB(= sets × line)의 배수면 index가 같다. 한 set에 way가 4개이므로 이런 주소를 **5개 이상** 번갈아 읽으면 LRU에서 서로를 쫓아내기 시작한다. 큰 2D 배열에서 행 길이가 16 KB(float 4096개)일 때 column 방향으로 읽으면 정확히 이 상황이 된다.
+
+**(d)** line 수 $= 65536 / 64 = 1024$. line당 $18 + 1 + 1 = 20$ bit → $1024 \times 20 = 20480$ bit = **2560 B**, 데이터 대비 약 **3.9%**.
+
+</details>
 
 ## 더 읽을거리
 

@@ -1,13 +1,14 @@
 ---
 // <Quiz q="질문" options={['a','b','c']} answer={1} explain="해설" />  (answer는 0부터)
-interface Props { q: string; options: string[]; answer: number; explain?: string }
-const { q, options, answer, explain } = Astro.props;
+// 보기는 풀 때마다 순서가 섞임. 순서에 의미가 있는 문제만 shuffle={false}
+interface Props { q: string; options: string[]; answer: number; explain?: string; shuffle?: boolean }
+const { q, options, answer, explain, shuffle = true } = Astro.props;
 ---
-<div class="quiz not-content" data-answer={answer}>
+<div class="quiz not-content" data-answer={answer} data-shuffle={shuffle ? undefined : 'off'}>
   <p class="quiz-q">{q}</p>
   <ol class="quiz-opts">
     {options.map((o, i) => (
-      <li><button class="quiz-opt" type="button"><kbd>{i + 1}</kbd><span>{o}</span></button></li>
+      <li><button class="quiz-opt" type="button" data-i={i}><kbd>{i + 1}</kbd><span>{o}</span></button></li>
     ))}
   </ol>
   {explain && <p class="quiz-explain" hidden>{explain}</p>}

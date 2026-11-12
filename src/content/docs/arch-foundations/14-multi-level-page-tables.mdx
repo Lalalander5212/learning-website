@@ -2,6 +2,7 @@
 title: "Multi-level page table과 page walk"
 description: "page table을 트리로 쪼개 메모리를 아끼는 법, x86-64 4-level walk를 비트 단위로 따라가기"
 track: arch-foundations
+module: vm
 est: 30min
 sidebar:
   order: 14
@@ -210,31 +211,31 @@ vLLM의 **PagedAttention**은 해결책도 그대로 가져왔다.
 ## 체크 퀴즈
 
 <Quiz
-  q="page 4 KB, PTE 8 B, page table 한 장 = page 하나일 때 레벨당 index 비트 수는?"
-  options={['8', '9', '10', '12']}
+  q="page 16 KB, PTE 8 B, page table 한 장 = page 하나일 때 레벨당 index 비트 수는?"
+  options={['9', '14', '10', '11']}
+  answer={3}
+  explain="한 장에 16384 / 8 = 2048 = 2^11개 entry가 들어가므로 11 bit. 9는 4 KB page일 때의 값이고, 14는 page offset 비트 수다."
+/>
+
+<Quiz
+  q="x86-64 4-level 구조에서 VA 0x5A3C9E127B04의 L4 index는?"
+  options={['180', '90', '242', '295']}
+  answer={0}
+  explain="48 bit 중 상위 9 bit(47..39)를 잘라야 한다. 0x5A3C9E127B04 >> 39 = 180. 90(0x5A)은 상위 hex 두 자리를 그대로 읽은 값으로, hex 경계와 9 bit 경계가 맞지 않는다. 242는 L3, 295는 L1 index다."
+/>
+
+<Quiz
+  q="TLB가 없다면 RISC-V Sv39(3-level)에서 load 명령어 하나가 메모리에 접근하는 횟수는?"
+  options={['3번', '4번', '5번', '1번']}
   answer={1}
-  explain="한 장에 4096 / 8 = 512 = 2^9개 entry가 들어가므로 9 bit. 10은 PTE가 4 B인 32-bit 2-level 구조일 때의 값이다."
+  explain="page walk에서 레벨마다 PTE를 하나씩 읽으니 3번, 거기에 실제 데이터 접근 1번을 더하면 4번이다. 5번은 x86-64 4-level의 값이다."
 />
 
 <Quiz
-  q="x86-64 VA 0x7F3A1B2C4D5E의 L4 index는?"
-  options={['127', '254', '232', '0x7F']}
-  answer={1}
-  explain="48 bit 중 상위 9 bit(47..39)는 011111110 = 254. 127(0x7F)은 상위 hex 두 자리를 그대로 읽은 실수다. hex 경계와 9 bit 경계가 맞지 않으니 2진수로 펼쳐서 잘라야 한다."
-/>
-
-<Quiz
-  q="TLB가 없다면 x86-64 4-level 구조에서 load 명령어 하나가 메모리에 접근하는 횟수는?"
-  options={['1번', '4번', '5번', '9번']}
+  q="32-bit, 10+10+12 2-level 구조에서 하단 12 MB와 상단 2 MB만 쓸 때 page table 총 크기는?"
+  options={['4 MB', '16 KB', '20 KB', '56 KB']}
   answer={2}
-  explain="page walk에서 레벨마다 PTE를 하나씩 읽으니 4번, 거기에 실제 데이터 접근 1번을 더하면 5번이다."
-/>
-
-<Quiz
-  q="32-bit, 10+10+12 2-level 구조에서 하단 8 MB와 상단 1 MB만 쓸 때 page table 총 크기는?"
-  options={['4 MB', '12 KB', '16 KB', '36 KB']}
-  answer={2}
-  explain="directory 1장 + 하단 8 MB용 2장 + 상단 1 MB용 1장 = 4장 × 4 KB = 16 KB. 12 KB는 directory를 빼먹은 값이다."
+  explain="2단계 테이블 한 장이 4 MB 영역을 덮는다. directory 1장 + 하단 12 MB용 3장 + 상단 2 MB용 1장 = 5장 × 4 KB = 20 KB. 56 KB는 14 MB를 1 MB마다 한 장으로 센 값이다."
 />
 
 <Quiz
@@ -243,6 +244,41 @@ vLLM의 **PagedAttention**은 해결책도 그대로 가져왔다.
   answer={1}
   explain="block table이 시퀀스의 logical KV block 번호를 실제 GPU 메모리의 physical block으로 매핑한다. KV block은 page에, 시퀀스는 process에 해당한다."
 />
+
+## 서술형
+
+### 문제. Sv39 page walk와 huge page의 효과
+
+RISC-V Sv39: 39-bit VA = VPN[2] 9 bit | VPN[1] 9 bit | VPN[0] 9 bit | offset 12 bit. PTE 8 B, page table 한 장 = 4 KB.
+
+(a) VA 0x3F8A2BC123의 VPN[2], VPN[1], VPN[0], offset을 구하라.
+
+(b) 프로세스가 주소 공간 맨 아래 64 MB(코드, heap)와 맨 위 8 MB(스택)만 쓴다. 4 KB page만 쓸 때 필요한 page table 장 수와 총 크기는? single-level이었다면?
+
+(c) 같은 영역을 2 MB huge page로 매핑하면(VPN[1] 레벨의 PTE가 바로 frame을 가리킴) page table 크기와 page walk의 메모리 접근 횟수는 어떻게 되는가?
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** 0x3F8A2BC123을 2진수로 펼쳐 아래부터 12 | 9 | 9 | 9로 자른다.
+
+- offset = 하위 12 bit = **0x123**
+- VPN[0] = (VA >> 12) & 511 = **188**
+- VPN[1] = (VA >> 21) & 511 = **81**
+- VPN[2] = (VA >> 30) & 511 = **254**
+
+**(b)** 각 레벨이 덮는 범위: root entry 하나 = 1 GB, VPN[1] 테이블 entry 하나 = 2 MB, VPN[0] 테이블 한 장 = 2 MB.
+
+- root: **1장**
+- 하단 64 MB: 1 GB 안이므로 VPN[1] 테이블 1장, VPN[0] 테이블 $64 / 2 = 32$장
+- 상단 8 MB: VPN[1] 테이블 1장, VPN[0] 테이블 4장
+- 합계 $1 + 1 + 32 + 1 + 4 = 39$장 × 4 KB = **156 KB**
+
+single-level이면 $2^{27} \times 8$ B = **1 GB**.
+
+**(c)** VPN[0] 테이블이 필요 없어진다. root 1장 + VPN[1] 테이블 2장 = 3장 = **12 KB**. walk도 root → VPN[1] 2번이면 끝난다 (데이터 접근 포함 3번). 2 MB page 하나가 4 KB page 512개를 대신하므로 TLB도 같은 entry 수로 512배 넓은 영역을 덮는다.
+
+</details>
 
 ## 더 읽을거리
 

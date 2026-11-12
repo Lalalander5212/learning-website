@@ -2,6 +2,7 @@
 title: "Virtual memory 기초: VA, PA, PTE"
 description: "프로세스마다 자기만의 주소 공간을 주고 하드웨어가 번역하는 원리"
 track: arch-foundations
+module: vm
 est: 30min
 sidebar:
   order: 13
@@ -238,24 +239,24 @@ page table은 **메인 메모리(DRAM)**에 있다. MMU 안에 있는 건 PTBR�
 ## 체크 퀴즈
 
 <Quiz
-  q="32-bit VA, 4 KB page일 때 VA 0x00403A2C의 VPN과 offset은?"
-  options={['VPN 0x403A, offset 0x2C', 'VPN 0x00403, offset 0xA2C', 'VPN 0x403A2, offset 0xC', 'VPN 0x004, offset 0x03A2C']}
-  answer={1}
-  explain="4 KB = 2^12이므로 하위 12 bit(hex 3자리)가 offset이다. 0x00403A2C → VPN = 0x00403, offset = 0xA2C."
+  q="32-bit VA, 8 KB page일 때 VA 0x0081F3C4의 VPN과 offset은?"
+  options={['VPN 0x40F, offset 0x13C4', 'VPN 0x81F, offset 0x3C4', 'VPN 0x0081, offset 0xF3C4', 'VPN 0x81F3, offset 0xC4']}
+  answer={0}
+  explain="8 KB = 2^13이므로 하위 13 bit가 offset이다. 0x0081F3C4 >> 13 = 0x40F, 0x0081F3C4 & 0x1FFF = 0x13C4. VPN 0x81F / offset 0x3C4는 4 KB page(12 bit)로 자른 값이다. 13 bit는 hex 자리 경계와 맞지 않아서 2진수로 잘라야 한다."
 />
 
 <Quiz
-  q="VPN 0x403이 PPN 0x1F2로 매핑될 때 VA 0x00403A2C의 물리 주소는? (4 KB page)"
-  options={['0x1F2403', '0x1F2A2C', '0x403A2C', '0x1F20A2C']}
-  answer={1}
-  explain="PA = PPN × 4096 + offset = 0x1F2000 + 0xA2C = 0x1F2A2C. offset은 번역되지 않고 그대로 붙는다."
+  q="4 KB page에서 VPN 0x12345가 PPN 0x0A7로 매핑될 때 VA 0x12345ABC의 물리 주소는?"
+  options={['0x0A712345', '0x12345ABC', '0xA70ABC', '0xA7ABC']}
+  answer={3}
+  explain="PA = PPN × 4096 + offset = 0xA7000 + 0xABC = 0xA7ABC. offset 0xABC는 번역되지 않고 그대로 붙는다. 0x0A712345는 PPN 뒤에 VPN을 붙인 값이고, 0xA70ABC는 offset 앞에 0을 하나 더 끼운 값이다."
 />
 
 <Quiz
-  q="48-bit VA, 4 KB page, PTE 8 B일 때 single-level page table의 크기는?"
-  options={['4 MB', '512 GB', '256 TB', '64 KB']}
-  answer={1}
-  explain="VPN이 48 - 12 = 36 bit이므로 entry 2^36개 × 8 B = 2^39 B = 512 GB. 4 MB는 32-bit, PTE 4 B일 때의 값이고 256 TB는 주소 공간 자체의 크기다."
+  q="RISC-V Sv39(39-bit VA), 4 KB page, PTE 8 B일 때 single-level page table이었다면 크기는?"
+  options={['512 GB', '512 MB', '1 GB', '4 MB']}
+  answer={2}
+  explain="VPN이 39 - 12 = 27 bit이므로 entry 2^27개 × 8 B = 2^30 B = 1 GB. 512 GB는 48-bit VA로 계산한 값, 512 MB는 PTE를 4 B로 본 값이다. 프로세스마다 1 GB라서 이 경우에도 single-level은 쓸 수 없다."
 />
 
 <Quiz
@@ -264,6 +265,48 @@ page table은 **메인 메모리(DRAM)**에 있다. MMU 안에 있는 건 PTBR�
   answer={1}
   explain="Present = 0이면 MMU가 page fault를 일으키고 OS handler가 처리한다. 유효한 주소면 page를 올리고 명령어를 재실행하고, 잘못된 주소일 때만 segfault가 된다."
 />
+
+## 서술형
+
+### 문제. 작은 시스템에서 번역과 fault 따라가기
+
+16-bit 가상 주소, page 256 B, single-level page table을 쓰는 작은 시스템이 있다. PTE는 2 B다. 현재 프로세스의 page table 일부는 이렇다.
+
+| VPN | Present | PPN | 권한 |
+|---|---|---|---|
+| 0x00 | 1 | 0x12 | 읽기, 실행 (코드) |
+| 0x01 | 1 | 0x2A | 읽기, 쓰기 |
+| 0x02 | 0 | – | 읽기, 쓰기 |
+| 0xFF | 1 | 0x05 | 읽기, 쓰기 (스택) |
+
+(a) VPN과 offset은 각각 몇 bit인가? page table 전체 크기는?
+
+(b) 다음 접근의 결과를 구하라. 성공하면 물리 주소를, 실패하면 무슨 예외인지와 OS가 할 일을 써라.
+
+1. 0x01C4 읽기
+2. 0x0010 쓰기
+3. 0x0280 읽기 (OS가 빈 frame 0x33을 준다고 하자)
+
+(c) 다른 프로세스도 VA 0x01C4를 읽는다. 같은 물리 주소를 읽게 되는가?
+
+(d) 물리 메모리가 1 MB라면 PA는 몇 bit이고 PPN은 몇 bit인가?
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** 256 B = $2^8$이므로 offset 8 bit, VPN $16 - 8 = 8$ bit. page table은 $2^8 \times 2$ B = **512 B**.
+
+**(b)**
+
+1. VPN 0x01, offset 0xC4. Present, 읽기 허용 → PA $= 0x2A \times 256 + 0xC4 =$ **0x2AC4**.
+2. VPN 0x00, offset 0x10. Present지만 코드 page라 쓰기 권한이 없다 → **protection fault**. 정상적인 접근이 아니므로 OS는 보통 프로세스를 종료한다 (segmentation fault).
+3. VPN 0x02, Present = 0 → **page fault**. 유효한 영역이므로 OS가 frame 0x33을 할당하고(필요하면 disk에서 내용을 읽어 오고) PTE를 PPN 0x33, Present = 1로 고친 뒤 명령어를 다시 실행한다. 재실행 결과 PA **0x3380**.
+
+**(c)** 아니다. 프로세스마다 page table이 따로 있어서 같은 VA라도 다른 frame으로 번역된다. OS가 일부러 같은 frame을 양쪽 page table에 넣은 경우(공유 라이브러리, 공유 메모리)에만 같은 곳을 본다.
+
+**(d)** 1 MB = $2^{20}$ B → PA 20 bit. offset 8 bit는 그대로이므로 PPN은 **12 bit**. VA(16 bit)보다 PA가 넓어도 된다. 프로세스 하나는 64 KB만 보지만 여러 프로세스가 1 MB를 나눠 쓴다.
+
+</details>
 
 ## 더 읽을거리
 

@@ -10,6 +10,8 @@ export type Lesson = {
   title: string;
   track: string;
   trackTitle: string;
+  module?: string; // 모듈 id (src/tracks.mjs)
+  moduleTitle?: string;
   est?: string;
   prereq: string[];
   href: string;
@@ -38,11 +40,15 @@ export function getLessons(): Promise<Lesson[]> {
     return docs.map((e) => {
       const track = e.data.track!;
       seen[track] = (seen[track] || 0) + 1;
+      const t = TRACKS.find((x) => x.id === track);
+      const mod = t?.modules?.find((m) => m.id === e.data.module);
       return {
         id: e.id,
         title: e.data.title,
         track,
-        trackTitle: TRACKS.find((t) => t.id === track)?.title ?? track,
+        trackTitle: t?.title ?? track,
+        module: mod?.id,
+        moduleTitle: mod?.title,
         est: e.data.est,
         prereq: e.data.prereq ?? [],
         href: url(e.id + '/'),
