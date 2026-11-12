@@ -233,32 +233,64 @@ Apple Silicon(ARM)에서는 AVX2 intrinsics가 없어서 컴파일이 안 된다
 ## 체크 퀴즈
 
 <Quiz
-  q="4 cores, 3 GHz, AVX2(FP32 8 lane), FMA 유닛 2개/core인 CPU의 FP32 peak는?"
-  options={['96 GFLOP/s', '192 GFLOP/s', '384 GFLOP/s', '768 GFLOP/s']}
-  answer={2}
-  explain="4 × 3×10^9 × 8 × 2 × 2 = 384 GFLOP/s. FMA는 곱셈과 덧셈 2 FLOP로 세야 한다. 192는 그 2를 빼먹은 값이다."
+  q="6 cores, 2.5 GHz, AVX-512(FP32 16 lane), FMA 유닛 1개/core인 CPU의 FP32 peak는?"
+  options={['480 GFLOP/s', '240 GFLOP/s', '960 GFLOP/s', '30 GFLOP/s']}
+  answer={0}
+  explain="6 × 2.5×10^9 × 16 × 1 × 2 = 480 GFLOP/s. FMA는 곱셈과 덧셈 2 FLOP로 세야 한다. 240은 그 2를 빼먹은 값, 960은 FMA 유닛을 2개로 본 값, 30은 SIMD 없이 코어당 사이클당 2 FLOP만 센 값이다."
 />
 
 <Quiz
-  q="FMA latency 4 사이클, 코어가 사이클당 FMA 2개를 시작할 수 있을 때 dot product reduction에 필요한 최소 독립 누적기 수는?"
-  options={['2', '4', '8', '16']}
-  answer={2}
-  explain="Little's law: 동시에 진행 중이어야 할 FMA 수 = latency × throughput = 4 × 2 = 8. 누적기가 그보다 적으면 FMA 유닛이 결과를 기다리며 논다."
+  q="FMA latency 5 사이클, 코어가 사이클당 FMA 2개를 시작할 수 있을 때 dot product reduction에 필요한 최소 독립 누적기 수는?"
+  options={['2', '5', '7', '10']}
+  answer={3}
+  explain="Little's law: 동시에 진행 중이어야 할 FMA 수 = latency × throughput = 5 × 2 = 10. 누적기가 그보다 적으면 FMA 유닛이 앞 결과를 기다리며 논다. 5는 FMA 유닛이 하나일 때의 값이다."
 />
 
 <Quiz
-  q="256-bit SIMD 레지스터에 INT8 원소는 몇 개 들어가나?"
-  options={['8', '16', '32', '64']}
-  answer={2}
-  explain="256 / 8 = 32. FP32(8개) 대비 4배의 lane이라 같은 명령어 수로 4배의 MAC을 할 수 있다."
-/>
-
-<Quiz
-  q="누적기 8개 AVX2 dot product가 FMA peak(사이클당 32 FLOP)가 아니라 사이클당 약 16 FLOP에서 막힌 이유는?"
-  options={['클럭이 낮아서', 'FMA마다 벡터 load 2개가 필요한데 load port가 사이클당 2개라서', '누적기가 부족해서', '분기 예측 실패 때문에']}
+  q="512-bit SIMD 레지스터에 FP16 원소는 몇 개 들어가나?"
+  options={['16', '32', '64', '8']}
   answer={1}
-  explain="dot product는 FMA 하나에 a와 b를 각각 load해야 한다. 사이클당 load 2개가 한계면 사이클당 FMA 1개(16 FLOP)가 상한이다. 연산이 아니라 데이터 공급이 병목인 것이다."
+  explain="512 / 16 = 32. FP32(16개)의 2배다. 64는 INT8일 때, 16은 FP32일 때의 개수다."
 />
+
+<Quiz
+  q="AVX2 코어가 사이클당 load 2개, store 1개, FMA 2개를 할 수 있다. SAXPY(y = a*x + y)를 벡터화하면 사이클당 최대 몇 FLOP인가?"
+  options={['32', '64', '16', '8']}
+  answer={2}
+  explain="벡터 8개 원소마다 x load, y load, FMA 하나, y store 하나가 필요하다. load 2개/사이클과 store 1개/사이클이 모두 사이클당 반복 1번을 허락하므로 FMA는 사이클당 1개, 즉 8 lane × 2 = 16 FLOP다. 32는 FMA 유닛 2개를 다 쓴다고 본 값이다. 연산 유닛이 아니라 데이터 공급이 상한을 정한다."
+/>
+
+## 서술형
+
+### 문제. 스마트폰 CPU에서 INT8의 이득과 한계
+
+ARM 스마트폰 CPU: 큰 코어 4개, 2 GHz, 코어마다 128-bit NEON 유닛 2개. FP32 FMA는 유닛당 4 lane이다. INT8 dot product 명령어(SDOT)는 유닛 하나가 한 명령어로 INT8 곱셈-누적 16개를 한다.
+
+(a) FP32 peak FLOP/s는?
+
+(b) INT8 SDOT의 peak OP/s(곱셈과 덧셈을 각각 1로 센다)는? FP32 대비 몇 배인가?
+
+(c) 파라미터 10억 개(1B) 모델을 INT8로 돌려 토큰 하나를 만들 때 연산은 약 $2 \times 10^9$ OP이고 weight 1 GB를 한 번 읽는다. 메모리 대역폭이 20 GB/s라면 토큰당 시간의 하한을 연산 기준, 메모리 기준으로 각각 구하라. 무엇이 병목인가?
+
+(d) FP32 FMA latency가 4 사이클이면, 코어 하나에서 FP32 reduction이 peak를 내려면 독립 누적기가 몇 개 필요한가?
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** $4 \times 2 \times 10^9 \times 4 \text{ lane} \times 2 \text{ units} \times 2 = 128$ GFLOP/s.
+
+**(b)** $4 \times 2 \times 10^9 \times 16 \times 2 \text{ units} \times 2 = 512$ GOP/s → FP32의 **4배**. 같은 128 bit에 lane이 4배 들어가기 때문이다.
+
+**(c)**
+
+- 연산: $2 \times 10^9 / 512 \times 10^9 \approx 3.9$ ms
+- 메모리: $1 \text{ GB} / 20 \text{ GB/s} = 50$ ms
+
+메모리가 13배 가까이 느리다. **memory-bound**다. SIMD를 아무리 잘 써도 토큰당 50 ms(20 tokens/s)보다 빨라질 수 없다. INT8이 여기서 도움이 되는 이유는 lane이 늘어서가 아니라 weight bytes가 FP32의 1/4로 줄어서다. 이 비교를 일반화한 것이 21번 레슨의 roofline이다.
+
+**(d)** latency 4 × 사이클당 FMA 2개 = **8개**.
+
+</details>
 
 ## 더 읽을거리
 
