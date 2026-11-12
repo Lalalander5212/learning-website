@@ -96,6 +96,12 @@ for (const track of TRACKS) {
     } else if (d.module) err(f, 1, 'module', `트랙 ${track.id}에는 modules가 정의돼 있지 않음 (src/tracks.mjs에 먼저 추가)`);
     for (const p of d.prereq ?? []) if (!allIds.has(p)) err(f, 1, 'prereq', `prereq ${p}: 없는 레슨 id`);
 
+    // 탭·제어 문자 (스크립트로 생성할 때 \t, \a 같은 escape가 섞여 들어가는 경우)
+    src.split('\n').forEach((ln, i) => {
+      const c = /[\x00-\x08\x0b-\x1f\x7f]/.exec(ln) ?? (/\t/.test(ln) ? ["\t"] : null);
+      if (c) err(f, i + 1, 'control-char', `제어 문자 U+${c[0].charCodeAt(0).toString(16).padStart(4, '0')}. 수식의 \\times, \\approx 같은 백슬래시가 escape로 바뀌었는지 확인`);
+    });
+
     // ── MDX 파싱 (frontmatter 자리는 빈 줄로 채워 줄 번호 유지) ──
     const body = '\n'.repeat(fm.bodyLine - 1) + fm.body;
     let tree;

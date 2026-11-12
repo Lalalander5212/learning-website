@@ -145,23 +145,23 @@ for b in [1, 4, 16, 64, 256, 1024]:
 ## 체크 퀴즈
 
 <Quiz
-  q="GPU에서 batch 1은 10 ms, batch 8은 24 ms 걸린다. batch 8의 throughput은 대략 얼마인가?"
-  options={['100 img/s', '333 img/s', '800 img/s', '42 img/s']}
-  answer={1}
-  explain="throughput = 처리한 개수 / 걸린 시간 = 8 / 0.024 s ≈ 333 img/s. 800은 batch 1의 100 img/s에 8을 곱한 값인데, batch를 키우면 처리 시간도 늘어나므로 틀렸다."
+  q="GPU에서 batch 1은 6 ms, batch 16은 40 ms 걸린다. batch 16의 throughput은 대략 얼마인가?"
+  options={['400 img/s', '2667 img/s', '167 img/s', '25 img/s']}
+  answer={0}
+  explain="throughput = 처리한 개수 / 걸린 시간 = 16 / 0.040 s = 400 img/s. 2667은 batch 1의 처리량(약 167 img/s)에 16을 곱한 값으로, batch가 커지면 처리 시간도 늘어난다는 걸 빠뜨렸다. 25는 1초에 끝나는 batch 수라서 batch 크기를 곱하지 않은 값이다."
 />
 
 <Quiz
   q="서버의 throughput이 200 req/s이고 평균 latency가 50 ms다. 시스템 안에서 동시에 처리 중인 요청은 평균 몇 개인가?"
-  options={['4개', '10개', '40개', '250개']}
-  answer={1}
+  options={['4개', '40개', '250개', '10개']}
+  answer={3}
   explain="Little's Law L = λ × W = 200 × 0.05 = 10. 단위를 ms 그대로 곱하면(200 × 50) 틀린 답이 나오니 초 단위로 맞춰야 한다."
 />
 
 <Quiz
   q="다음 중 LLM 서빙에서 latency 지표에 해당하는 것은?"
-  options={['tokens/s', 'TPOT (Time Per Output Token)', 'batch size', 'GPU 개수']}
-  answer={1}
+  options={['tokens/s', 'batch size', 'TPOT (Time Per Output Token)', 'GPU 개수']}
+  answer={2}
   explain="TPOT는 decode 한 step(토큰 하나)에 걸리는 시간이므로 latency다. tokens/s는 단위 시간당 개수이므로 throughput이고, batch size와 GPU 개수는 지표가 아니라 설정값이다."
 />
 
@@ -171,6 +171,43 @@ for b in [1, 4, 16, 64, 256, 1024]:
   answer={1}
   explain="동시에 더 많이 처리하므로 throughput은 늘지만(하드웨어가 포화될 때까지), 각 샘플은 batch 전체가 끝날 때까지 기다려야 하므로 latency는 늘어난다."
 />
+
+## 서술형
+
+### 문제. 서빙 SLA 안에서 batch 크기 고르기
+
+어떤 모델을 GPU에서 batch $b$로 돌리면 한 batch 처리 시간이 $T(b) = 6 + 2b$ ms다. 요구사항(SLA)은 **요청 하나의 latency ≤ 30 ms**다.
+
+(a) $b = 1, 4, 16$일 때 latency와 throughput을 구하라.
+
+(b) 요청이 충분히 쌓여 있어서 batch를 채우려고 기다릴 필요가 없다고 하자. SLA를 지키면서 throughput이 가장 큰 $b$와 그때의 throughput은?
+
+(c) 실제로는 요청이 초당 200개씩 일정한 간격으로 들어온다. (b)의 $b$로 batch가 다 찰 때까지 기다렸다가 처리하면, batch의 **첫 번째** 요청이 겪는 latency는 얼마인가? SLA를 지키는가?
+
+(d) (c)의 조건에서 SLA를 지키는 가장 큰 $b$는? 그 $b$로 초당 200개 요청을 감당할 수 있는가?
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)**
+
+| $b$ | latency $T(b)$ | throughput $b / T(b)$ |
+|---|---|---|
+| 1 | 8 ms | 125 req/s |
+| 4 | 14 ms | 약 286 req/s |
+| 16 | 38 ms | 약 421 req/s |
+
+$b = 16$은 throughput이 가장 크지만 latency 38 ms로 SLA를 어긴다.
+
+**(b)** $6 + 2b \le 30$이므로 $b \le 12$. $b = 12$에서 latency 30 ms, throughput $= 12 / 0.030 = 400$ req/s.
+
+**(c)** 첫 요청은 나머지 11개가 도착할 때까지 기다린다. 요청 간격이 $1/200$ s = 5 ms이므로 대기 시간은 $11 \times 5 = 55$ ms. 여기에 처리 30 ms를 더하면 **85 ms**로 SLA를 크게 넘는다. 위 Worked example의 주의 박스에서 말한 "batch를 모으려고 기다리는 시간"이 바로 이것이다.
+
+**(d)** 첫 요청의 latency는 $5(b-1) + 6 + 2b = 7b + 1$ ms. $7b + 1 \le 30$이므로 $b \le 4$. $b = 4$면 대기 15 ms + 처리 14 ms = 29 ms로 SLA를 지킨다. 처리 능력은 $4 / 0.014 \approx 286$ req/s로 도착률 200 req/s보다 크므로 감당할 수 있다.
+
+요청이 드문드문 들어오는 환경에서는 throughput 최대인 batch가 아니라 **대기 시간까지 포함한 latency**로 batch 크기를 정해야 한다.
+
+</details>
 
 ## 더 읽을거리
 
