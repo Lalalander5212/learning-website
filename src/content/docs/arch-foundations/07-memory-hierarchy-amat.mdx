@@ -228,32 +228,72 @@ $$
 ## 체크 퀴즈
 
 <Quiz
-  q="Hit time 1 cycle, miss rate 5%, miss penalty 50 cycles일 때 AMAT는?"
-  options={['2.5 cycles', '3.5 cycles', '51 cycles', '1.05 cycles']}
-  answer={1}
-  explain="AMAT = 1 + 0.05 × 50 = 3.5. hit time은 miss든 hit든 항상 들기 때문에 더해야 한다. 2.5는 hit time을 빼먹은 값이다."
+  q="Hit time 2 cycles, miss rate 8%, miss penalty 40 cycles일 때 AMAT는?"
+  options={['3.2 cycles', '42 cycles', '5.2 cycles', '2.08 cycles']}
+  answer={2}
+  explain="AMAT = 2 + 0.08 × 40 = 5.2. hit time은 hit든 miss든 항상 들기 때문에 더해야 한다. 3.2는 hit time을 빼먹은 값이고, 2.08은 miss penalty를 곱하지 않은 값이다."
 />
 
 <Quiz
-  q="L1 miss rate 5%, L2 local miss rate 20%일 때 L2의 global miss rate는?"
-  options={['25%', '1%', '20%', '4%']}
-  answer={1}
-  explain="global = L1 miss rate × L2 local miss rate = 0.05 × 0.2 = 0.01. 전체 접근 100번 중 L1을 놓친 5번이 L2로 가고, 그중 20%인 1번이 DRAM까지 간다."
+  q="L1 miss rate 4%, L2 local miss rate 30%일 때 L2의 global miss rate는?"
+  options={['34%', '30%', '0.12%', '1.2%']}
+  answer={3}
+  explain="global = L1 miss rate × L2 local miss rate = 0.04 × 0.3 = 0.012 = 1.2%. 전체 접근 1000번 중 L1을 놓친 40번이 L2로 가고, 그중 30%인 12번이 DRAM까지 간다. 34%는 두 비율을 더한 값이다."
 />
 
 <Quiz
-  q="L2 hit time 10, L2 local miss rate 20%, DRAM penalty 200일 때 L1의 miss penalty는?"
-  options={['10 cycles', '50 cycles', '210 cycles', '40 cycles']}
-  answer={1}
-  explain="L1의 miss penalty는 L2의 AMAT다: 10 + 0.2 × 200 = 50. 40은 L2 hit time을 빼먹은 값이고, 210은 L2를 항상 miss로 본 값이다."
+  q="L2 hit time 15, L2 local miss rate 25%, DRAM penalty 180일 때 L1의 miss penalty는?"
+  options={['60 cycles', '45 cycles', '195 cycles', '15 cycles']}
+  answer={0}
+  explain="L1의 miss penalty는 L2의 AMAT다: 15 + 0.25 × 180 = 60. 45는 L2 hit time을 빼먹은 값이고, 195는 L2를 항상 miss로 본 값이다."
 />
 
 <Quiz
   q="Horowitz 에너지 표 기준으로, 32-bit DRAM read는 32-bit float 곱셈보다 대략 몇 배 비싼가?"
-  options={['약 2배', '약 10배', '약 170배', '약 6400배']}
-  answer={2}
+  options={['약 2배', '약 170배', '약 10배', '약 6400배']}
+  answer={1}
   explain="640 pJ / 3.7 pJ ≈ 170배. 6400배는 int ADD(0.1 pJ) 대비 값이다. 어느 쪽이든 데이터 이동이 연산보다 압도적으로 비싸다는 결론은 같다."
 />
+
+## 서술형
+
+### 문제. 큰 L1 vs 빠른 L1
+
+L1 설계안 두 개를 비교한다. L2는 hit time 12 cycles, local miss rate 25%, DRAM miss penalty 200 cycles다.
+
+| 설계 | L1 크기 | L1 hit time | L1 miss rate |
+|---|---|---|---|
+| A | 32 KB | 1 cycle | 6% |
+| B | 64 KB | 2 cycles | 4% |
+
+(a) L1의 miss penalty를 구하고, 두 설계의 AMAT를 비교하라.
+
+(b) L2를 개선해서 local miss rate가 10%로 떨어졌다. 두 설계의 AMAT를 다시 구하라. 어느 쪽이 나은가?
+
+(c) (a)와 (b)에서 결론이 바뀐 이유를 AMAT 공식의 항으로 설명하라.
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** L1 miss penalty $= 12 + 0.25 \times 200 = 62$ cycles.
+
+$$
+AMAT_A = 1 + 0.06 \times 62 = 4.72, \qquad AMAT_B = 2 + 0.04 \times 62 = 4.48
+$$
+
+B가 낫다.
+
+**(b)** L1 miss penalty $= 12 + 0.10 \times 200 = 32$ cycles.
+
+$$
+AMAT_A = 1 + 0.06 \times 32 = 2.92, \qquad AMAT_B = 2 + 0.04 \times 32 = 3.28
+$$
+
+이번에는 A가 낫다.
+
+**(c)** B는 hit time을 1 cycle 더 내고 miss rate를 2%p 줄인다. 그 거래가 이득이려면 $0.02 \times MP_{L1} \gt 1$, 즉 L1 miss penalty가 50 cycles보다 커야 한다. (a)에서는 62라서 B가 이기고, L2가 좋아져서 32가 되면 miss를 줄여서 얻는 이득이 작아져 A가 이긴다. miss rate만 보고 cache를 키우면 안 되는 이유다. 하위 계층이 좋을수록 빠른 L1이 유리하다.
+
+</details>
 
 ## 더 읽을거리
 

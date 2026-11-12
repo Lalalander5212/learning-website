@@ -125,8 +125,11 @@ for (const track of TRACKS) {
       if (n.type === 'code' && n.lang && !CODE_LANGS.has(n.lang)) warn(f, line, 'code-lang', `코드블록 언어 "${n.lang}"는 목록에 없음 (${[...CODE_LANGS].join(', ')})`);
 
       if (n.type === 'text' && !inSkipped) {
-        for (const ref of findLessonRefs(n.value)) for (const r of ref.nums) {
-          if (!lessons.some((x) => x.num === r.num)) err(f, line, 'lesson-ref', `"${r.num}번 레슨": ${track.id}에 ${r.num}번 레슨이 없음`);
+        for (const ref of findLessonRefs(n.value)) {
+          for (const r of ref.nums) {
+            if (!lessons.some((x) => x.num === r.num)) err(f, line, 'lesson-ref', `"${r.num}번 레슨": ${track.id}에 ${r.num}번 레슨이 없음`);
+          }
+          if (ref.nums.length === 1 && ref.nums[0].num === l.num) warn(f, line, 'lesson-ref', `"${l.num}번 레슨"이 자기 자신을 가리킴. "위 Worked example"처럼 섹션으로 가리킬 것`);
         }
         if (/(?<!\d)\d번 레슨/.test(n.value)) warn(f, line, 'lesson-ref', '레슨 참조는 두 자리로 ("7번 레슨" → "07번 레슨"). 한 자리는 링크가 안 걸림');
       }
