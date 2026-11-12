@@ -15,7 +15,17 @@ export const TRACKS = [
       { id: 'review', title: '종합' },
     ],
   },
-  { id: 'ml-basics', title: 'ML Basics' },
+  {
+    id: 'ml-basics',
+    title: 'ML Basics',
+    modules: [
+      { id: 'regression', title: '회귀와 loss' },
+      { id: 'optimization', title: '최적화' },
+      { id: 'backprop', title: 'Backpropagation' },
+      { id: 'generalization', title: '일반화' },
+      { id: 'review', title: '종합' },
+    ],
+  },
   { id: 'deep-learning', title: 'Deep Learning' },
   { id: 'llm-internals', title: 'LLM Internals' },
   { id: 'edge-llm', title: 'Edge LLM' },

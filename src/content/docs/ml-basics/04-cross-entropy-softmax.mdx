@@ -1,0 +1,298 @@
+---
+title: "Cross-entropy와 softmax"
+description: "여러 클래스의 확률을 내는 softmax, cross-entropy의 의미와 gradient, 수치 안정성, perplexity"
+track: ml-basics
+module: regression
+est: 35min
+sidebar:
+  order: 4
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+03번 레슨의 sigmoid는 클래스가 2개일 때만 쓸 수 있다. 숫자 0~9를 분류하거나, LLM이 다음 토큰을 32,000개 vocabulary 중에서 고를 때는 **클래스 전체에 대한 확률 분포**가 필요하다. softmax가 점수 벡터를 확률 분포로 바꾸고, cross-entropy가 그 분포를 채점한다. LLM 학습 loss, perplexity, distillation이 전부 이 두 식 위에 있다.
+
+## 직관: 점수를 지분으로 나누기
+
+클래스마다 점수(logit)가 있다고 하자. softmax는 각 점수를 $e^{\text{점수}}$로 키운 뒤, 전체 합에서 각자의 지분을 계산한다.
+
+```text
+ logit      2.0      1.0      0.1
+   │ exp     │        │        │
+   ▼         ▼        ▼        ▼
+ e^z       7.39     2.72     1.11     합 = 11.21
+   │ ÷ 합
+   ▼
+ 확률      0.659    0.242    0.099    합 = 1
+```
+
+- 지수를 쓰기 때문에 점수 차이 1이 확률 비 $e \approx 2.7$배가 된다. 점수가 큰 클래스가 지분을 몰아 가진다.
+- 모든 점수에 같은 값을 더해도 지분은 그대로다 (모두 같은 비율로 커지니까).
+
+cross-entropy는 "정답 클래스에 준 지분이 얼마나 작은가"를 $-\log$로 잰다. 정답에 100%를 주면 0, 1%를 주면 4.6이다.
+
+## 정식 설명
+
+### 용어
+
+**Softmax (소프트맥스)**: 실수 벡터 $\mathbf{z}$를 각 원소가 양수이고 합이 1인 확률 벡터로 바꾸는 함수.
+*Maps a vector of scores to a probability distribution.*
+
+**Logits (로짓)**: softmax에 들어가기 전의 점수 벡터.
+
+**Entropy (엔트로피)**: 분포 $p$의 불확실성 $H(p) = -\sum_i p_i \log p_i$.
+
+**Cross-entropy (교차 엔트로피)**: 실제 분포 $p$의 데이터를 모델 분포 $q$로 설명할 때의 평균 비용 $H(p, q) = -\sum_i p_i \log q_i$.
+*The expected negative log-probability of outcomes from p under model q.*
+
+**KL divergence (쿨백-라이블러 발산)**: $D_{KL}(p \Vert q) = \sum_i p_i \log \frac{p_i}{q_i} = H(p, q) - H(p)$. 두 분포가 같으면 0이고 항상 0 이상이다.
+
+**Perplexity (혼잡도)**: 평균 cross-entropy의 지수 $e^{\text{CE}}$. 모델이 매 step 평균 몇 개의 선택지 사이에서 헷갈리는지로 해석한다.
+
+### Softmax
+
+$$
+q_i = \text{softmax}(\mathbf{z})_i = \frac{e^{z_i}}{\sum_{j=1}^{K} e^{z_j}}
+$$
+
+**Shift invariance**: 모든 $z_i$에 상수 $c$를 더하면
+
+$$
+\frac{e^{z_i + c}}{\sum_j e^{z_j + c}} = \frac{e^c e^{z_i}}{e^c \sum_j e^{z_j}} = q_i
+$$
+
+**Temperature**: $\text{softmax}(\mathbf{z}/T)$. $T > 1$이면 분포가 평평해지고, $T \to 0$이면 가장 큰 점수 하나에 몰린다(argmax).
+
+**클래스 2개면 sigmoid**: $\text{softmax}(0, z)_2 = \frac{e^z}{1 + e^z} = \sigma(z)$. 03번 레슨의 logistic regression은 softmax의 특수한 경우다.
+
+### Cross-entropy loss
+
+정답이 클래스 $y$인 one-hot 벡터면 $p_i$가 정답에서만 1이므로
+
+$$
+\ell = H(\mathbf{p}, \mathbf{q}) = -\log q_y = -z_y + \log \sum_j e^{z_j}
+$$
+
+정답 확률의 negative log-likelihood다. 정답 분포의 entropy $H(p)$는 0이라서 이때 cross-entropy와 KL이 같다.
+
+### Gradient 유도
+
+$\ell = -z_y + \log \sum_j e^{z_j}$를 $z_k$로 미분한다.
+
+$$
+\frac{\partial}{\partial z_k}\log\sum_j e^{z_j} = \frac{e^{z_k}}{\sum_j e^{z_j}} = q_k
+$$
+
+$$
+\frac{\partial \ell}{\partial z_k} = q_k - \mathbb{1}[k = y]
+\qquad\Rightarrow\qquad
+\boxed{\nabla_{\mathbf{z}} \ell = \mathbf{q} - \mathbf{p}}
+$$
+
+03번 레슨의 $p - y$와 같은 꼴이다. 정답 클래스의 점수는 $1 - q_y$만큼 올리고, 나머지 클래스는 자기가 받은 확률만큼 내린다. gradient 원소의 합은 항상 0이다.
+
+### 수치 안정성: log-sum-exp
+
+logit이 1000이면 $e^{1000}$은 float에서 overflow된다. shift invariance를 이용해 최댓값 $m = \max_j z_j$를 빼고 계산한다.
+
+$$
+\log\sum_j e^{z_j} = m + \log\sum_j e^{z_j - m}
+$$
+
+$z_j - m \le 0$이라 $e^{z_j - m} \le 1$이고 overflow가 없다. 프레임워크가 softmax와 cross-entropy를 합친 함수(`cross_entropy(logits, label)`)를 제공하는 이유다.
+
+### Perplexity
+
+토큰 $T$개의 평균 cross-entropy를 $\bar{\ell}$이라고 하면
+
+$$
+\text{PPL} = e^{\bar{\ell}}
+$$
+
+모든 토큰에 균등하게 $1/V$를 주는 모델은 $\bar{\ell} = \log V$, PPL $= V$다. vocabulary 32,000이면 CE 10.37, PPL 32,000. 좋은 LLM은 PPL이 한 자릿수다.
+
+## Worked example
+
+logit $\mathbf{z} = (2, 1, 0.1)$, 정답 클래스 0.
+
+**Step 1. softmax**
+
+$$
+e^{\mathbf{z}} = (7.389, 2.718, 1.105), \quad \text{합} = 11.212
+$$
+
+$$
+\mathbf{q} = (0.659, 0.242, 0.099)
+$$
+
+**Step 2. loss**
+
+$$
+\ell = -\log 0.659 \approx 0.417
+$$
+
+**Step 3. gradient**
+
+$$
+\nabla_{\mathbf{z}}\ell = \mathbf{q} - \mathbf{p} = (0.659 - 1, 0.242, 0.099) = (-0.341, 0.242, 0.099)
+$$
+
+합이 0인지 확인: $-0.341 + 0.242 + 0.099 = 0$. 정답 점수를 올리고 나머지를 내린다.
+
+**Step 4. temperature**
+
+| $T$ | $\mathbf{q}$ |
+|---|---|
+| 0.5 | (0.864, 0.117, 0.019) |
+| 1 | (0.659, 0.242, 0.099) |
+| 2 | (0.502, 0.304, 0.194) |
+
+**Step 5. overflow**: logit $(1000, 999)$을 그대로 넣으면 `exp(1000) = inf`라 `inf / inf = nan`이다. 최댓값 1000을 빼면 $(0, -1)$이 되어 $\mathbf{q} = (0.731, 0.269)$를 안전하게 얻는다.
+
+## 코드
+
+```python
+import numpy as np
+
+def log_softmax(z, axis=-1):
+    m = np.max(z, axis=axis, keepdims=True)
+    return z - m - np.log(np.sum(np.exp(z - m), axis=axis, keepdims=True))
+
+def cross_entropy(z, y):
+    """z: (N, K) logits, y: (N,) 정답 인덱스. 평균 CE와 dL/dz"""
+    lsm = log_softmax(z)
+    N = z.shape[0]
+    loss = -lsm[np.arange(N), y].mean()
+    grad = np.exp(lsm)
+    grad[np.arange(N), y] -= 1
+    return loss, grad / N
+
+# worked example
+z = np.array([[2.0, 1.0, 0.1]]); y = np.array([0])
+loss, g = cross_entropy(z, y)
+print(f"loss={loss:.4f}  grad={g.round(4)}  sum={g.sum():.1e}")
+
+# gradient check (수치 미분)
+eps = 1e-5
+num = np.zeros_like(z)
+for k in range(3):
+    zp, zm = z.copy(), z.copy(); zp[0, k] += eps; zm[0, k] -= eps
+    num[0, k] = (cross_entropy(zp, y)[0] - cross_entropy(zm, y)[0]) / (2 * eps)
+print("numerical  =", num.round(4))
+
+# overflow: naive vs stable
+big = np.array([1000.0, 999.0])
+with np.errstate(over="ignore", invalid="ignore"):
+    print("naive  :", np.exp(big) / np.exp(big).sum())
+print("stable :", np.exp(log_softmax(big)))
+
+# perplexity: 토큰 4개에 모델이 정답에 준 확률
+p_correct = np.array([0.5, 0.25, 0.8, 0.1])
+ce = -np.log(p_correct)
+print(f"CE per token={ce.round(3)}  mean={ce.mean():.3f}  PPL={np.exp(ce.mean()):.2f}")
+print(f"uniform over 32000 tokens: CE={np.log(32000):.2f}, PPL=32000")
+```
+
+## 흔한 오해
+
+<Aside type="caution" title="Softmax 출력은 모델의 확신도다?">
+softmax는 합이 1이 되도록 정규화할 뿐이다. 학습 데이터와 전혀 다른 입력에도 0.99 같은 값을 낼 수 있다. 출력 확률이 실제로 맞을 확률과 일치하는지(calibration)는 별도 문제다.
+</Aside>
+
+<Aside type="caution" title="Softmax를 먼저 계산하고 log를 씌우면 된다?">
+확률이 아주 작으면 softmax 결과가 0으로 underflow되고 $\log 0 = -\infty$가 된다. log-softmax를 한 번에 계산해야 한다 (위 코드의 `log_softmax`).
+</Aside>
+
+<Aside type="caution" title="Perplexity가 2배 좋아지려면 loss도 2배 줄어야 한다?">
+PPL은 loss의 지수다. loss가 $\log 2 \approx 0.69$만큼만 줄어도 PPL은 절반이 된다. 반대로 loss가 0.1만 늘어도 PPL은 약 10.5% 나빠진다.
+</Aside>
+
+## Efficient ML 연결
+
+**LLM 학습 loss = 토큰마다 vocabulary softmax의 cross-entropy.** 다음 토큰을 맞히는 문제를 시퀀스의 모든 위치에서 동시에 푼다. 마지막 linear layer(LM head)가 hidden 4096을 vocabulary 32,000개 logit으로 바꾸는데, 이 layer 하나만 파라미터가 1.3억 개다.
+
+**Quantization 평가는 perplexity로 한다.** 6.5940과 GPTQ, AWQ 같은 논문은 quantize한 LLM을 WikiText 같은 데이터에서 perplexity로 비교한다. 예를 들어 FP16에서 PPL 5.47이던 모델이 INT4에서 5.85가 됐다면 CE가 $\log 5.85 - \log 5.47 \approx 0.067$ 늘어난 것이다. 작아 보이지만 정답 확률이 기하평균으로 약 6.5% 줄었다는 뜻이다 ($e^{-0.067} \approx 0.935$).
+
+**Knowledge distillation은 temperature softmax의 KL이다.** Hinton의 distillation은 teacher와 student의 logit을 같은 $T$로 나눈 softmax 사이의 KL을 줄인다. $T$를 키우면 teacher가 "정답은 아니지만 비슷한" 클래스에 준 작은 확률까지 드러나서 student가 배울 정보가 늘어난다. 6.5940 distillation 강의의 핵심 식이다.
+
+**Attention의 softmax와 FlashAttention.** attention에서도 softmax를 쓴다. FlashAttention의 online softmax는 이 레슨의 log-sum-exp 트릭을 tile 단위로 하는 것이다. tile마다 최댓값을 갱신하면서 앞에서 계산한 합을 다시 스케일한다. 그래서 $N \times N$ score 행렬 전체를 메모리에 두지 않고도 정확한 softmax를 구한다 ([tiling과 fusion 레슨](/learning-website/arch-foundations/12-tiling-and-fusion/)).
+
+## 체크 퀴즈
+
+<Quiz
+  q="logit (1, 3, 0)에서 정답이 클래스 1일 때 cross-entropy loss는 대략? (자연로그)"
+  options={['약 2.17', '약 0.84', '약 0.17', '약 3']}
+  answer={2}
+  explain="e^z = (2.718, 20.09, 1), 합 23.80, q_1 = 20.09 / 23.80 ≈ 0.844. loss = -log 0.844 ≈ 0.17. 약 0.84는 확률 자체이고, 약 2.17은 정답을 클래스 0으로 잘못 보고 -log(0.114)를 계산한 값이다."
+/>
+
+<Quiz
+  q="클래스 4개 logit이 전부 0이고 정답이 클래스 2일 때 dℓ/dz는?"
+  options={['(0.25, 0.25, -0.75, 0.25)', '(0, 0, -1, 0)', '(-0.25, -0.25, 0.75, -0.25)', '(0.25, 0.25, 0.25, 0.25)']}
+  answer={0}
+  explain="softmax는 (0.25, 0.25, 0.25, 0.25)이고 gradient = q - one-hot = (0.25, 0.25, -0.75, 0.25). 정답 점수만 올리고 나머지는 내린다. 부호가 반대인 것은 gradient 방향 대신 업데이트 방향을 쓴 것이다. 원소 합은 0이어야 한다."
+/>
+
+<Quiz
+  q="softmax(z)에서 모든 logit에 100을 더하면 출력은?"
+  options={['모든 확률이 커진다', '가장 큰 클래스의 확률만 커진다', '변하지 않는다', 'overflow로 nan이 된다']}
+  answer={2}
+  explain="분자와 분모에 똑같이 e^100이 곱해져서 약분되므로 출력은 그대로다(shift invariance). 수치적으로 overflow가 날 수는 있지만 그래서 최댓값을 빼고 계산하며, 수학적인 결과는 변하지 않는다."
+/>
+
+<Quiz
+  q="모델의 평균 cross-entropy가 2.0에서 2.1로 올랐다. perplexity는 대략 몇 % 나빠졌나?"
+  options={['5%', '약 10.5%', '0.1%', '약 22%']}
+  answer={1}
+  explain="PPL = e^CE이므로 비율은 e^0.1 ≈ 1.105, 즉 약 10.5% 증가다(7.39에서 8.17). 5%는 CE의 증가율(0.1 / 2.0)을 그대로 쓴 값이다."
+/>
+
+<Quiz
+  q="vocabulary 50,000개 위에서 모든 토큰에 균등한 확률을 주는 모델의 perplexity는?"
+  options={['약 10.8', '1', '50,000', '25,000']}
+  answer={2}
+  explain="정답 확률이 항상 1/50,000이라 CE = log 50,000 ≈ 10.8이고, PPL = e^CE = 50,000이다. 약 10.8은 CE 값이다. 학습된 LLM의 PPL이 한 자릿수라는 건 매 step 평균 몇 개 후보로 좁힌다는 뜻이다."
+/>
+
+## 서술형
+
+### 문제. Distillation에서 temperature의 효과
+
+3클래스 문제에서 teacher logit $\mathbf{t} = (4, 2, 0)$, student logit $\mathbf{s} = (2, 2, 1)$이다. 정답은 클래스 0이다.
+
+(a) student의 hard-label cross-entropy를 구하라.
+
+(b) $T = 1$과 $T = 2$에서 teacher와 student의 softmax를 각각 구하고, $D_{KL}(\text{teacher} \Vert \text{student})$를 계산하라.
+
+(c) $T = 2$에서 teacher 분포를 보면 클래스 1과 2 사이에 어떤 정보가 있는가? hard label만으로는 왜 이 정보를 얻을 수 없는가?
+
+(d) Hinton의 distillation은 KL 항에 $T^2$을 곱한다. 왜 필요한지 gradient 크기로 설명하라. (힌트: logit에 대한 gradient는 $(\mathbf{q}_s - \mathbf{q}_t)/T$다.)
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** $\text{softmax}(\mathbf{s}) = (0.422, 0.422, 0.155)$ → $-\log 0.422 \approx 0.862$.
+
+**(b)**
+
+| $T$ | teacher | student | KL |
+|---|---|---|---|
+| 1 | (0.867, 0.117, 0.016) | (0.422, 0.422, 0.155) | 0.437 |
+| 2 | (0.665, 0.245, 0.090) | (0.384, 0.384, 0.233) | 0.171 |
+
+KL 계산 예 ($T = 1$): $0.867\log\frac{0.867}{0.422} + 0.117\log\frac{0.117}{0.422} + 0.016\log\frac{0.016}{0.155} \approx 0.624 - 0.150 - 0.036 = 0.437$.
+
+**(c)** $T = 2$에서 teacher는 클래스 1에 0.245, 클래스 2에 0.090을 준다. "정답은 0이지만 1이 2보다 훨씬 비슷하다"는 클래스 사이의 관계(dark knowledge)다. hard label은 (1, 0, 0)이라 1과 2를 똑같이 오답으로만 취급한다. $T = 1$에서는 이 차이가 0.117 vs 0.016으로 눌려 있어 신호가 약하다.
+
+**(d)** logit을 $T$로 나누면 $\mathbf{q}$에 대한 gradient가 logit으로 갈 때 $1/T$배가 되고, $\mathbf{q}_s - \mathbf{q}_t$ 자체도 분포가 평평해지면서 대략 $1/T$배 작아진다. 그래서 soft loss의 gradient가 $1/T^2$ 정도로 줄어든다. $T^2$을 곱하면 $T$를 바꿔도 hard-label loss와 soft loss의 비중이 비슷하게 유지된다.
+
+</details>
+
+## 더 읽을거리
+
+- [Softmax function (Wikipedia)](https://en.wikipedia.org/wiki/Softmax_function)
+- [Cross-entropy (Wikipedia)](https://en.wikipedia.org/wiki/Cross-entropy)
+- [Distilling the Knowledge in a Neural Network (Hinton, Vinyals, Dean, 2015)](https://arxiv.org/abs/1503.02531)
+- [Online normalizer calculation for softmax (Milakov, Gimelshein, 2018)](https://arxiv.org/abs/1805.02867)
