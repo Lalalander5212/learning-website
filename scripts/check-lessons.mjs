@@ -122,6 +122,10 @@ for (const track of TRACKS) {
         catch (e) { err(f, line, 'math', `KaTeX 오류: ${String(e.message).replace(/^KaTeX parse error: /, '')}`); }
       }
 
+      if (n.type === 'heading' && /inlineMath|math/.test(JSON.stringify(n.children.map((c) => c.type)))) {
+        err(f, line, 'heading-math', '제목에 수식이 있으면 목차(TOC)에 KaTeX 텍스트가 깨져서 나옴. 수식은 제목 아래 본문으로');
+      }
+
       if (n.type === 'code' && n.lang && !CODE_LANGS.has(n.lang)) warn(f, line, 'code-lang', `코드블록 언어 "${n.lang}"는 목록에 없음 (${[...CODE_LANGS].join(', ')})`);
 
       if (n.type === 'text' && !inSkipped) {
@@ -186,7 +190,7 @@ function printGrouped(list) {
     const sameMsg = items.every((x) => x.msg === items[0].msg);
     if (sameMsg && items.length > 3) {
       console.log(`  [${rule}] ${items[0].msg}`);
-      console.log(`    ${items.length}개 파일: ${items.map((x) => path.basename(x.file).slice(0, 2)).join(', ')}`);
+      console.log(`    ${items.length}곳: ${items.map((x) => path.basename(x.file).slice(0, 2) + (x.line ? ':' + x.line : '')).join(', ')}`);
     } else {
       console.log(`  [${rule}]`);
       for (const x of items) console.log('  ' + fmt(x));

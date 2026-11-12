@@ -225,38 +225,75 @@ MIT 6.5940의 기법들(pruning, quantization, NAS, distillation, efficient atte
 
 <Quiz
   q="56×56×64 입력에서 depthwise 3×3 conv의 AI가 dense 3×3 conv보다 훨씬 낮은 이유는?"
-  options={['depthwise가 더 많은 FLOPs를 써서', 'FLOPs는 1/64로 줄었는데 activation을 읽고 쓰는 bytes는 거의 그대로라서', 'weight가 더 커서', 'stride가 달라서']}
-  answer={1}
+  options={['depthwise가 더 많은 FLOPs를 써서', 'weight가 더 커서', 'stride가 달라서', 'FLOPs는 1/64로 줄었는데 activation을 읽고 쓰는 bytes는 거의 그대로라서']}
+  answer={3}
   explain="bytes의 대부분은 입력/출력 activation이고 이건 두 레이어가 같다. FLOPs만 64배 줄었으니 AI = FLOPs / bytes가 크게 떨어진다 (131.9에서 2.25로)."
 />
 
 <Quiz
-  q="ridge point 156인 GPU에서 FP16 linear layer(AI ≈ batch)가 compute-bound가 되려면 batch가 대략 얼마 이상이어야 하나?"
-  options={['1', '16', '156', '4096']}
+  q="ridge point가 약 295인 GPU에서 FP16 linear layer(AI ≈ batch)가 compute-bound가 되려면 batch가 대략 얼마 이상이어야 하나?"
+  options={['8', '64', '약 295', '4096']}
   answer={2}
-  explain="AI ≈ B이므로 B가 ridge point 156을 넘어야 연산 지붕에 닿는다. 그보다 작으면 batch를 키워도 실행 시간이 거의 안 늘어서 throughput이 공짜로 증가한다."
+  explain="AI ≈ B이므로 B가 ridge point 약 295를 넘어야 연산 지붕에 닿는다. 그보다 작으면 batch를 키워도 실행 시간이 거의 안 늘어서 throughput이 공짜로 증가한다."
 />
 
 <Quiz
-  q="메모리 대역폭 50 GB/s 노트북에서 INT4 7B 모델(3.5 GB)의 decode tokens/s 상한은? (KV cache 무시)"
-  options={['약 3.6', '약 14', '약 50', '약 571']}
-  answer={1}
-  explain="토큰마다 weight 전체를 한 번 읽어야 하므로 50 / 3.5 ≈ 14.3 tokens/s. 3.6은 FP16(14 GB)일 때, 571은 2 TB/s GPU일 때의 값이다."
+  q="메모리 대역폭 120 GB/s 기기에서 3B 파라미터 모델을 FP16(6 GB)으로 돌릴 때 decode tokens/s 상한은? (KV cache 무시)"
+  options={['약 20', '약 40', '약 10', '약 80']}
+  answer={0}
+  explain="토큰마다 weight 전체를 한 번 읽으므로 120 / 6 = 20 tokens/s. 40은 weight를 INT8(3 GB)로, 80은 INT4(1.5 GB)로 줄였을 때의 값이다."
 />
 
 <Quiz
   q="LLM에서 prefill은 compute-bound, decode는 memory-bound인 이유는?"
-  options={['prefill은 GPU에서, decode는 CPU에서 돌아서', 'prefill은 prompt 토큰 여러 개가 같은 weight를 재사용해 AI가 높고, decode는 토큰 하나라 AI ≈ 1이라서', 'decode가 더 많은 FLOPs를 써서', 'prefill은 KV cache를 안 써서']}
-  answer={1}
+  options={['prefill은 GPU에서, decode는 CPU에서 돌아서', 'decode가 더 많은 FLOPs를 써서', 'prefill은 prompt 토큰 여러 개가 같은 weight를 재사용해 AI가 높고, decode는 토큰 하나라 AI ≈ 1이라서', 'prefill은 KV cache를 안 써서']}
+  answer={2}
   explain="prefill에서는 L개 토큰이 한 번의 weight 읽기를 공유해 AI ≈ L이고, batch 1 decode에서는 weight를 읽어서 토큰 하나만 처리해 AI ≈ 1이다."
 />
 
 <Quiz
-  q="Llama-2-7B(FP16, 토큰당 KV 0.5 MB)에서 context 4096일 때 decode step마다 읽어야 하는 KV cache는?"
-  options={['0.5 MB', '약 2 GB', '약 14 GB', '약 32 MB']}
+  q="Llama-2-7B 구조에서 KV head를 32개에서 8개로 줄이면(GQA) 토큰당 KV cache가 0.5 MB에서 1/4이 된다. context 8192일 때 decode step마다 읽는 KV cache는?"
+  options={['약 4 GB', '약 1 GB', '약 128 MB', '약 0.125 MB']}
   answer={1}
-  explain="0.5 MB × 4096 = 2048 MB ≈ 2 GB. INT4 weight(3.5 GB)와 비슷한 크기라서 긴 context에서는 KV cache도 주요 병목이 된다."
+  explain="토큰당 0.5 MB / 4 = 0.125 MB, × 8192 = 1024 MB ≈ 1 GB. GQA가 없었다면 4 GB로 FP16 weight(14 GB)의 30%에 가깝다. 0.125 MB는 토큰 하나 분량이다."
 />
+
+## 서술형
+
+### 문제. 노트북에서 3B 모델의 TTFT와 tokens/s
+
+노트북 iGPU: FP16 peak 2 TFLOP/s, 메모리 대역폭 100 GB/s. 3B 파라미터 모델을 돌린다. 토큰 하나당 연산은 $2 \times 3 \times 10^9$ FLOPs이고 KV cache와 attention 비용은 무시한다.
+
+(a) FP16 weight(6 GB)로 1000 토큰 prompt를 prefill할 때 연산 기준 시간과 메모리 기준 시간을 구하라. 어느 쪽이 병목이고 TTFT 하한은?
+
+(b) 같은 FP16 모델로 decode할 때 토큰당 시간 하한과 tokens/s 상한은?
+
+(c) weight를 INT4(1.5 GB)로 quantize했다(연산은 FP16으로 dequantize해서 한다). prefill과 decode는 각각 어떻게 변하는가?
+
+(d) (c)에 speculative decoding을 더한다. INT4 draft model(0.05 GB)이 토큰 4개를 제안하고 target이 한 번에 검증해서 pass당 평균 2.5 토큰을 얻는다. pass 하나는 target weight 한 번 읽기 + draft weight 4번 읽기라고 하자. tokens/s는?
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)**
+
+- 연산: $2 \times 3 \times 10^9 \times 1000 / (2 \times 10^{12}) = 3$ s
+- 메모리: weight를 한 번 읽음 $6 / 100 = 0.06$ s
+
+**compute-bound**, TTFT 하한 약 **3 s**.
+
+**(b)** 토큰당 연산 $6 \times 10^9 / 2 \times 10^{12} = 3$ ms, 메모리 $6 / 100 = 60$ ms → **memory-bound**, 60 ms/token, 약 **16.7 tokens/s**.
+
+**(c)**
+
+- prefill: compute-bound라 bytes가 줄어도 거의 그대로 → TTFT 약 3 s
+- decode: $1.5 / 100 = 15$ ms → 약 **66.7 tokens/s** (4배)
+
+quantization은 memory-bound인 decode에만 효과가 크다. prefill을 빠르게 하려면 FLOPs를 줄이거나(작은 모델, pruning) INT8/INT4 연산을 지원하는 하드웨어가 필요하다.
+
+**(d)** pass당 시간 $= 15 + 4 \times 0.05 / 100 \times 1000 = 15 + 2 = 17$ ms. 토큰 2.5개 → $2.5 / 0.017 \approx$ **147 tokens/s**, (c) 대비 약 2.2배. target 검증은 토큰 5개를 한 번에 처리해도 weight를 한 번만 읽으므로 거의 공짜다. memory-bound 영역에서 AI를 올린 것과 같다.
+
+</details>
 
 ## 더 읽을거리
 

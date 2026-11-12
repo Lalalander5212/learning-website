@@ -78,7 +78,7 @@ import { Aside } from '@astrojs/starlight/components';
 ### MDX에서 조심할 것
 
 - 코드블록과 수식 밖에서 `{` `}` `<`는 그대로 쓰지 않는다. `\{` `\}`로 이스케이프하거나 코드/수식에 넣는다. `{...}`는 JS로 실행된다.
-- 수식은 KaTeX. 인라인 `$x$`, 블록 `$$ ... $$`.
+- 수식은 KaTeX. 인라인 `$x$`, 블록 `$$ ... $$`. 제목(`##`, `###`)에는 수식을 넣지 않는다. 오른쪽 목차에서 깨져 보인다.
 - ASCII 다이어그램과 실행 결과는 ` ```text ` 블록에.
 - 코드블록 언어: `python`, `c`, `cpp`, `cuda`, `text`, `bash` 등 (`scripts/check-lessons.mjs`의 `CODE_LANGS`).
 - 팁/주의는 `<Aside type="note|tip|caution|danger" title="...">`.
@@ -144,7 +144,3 @@ import { Aside } from '@astrojs/starlight/components';
 - `src/lib/store.ts`, `sync.ts`: 진행상황 저장(localStorage)과 Gist sync
 - `src/lib/lesson.ts`, `review.ts`: 레슨 페이지, 복습 페이지 동작
 - `src/components/overrides/`: Starlight 컴포넌트 override (레슨 헤더/하단, 사이드바 표시, 테마)
-
-## 알려진 상태
-
-- `arch-foundations` 01~22번 레슨에는 서술형이 없고, 일부 퀴즈가 worked example과 같은 숫자를 쓴다. `npm run check`의 `essay`, `answer-bias` 경고가 그것이다. 이 레슨들을 고칠 때는 위의 퀴즈 순서 규칙을 지킨다.
