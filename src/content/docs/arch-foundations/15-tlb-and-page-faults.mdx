@@ -270,39 +270,65 @@ page fault는 **정상적인 이벤트**다. 프로그램을 실행하면 수천
 ## 체크 퀴즈
 
 <Quiz
-  q="TLB hit rate 99%, t_TLB = 1 ns, t_mem = 100 ns, 4-level page table일 때 EAT는?"
-  options={['101 ns', '105 ns', '141 ns', '501 ns']}
+  q="TLB hit rate 95%, t_TLB = 1 ns, t_mem = 60 ns, 4-level page table일 때 EAT는?"
+  options={['61 ns', '73 ns', '301 ns', '70 ns']}
   answer={1}
-  explain="0.99 × (1 + 100) + 0.01 × (1 + 5 × 100) = 99.99 + 5.01 = 105 ns. miss일 때는 page walk 4번 + 데이터 접근 1번이라 메모리 접근이 5번이다."
+  explain="0.95 × (1 + 60) + 0.05 × (1 + 5 × 60) = 57.95 + 15.05 = 73 ns. miss일 때는 page walk 4번 + 데이터 접근 1번이라 메모리 접근이 5번이다. 70 ns는 3-level로 계산한 값, 61 ns는 TLB가 항상 hit인 경우다."
 />
 
 <Quiz
-  q="64-entry TLB, 2 MB huge page일 때 TLB reach는?"
-  options={['256 KB', '128 MB', '2 MB', '64 GB']}
-  answer={1}
-  explain="64 × 2 MB = 128 MB. 같은 TLB로 4 KB page면 256 KB밖에 안 된다. huge page는 TLB reach를 512배 늘린다."
+  q="32-entry TLB, 1 GB huge page일 때 TLB reach는?"
+  options={['128 KB', '64 MB', '1 GB', '32 GB']}
+  answer={3}
+  explain="32 × 1 GB = 32 GB. 같은 TLB로 4 KB page면 128 KB, 2 MB page면 64 MB다. 큰 모델 weight처럼 수십 GB를 한 번에 다루는 경우 1 GB page가 쓰이는 이유다."
 />
 
 <Quiz
-  q="4096×4096 float32 행렬을 column 방향으로 순회하면 4 KB page, 64-entry TLB에서 TLB miss rate가 거의 100%가 된다. 그 이유는?"
-  options={['행렬이 너무 작아서', '행 하나가 16 KB라 매 접근이 다른 page이고, column 하나가 4096개 page를 건드려서', 'TLB가 fully associative라서', 'offset이 번역돼서']}
-  answer={1}
-  explain="column 방향 다음 원소는 16 KB 뒤(page 4개 뒤)에 있다. 같은 page로 돌아오기 전에 서로 다른 page 4096개를 건드리므로 64개짜리 TLB로는 매번 miss다."
-/>
-
-<Quiz
-  q="t_mem = 100 ns, major fault 처리 100 μs일 때 성능 저하를 10% 이내로 막으려면 page fault rate는 대략 얼마 이하여야 하나?"
-  options={['10%', '1%', '0.01% (10^-4)', '10^-8']}
+  q="1024×1024 float32 행렬(행 하나 = 4 KB)을 column 방향으로 끝까지 순회한다. 4 KB page, 1536-entry fully associative LRU TLB라면 TLB miss rate는 대략?"
+  options={['약 100%', '약 25%', '약 0.1%', '약 50%']}
   answer={2}
-  explain="100 + 99,900 × p ≤ 110 이므로 p ≤ 약 10^-4. fault 한 번이 일반 접근의 1000배 비싸니 1만 번에 1번 이하로만 일어나야 한다."
+  explain="column 하나를 도는 동안 행마다 다른 page, 즉 page 1024개를 건드린다. TLB가 1536 entry라서 1024개가 다 남아 있으므로 두 번째 column부터는 전부 hit이다. miss는 첫 column의 1024번뿐이라 1024 / 1024² ≈ 0.1%. 64-entry TLB였다면 거의 100%였을 것이다."
 />
 
 <Quiz
-  q="L1 cache가 VIPT일 때 page 크기가 4 KB라면 32 KB L1에 필요한 최소 associativity는?"
-  options={['4-way', '8-way', '16-way', '1-way']}
-  answer={1}
-  explain="L1 크기 / associativity ≤ page 크기여야 index + offset 비트가 page offset 안에 들어간다. 32 KB / A ≤ 4 KB → A ≥ 8."
+  q="t_mem = 50 ns, major fault 처리 200 μs일 때 성능 저하를 5% 이내로 막으려면 page fault rate는 대략 얼마 이하여야 하나?"
+  options={['약 1.25×10^-5', '약 1.25×10^-3', '약 2.5×10^-4', '약 1.25×10^-7']}
+  answer={0}
+  explain="50 + (200,000 - 50) × p ≤ 52.5 이므로 p ≤ 2.5 / 199,950 ≈ 1.25×10^-5. 약 8만 번에 1번 이하다. 1.25×10^-3은 fault 시간을 2 μs로 잘못 환산한 값이다."
 />
+
+<Quiz
+  q="Apple M 시리즈처럼 page가 16 KB인 시스템에서 128 KB VIPT L1을 만들 때 필요한 최소 associativity는?"
+  options={['32-way', '8-way', '4-way', '16-way']}
+  answer={1}
+  explain="L1 크기 / associativity ≤ page 크기여야 index + offset 비트가 page offset 안에 들어간다. 128 KB / A ≤ 16 KB → A ≥ 8. 32-way는 page를 4 KB로 본 값이다. page가 크면 같은 associativity로 더 큰 L1을 만들 수 있다."
+/>
+
+## 서술형
+
+### 문제. edge 기기에서 7B 모델의 TLB와 page fault
+
+7B 파라미터 모델을 INT4로 quantize해 weight가 3.5 GB다. 토큰 하나를 만들 때마다 weight 전체를 한 번씩 읽는다. 메모리 대역폭은 50 GB/s, L2 TLB는 2048 entry다. 1 GB = $2^{30}$ B로 계산한다.
+
+(a) 4 KB page와 2 MB page에서 TLB reach는 각각 얼마인가? weight 전체를 덮는 데 필요한 page 수는?
+
+(b) 4 KB page에서는 토큰마다 weight page 수만큼 TLB miss가 난다고 하자. page walk 하나가 평균 30 ns(PTE가 대부분 cache에 있음)라면 토큰당 page walk 시간은? 대역폭으로 정해지는 토큰당 시간과 비교하라.
+
+(c) 기기 RAM이 모자라 weight 중 0.5 GB가 메모리에 못 남고 매 토큰마다 SSD에서 다시 읽힌다. SSD 순차 읽기가 2 GB/s라면 tokens/s는 어떻게 되는가? (TLB 비용은 무시)
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)**
+
+- 4 KB: reach $= 2048 \times 4$ KB = **8 MB**. 필요한 page $= 3.5 \text{ GB} / 4 \text{ KB} = 917{,}504$개
+- 2 MB: reach $= 2048 \times 2$ MB = **4 GB**. 필요한 page $= 3.5 \text{ GB} / 2 \text{ MB} = 1792$개 → TLB에 전부 들어간다
+
+**(b)** $917{,}504 \times 30$ ns ≈ **27.5 ms**. 대역폭으로 정해지는 시간은 $3.5 / 50 = 70$ ms. page walk가 데이터 이동과 완전히 겹치지 않는다면 토큰당 시간이 최대 약 40% 늘어날 수 있다. 2 MB page면 처음 한 번만 miss가 나고 이후로는 거의 0이다.
+
+**(c)** 메모리에 남은 3 GB는 $3 / 50 = 60$ ms, SSD에서 읽는 0.5 GB는 $0.5 / 2 = 250$ ms. 토큰당 약 310 ms → **약 3.2 tokens/s**. 다 들어갔을 때(70 ms, 약 14.3 tokens/s)보다 4배 이상 느리다. 모델의 일부만 RAM을 넘어도 thrashing으로 SSD 속도가 지배한다. edge에서 "RAM에 다 들어가는 크기로 quantize"가 첫 번째 조건인 이유다.
+
+</details>
 
 ## 더 읽을거리
 
