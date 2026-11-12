@@ -1,0 +1,294 @@
+---
+title: "Closed-form 해 vs 수치 최적화"
+description: "Normal equation을 유도하고, 왜 큰 모델은 결국 gradient descent를 쓰는지 비용으로 비교하기"
+track: ml-basics
+module: regression
+est: 30min
+sidebar:
+  order: 2
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+01번 레슨에서는 gradient descent로 여러 걸음에 걸쳐 최적의 직선에 다가갔다. 그런데 MSE는 파라미터에 대한 2차식이라서 **gradient = 0을 방정식으로 바로 풀 수도 있다.** 그렇다면 왜 딥러닝은 이렇게 한 번에 푸는 방법을 안 쓸까? 답은 계산량과 메모리, 그리고 비선형성이다. 이 비교를 해두면 어떤 문제에 어떤 방법을 쓰는지 판단할 수 있다.
+
+## 직관: 그릇 바닥 찾기
+
+MSE loss를 $w, b$ 평면 위에 그리면 **그릇** 모양이 된다.
+
+```text
+ loss
+   │ ╲                 ╱
+   │  ╲               ╱
+   │   ╲             ╱
+   │    ╲_         _╱
+   │      ╲_______╱
+   │          ● ← 바닥 (gradient = 0)
+   └──────────────────── w
+```
+
+- **Gradient descent**: 눈을 감고 발밑의 경사만 느끼면서 조금씩 내려간다.
+- **Closed-form**: 그릇의 모양(2차식)을 정확히 아니까, 바닥 좌표를 공식으로 계산한다.
+
+그릇이 단순하고 작으면 공식이 빠르다. 그릇이 수십억 차원이거나 그릇이 아니라 울퉁불퉁한 산(신경망)이면 공식이 없거나 계산할 수 없다.
+
+## 정식 설명
+
+### 용어
+
+**Closed-form solution (닫힌 형태의 해)**: 반복 없이 유한 번의 연산으로 정확히 계산되는 해.
+*A solution expressed with a finite number of standard operations.*
+
+**Normal equation (정규 방정식)**: least squares 문제에서 gradient를 0으로 놓아 얻는 선형 방정식 $X^\top X \mathbf{w} = X^\top \mathbf{y}$.
+
+**Iterative method (반복법)**: 초기값에서 시작해 조금씩 고쳐 가며 해에 다가가는 방법. gradient descent가 대표적이다.
+
+**Condition number (조건수)**: 행렬이 얼마나 "찌그러졌는지"를 나타내는 값. 가장 큰 고윳값 / 가장 작은 고윳값. 크면 수치 오차에 민감하고 gradient descent가 느리다.
+*The ratio of the largest to smallest eigenvalue; large values mean ill-conditioning.*
+
+### Normal equation 유도
+
+bias를 1 열로 합쳐서 $X \in \mathbb{R}^{N \times d}$, $\mathbf{w} \in \mathbb{R}^{d}$라고 하자.
+
+$$
+L(\mathbf{w}) = \frac{1}{N} \lVert X\mathbf{w} - \mathbf{y} \rVert^2 = \frac{1}{N} (X\mathbf{w} - \mathbf{y})^\top (X\mathbf{w} - \mathbf{y})
+$$
+
+전개하면
+
+$$
+L = \frac{1}{N}\left(\mathbf{w}^\top X^\top X \mathbf{w} - 2 \mathbf{y}^\top X \mathbf{w} + \mathbf{y}^\top \mathbf{y}\right)
+$$
+
+$\mathbf{w}$로 미분하면 ($\nabla_\mathbf{w} \mathbf{w}^\top A \mathbf{w} = 2A\mathbf{w}$, $A$가 대칭일 때)
+
+$$
+\nabla_{\mathbf{w}} L = \frac{2}{N}\left(X^\top X \mathbf{w} - X^\top \mathbf{y}\right)
+$$
+
+01번 레슨에서 구한 $\frac{2}{N}X^\top(X\mathbf{w} - \mathbf{y})$와 같다. 이것을 0으로 놓으면
+
+$$
+\boxed{X^\top X \, \mathbf{w}^* = X^\top \mathbf{y}}
+\qquad\Rightarrow\qquad
+\mathbf{w}^* = (X^\top X)^{-1} X^\top \mathbf{y}
+$$
+
+$X^\top X$가 역행렬을 가지려면 feature들이 서로 선형 독립이어야 한다 (어떤 feature가 다른 feature들의 조합이면 해가 무수히 많다).
+
+**왜 바닥인가?** 2차 미분(Hessian)이 $\frac{2}{N}X^\top X$이고, 이 행렬은 항상 positive semi-definite다 ($\mathbf{v}^\top X^\top X \mathbf{v} = \lVert X\mathbf{v}\rVert^2 \ge 0$). 그래서 MSE는 **convex**이고 gradient = 0인 점이 최솟값이다.
+
+### 비용 비교
+
+데이터 $N$개, feature $d$개.
+
+| 방법 | 연산 | 메모리 |
+|---|---|---|
+| Closed-form | $X^\top X$ 만들기 $\approx 2Nd^2$, 풀기 $\approx d^3/3$ | $d \times d$ 행렬 |
+| Gradient descent (1 step) | $X\mathbf{w}$와 $X^\top \mathbf{r}$ $\approx 4Nd$ | $X$와 $\mathbf{w}$만 |
+
+$d$가 크면 $d^2$, $d^3$ 항이 폭발한다. 그리고 신경망처럼 모델이 비선형이면 gradient = 0 방정식이 선형이 아니라서 애초에 공식이 없다.
+
+### 실전에서는 역행렬을 만들지 않는다
+
+$(X^\top X)^{-1}$을 직접 계산하면 condition number가 제곱으로 커져서 수치 오차가 크다. 실제로는 QR 분해나 SVD를 쓰는 `np.linalg.lstsq`를 쓰고, 정 방정식을 풀 때도 `np.linalg.solve`를 쓴다.
+
+### Ridge regression 미리보기
+
+loss에 $\lambda \lVert \mathbf{w} \rVert^2$를 더하면(일반화 모듈의 L2 regularization) 해가
+
+$$
+\mathbf{w}^* = (X^\top X + N\lambda I)^{-1} X^\top \mathbf{y}
+$$
+
+가 된다. 대각선에 양수를 더하니 항상 역행렬이 있고 condition number도 작아진다.
+
+## Worked example
+
+01번 레슨의 데이터 $(1, 3), (2, 5), (3, 6), (4, 9)$를 closed-form으로 푼다.
+
+**Step 1. 행렬 만들기** (두 번째 열은 bias용 1)
+
+$$
+X = \begin{bmatrix} 1 & 1 \\ 2 & 1 \\ 3 & 1 \\ 4 & 1 \end{bmatrix}, \quad
+\mathbf{y} = \begin{bmatrix} 3 \\ 5 \\ 6 \\ 9 \end{bmatrix}
+$$
+
+**Step 2. $X^\top X$와 $X^\top \mathbf{y}$**
+
+$$
+X^\top X = \begin{bmatrix} \sum x_i^2 & \sum x_i \\ \sum x_i & N \end{bmatrix} = \begin{bmatrix} 30 & 10 \\ 10 & 4 \end{bmatrix}, \quad
+X^\top \mathbf{y} = \begin{bmatrix} \sum x_i y_i \\ \sum y_i \end{bmatrix} = \begin{bmatrix} 67 \\ 23 \end{bmatrix}
+$$
+
+**Step 3. 2×2 역행렬** ($\det = 30 \times 4 - 10 \times 10 = 20$)
+
+$$
+(X^\top X)^{-1} = \frac{1}{20}\begin{bmatrix} 4 & -10 \\ -10 & 30 \end{bmatrix}
+$$
+
+**Step 4. 해**
+
+$$
+w = \frac{4 \times 67 - 10 \times 23}{20} = \frac{38}{20} = 1.9, \qquad
+b = \frac{-10 \times 67 + 30 \times 23}{20} = \frac{20}{20} = 1.0
+$$
+
+**Step 5. 검산**: 예측 2.9, 4.8, 6.7, 8.6, 잔차 −0.1, −0.2, 0.7, −0.4 → MSE $= (0.01 + 0.04 + 0.49 + 0.16) / 4 = 0.175$. 잔차의 합은 0이다 (bias에 대한 gradient가 0이라는 뜻).
+
+01번 레슨의 코드에서 gradient descent는 learning rate 0.05로 이 값에 $10^{-3}$ 이내로 다가가는 데 **382 걸음**이 걸렸다. closed-form은 한 번에 끝난다.
+
+### 큰 문제에서의 비용
+
+$N = 10^6$, $d = 1000$이면
+
+- $X^\top X$ 만들기: $2 \times 10^6 \times 1000^2 = 2 \times 10^{12}$ FLOPs
+- gradient descent 1 step: $4 \times 10^6 \times 1000 = 4 \times 10^9$ FLOPs
+
+closed-form 한 번이 gradient descent **500 걸음** 값이다. 이 정도면 closed-form이 낫다. 그런데 $d = 7 \times 10^9$(7B 모델)이면 $X^\top X$는 원소가 $4.9 \times 10^{19}$개, FP32로 약 196 EB(엑사바이트)다. 만들 수 없다.
+
+## 코드
+
+```python
+import time
+import numpy as np
+
+# 1) worked example 확인
+x = np.array([1, 2, 3, 4], dtype=float)
+y = np.array([3, 5, 6, 9], dtype=float)
+X = np.c_[x, np.ones_like(x)]
+print("normal eq :", np.linalg.solve(X.T @ X, X.T @ y))
+print("lstsq     :", np.linalg.lstsq(X, y, rcond=None)[0])
+
+# 2) 크기에 따른 비용: closed-form vs gradient descent
+rng = np.random.default_rng(0)
+for d in [10, 100, 1000]:
+    N = 20000
+    A = rng.normal(size=(N, d)).astype(np.float32)
+    w_true = rng.normal(size=d).astype(np.float32)
+    t = A @ w_true + 0.1 * rng.normal(size=N).astype(np.float32)
+
+    s = time.perf_counter()
+    w_cf = np.linalg.solve(A.T @ A, A.T @ t)
+    t_cf = time.perf_counter() - s
+
+    w = np.zeros(d, np.float32); lr = 0.1
+    s = time.perf_counter()
+    for _ in range(100):
+        w -= lr * (2 / N) * (A.T @ (A @ w - t))
+    t_gd = time.perf_counter() - s
+    print(f"d={d:5d}  closed-form {t_cf*1e3:7.1f} ms | GD 100 steps {t_gd*1e3:7.1f} ms "
+          f"| err cf={np.abs(w_cf-w_true).max():.3f} gd={np.abs(w-w_true).max():.3f}")
+
+# 3) conditioning: feature 단위가 크면 X^T X가 찌그러진다
+xs = rng.uniform(0, 1000, 100)
+Xraw = np.c_[xs, np.ones(100)]
+xn = (xs - xs.mean()) / xs.std()
+Xn = np.c_[xn, np.ones(100)]
+print(f"cond(X^T X) raw    = {np.linalg.cond(Xraw.T @ Xraw):.3g}")
+print(f"cond(X^T X) scaled = {np.linalg.cond(Xn.T @ Xn):.3g}")
+```
+
+볼 포인트:
+- $d = 1000$까지는 closed-form이 GD 100 걸음보다 빠르다 (클라우드 VM에서 200 ms vs 630 ms). 위 비용표대로 $d$가 더 커지면 $d^3$ 항 때문에 역전된다.
+- 무작위 Gaussian feature는 조건이 좋아서 gradient descent도 100 걸음이면 꽤 맞는다. 01번 레슨의 데이터처럼 조건이 나쁘면 몇 백 걸음이 필요하다.
+- 0~1000 범위 feature 하나만 있어도 condition number가 수십만 단위가 된다. 평균을 빼고 표준편차로 나누면(standardization) 1이 된다. 최적화 모듈에서 이게 gradient descent 속도를 결정한다는 걸 본다.
+
+## 흔한 오해
+
+<Aside type="caution" title="Closed-form이 있으면 항상 그게 빠르다?">
+$d$가 작을 때만 그렇다. 비용이 $d^2$, $d^3$로 늘고 $d \times d$ 행렬을 메모리에 들고 있어야 한다. feature가 수십만 개면 gradient descent나 conjugate gradient 같은 반복법이 낫다.
+</Aside>
+
+<Aside type="caution" title="(XᵀX)⁻¹을 계산해서 곱하면 된다?">
+수학적으로는 맞지만 수치적으로 나쁘다. 역행렬을 만들면 오차가 커지고 연산도 더 든다. `solve`나 `lstsq`를 쓴다.
+</Aside>
+
+<Aside type="caution" title="신경망도 loss가 그릇 모양이다?">
+아니다. 층이 쌓이고 비선형 activation이 들어가면 loss는 convex가 아니다. gradient = 0인 점이 여러 개(saddle point, local minimum)이고, 공식으로 풀 수 없다. 그래서 반복법만 남는다.
+</Aside>
+
+## Efficient ML 연결
+
+**GPTQ와 OBS: layer 하나는 closed-form으로 푼다.** 모델 전체는 비선형이지만, quantization이나 pruning에서 **layer 하나**만 떼어 보면 $\lVert WX - \hat{W}X \rVert^2$는 $\hat{W}$에 대한 2차식이다. GPTQ와 Optimal Brain Surgeon(OBS) 계열 방법은 이 2차식의 Hessian $H = 2XX^\top$(입력 차원 × 입력 차원)을 직접 만들고 그 역행렬을 써서, weight 하나를 quantize하거나 지웠을 때 나머지 weight를 **closed-form으로 보정**한다. 입력 차원이 수천~수만이라 $d \times d$ 행렬을 만들 수 있기 때문에 가능하다. 모델 전체($d$ = 수십억)는 안 되지만 layer 단위는 된다는 것이 이 레슨의 비용표 그대로다.
+
+**Linear probing.** 큰 모델의 feature 위에 linear classifier/regressor만 학습할 때는 closed-form이나 L-BFGS 같은 2차 방법을 쓰는 경우가 많다.
+
+## 체크 퀴즈
+
+<Quiz
+  q="데이터 (0, 1), (1, 3), (2, 4)에 직선 y = wx + b를 least squares로 맞추면 w는?"
+  options={['1.5', '약 1.17', '2', '3']}
+  answer={0}
+  explain="XᵀX = [[5, 3], [3, 3]], Xᵀy = [11, 8], det = 6. w = (3 × 11 - 3 × 8) / 6 = 1.5, b = (-3 × 11 + 5 × 8) / 6 ≈ 1.17. 약 1.17은 b의 값이고, 2는 앞의 두 점 (0, 1)과 (1, 3)만 이은 기울기, 3은 양 끝점의 y 차이를 x 차이로 나누지 않은 값이다."
+/>
+
+<Quiz
+  q="feature d = 100,000개인 linear regression에서 XᵀX를 FP32로 메모리에 올리면 크기는?"
+  options={['400 KB', '40 MB', '4 GB', '40 GB']}
+  answer={3}
+  explain="d × d = 10^10개 원소 × 4 B = 4 × 10^10 B = 40 GB. 400 KB는 d개 원소(벡터 하나)로 계산한 값이다. 이 정도부터 closed-form은 일반 컴퓨터에서 어렵다."
+/>
+
+<Quiz
+  q="N = 10^5, d = 500일 때 XᵀX를 만드는 비용(약 2Nd² FLOPs)은 gradient descent 몇 걸음(1 step ≈ 4Nd FLOPs)과 같은가?"
+  options={['약 125 걸음', '약 250 걸음', '약 500 걸음', '약 25,000 걸음']}
+  answer={1}
+  explain="2Nd² / 4Nd = d / 2 = 250. N은 약분되고 d에만 비례한다. 500은 2를 빼먹은 값이다. 여기에 d³/3의 방정식 풀이 비용이 더 든다."
+/>
+
+<Quiz
+  q="Normal equation을 풀 때 (XᵀX)⁻¹을 직접 계산하지 않고 lstsq나 solve를 쓰는 이유는?"
+  options={['결과가 다르기 때문에', '역행렬을 만들면 수치 오차가 커지고 연산도 더 들기 때문에', 'XᵀX는 역행렬이 항상 없기 때문에', 'GPU에서만 역행렬을 구할 수 있기 때문에']}
+  answer={1}
+  explain="수학적으로는 같은 해지만, 역행렬을 명시적으로 만들면 condition number가 큰 경우 오차가 증폭되고 계산량도 늘어난다. QR이나 SVD 기반 방법이 안정적이다. XᵀX는 feature가 선형 독립이면 역행렬이 있다."
+/>
+
+## 서술형
+
+### 문제. Ridge regression을 closed-form으로 풀기
+
+01번 레슨의 데이터 $(1, 3), (2, 5), (3, 6), (4, 9)$에 기울기 $w$에만 L2 penalty를 준다.
+
+$$
+L(w, b) = \frac{1}{N}\sum_i (w x_i + b - y_i)^2 + \lambda w^2
+$$
+
+(a) $\partial L / \partial w = 0$, $\partial L / \partial b = 0$을 풀어서, 해가 $(X^\top X + N\lambda D)\boldsymbol{\theta} = X^\top \mathbf{y}$ 꼴임을 보여라. 여기서 $\boldsymbol{\theta} = (w, b)$, $D = \text{diag}(1, 0)$이다.
+
+(b) $\lambda = 0.5$일 때 $w, b$를 구하라. penalty가 없을 때($w = 1.9, b = 1.0$)와 비교하라.
+
+(c) penalty를 $b$에는 주지 않는 이유는?
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** MSE 항의 gradient는 $\frac{2}{N}X^\top(X\boldsymbol{\theta} - \mathbf{y})$이고, penalty 항 $\lambda w^2$의 gradient는 $(2\lambda w, 0) = 2\lambda D \boldsymbol{\theta}$다. 합을 0으로 놓고 $N/2$를 곱하면
+
+$$
+X^\top X \boldsymbol{\theta} - X^\top \mathbf{y} + N\lambda D\boldsymbol{\theta} = 0 \;\Rightarrow\; (X^\top X + N\lambda D)\boldsymbol{\theta} = X^\top \mathbf{y}
+$$
+
+**(b)** $N\lambda = 4 \times 0.5 = 2$를 $X^\top X$의 왼쪽 위 원소에만 더한다.
+
+$$
+\begin{bmatrix} 32 & 10 \\ 10 & 4 \end{bmatrix} \begin{bmatrix} w \\ b \end{bmatrix} = \begin{bmatrix} 67 \\ 23 \end{bmatrix}, \quad \det = 128 - 100 = 28
+$$
+
+$$
+w = \frac{4 \times 67 - 10 \times 23}{28} = \frac{38}{28} \approx 1.357, \qquad b = \frac{-10 \times 67 + 32 \times 23}{28} = \frac{66}{28} \approx 2.357
+$$
+
+기울기는 1.9에서 1.357로 **줄었고**, 줄어든 기울기를 보상하려고 절편이 1.0에서 2.357로 올라갔다. penalty가 "큰 weight를 싫어하는" 방향으로 해를 끌어당긴다.
+
+**(c)** $b$는 데이터 전체를 위아래로 옮기는 값이라 크다고 해서 과적합을 뜻하지 않는다. $y$에 상수 100을 더하면 $b$도 100만큼 커져야 맞는데, $b$에 penalty를 주면 이런 단순 평행이동에도 해가 왜곡된다. 과적합과 관련 있는 건 입력에 대한 민감도인 $w$다.
+
+</details>
+
+## 더 읽을거리
+
+- [Ordinary least squares (Wikipedia)](https://en.wikipedia.org/wiki/Ordinary_least_squares)
+- [Ridge regression (Wikipedia)](https://en.wikipedia.org/wiki/Ridge_regression)
+- [Optimal Brain Compression: A Framework for Accurate Post-Training Quantization and Pruning (Frantar et al., 2022)](https://arxiv.org/abs/2208.11580)

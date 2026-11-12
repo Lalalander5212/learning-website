@@ -1,0 +1,297 @@
+---
+title: "Linear regression과 MSE"
+description: "가장 단순한 학습 모델로 model, loss, gradient의 뼈대를 손으로 계산하기"
+track: ml-basics
+module: regression
+est: 30min
+sidebar:
+  order: 1
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+딥러닝 모델은 수십억 개의 파라미터를 가진 복잡한 함수지만, 학습의 뼈대는 linear regression과 똑같다. **예측하고, loss로 얼마나 틀렸는지 재고, gradient로 파라미터를 고친다.** 이 세 단계를 파라미터 2개짜리 모델에서 손으로 계산할 수 있어야 뒤에 나올 backprop과 Adam이 왜 그렇게 생겼는지 이해된다.
+
+## 직관: 점들 사이로 자 놓기
+
+종이에 점이 몇 개 찍혀 있고, 그 사이로 자를 하나 놓아서 "가장 잘 맞는" 직선을 찾는다고 해보자.
+
+```text
+ y
+ 9 |                    ●
+ 8 |                 ╱
+ 7 |              ╱
+ 6 |           ●          ← 점과 직선 사이의 세로 거리 = residual
+ 5 |      ● ╱
+ 4 |     ╱
+ 3 | ●╱
+ 2 |╱
+   └──┬────┬────┬────┬── x
+      1    2    3    4
+```
+
+- 자의 기울기와 위치가 **파라미터** $w, b$다.
+- 각 점에서 직선까지의 세로 거리가 **residual (잔차)**이다.
+- "가장 잘 맞는다"를 숫자로 정의한 것이 **loss**다. 잔차를 제곱해서 평균 낸 것이 MSE다.
+- 자를 어느 방향으로 돌리면 loss가 줄어드는지 알려주는 것이 **gradient**다.
+
+## 정식 설명
+
+### 용어
+
+**Linear regression (선형 회귀)**: 입력의 선형 함수로 연속값 출력을 예측하는 모델.
+*A model that predicts a continuous target as a linear function of the inputs.*
+
+**Parameter (파라미터)**: 학습으로 정해지는 모델의 값. 여기서는 weight $w$와 bias $b$.
+*The values of a model learned from data.*
+
+**Loss function (손실 함수)**: 예측이 정답과 얼마나 다른지 하나의 숫자로 나타내는 함수. 학습은 이 값을 줄이는 것이다.
+*A function that measures how far predictions are from targets.*
+
+**Residual (잔차)**: 예측값과 정답의 차이 $\hat{y}_i - y_i$.
+
+**MSE, Mean Squared Error (평균 제곱 오차)**: 잔차 제곱의 평균.
+*The average of squared residuals.*
+
+### 모델
+
+입력이 하나일 때
+
+$$
+\hat{y} = w x + b
+$$
+
+입력이 $d$개일 때는 벡터로 쓴다. 데이터 $N$개를 행렬 $X \in \mathbb{R}^{N \times d}$에 한 행씩 쌓으면
+
+$$
+\hat{\mathbf{y}} = X \mathbf{w} + b
+$$
+
+bias는 $X$에 1로 채운 열을 하나 붙이고 $\mathbf{w}$에 원소를 하나 늘리면 $\hat{\mathbf{y}} = X\mathbf{w}$ 하나로 합칠 수 있다.
+
+### MSE loss
+
+$$
+L(w, b) = \frac{1}{N} \sum_{i=1}^{N} (\hat{y}_i - y_i)^2 = \frac{1}{N} \sum_{i=1}^{N} (w x_i + b - y_i)^2
+$$
+
+**왜 제곱인가?**
+
+1. 부호가 상쇄되지 않는다. 잔차 +2와 −2를 그냥 더하면 0이 된다.
+2. 미분이 매끄럽다. 절댓값은 0에서 미분이 정의되지 않는다.
+3. 노이즈가 Gaussian이라고 가정하면, 데이터가 나올 확률(likelihood)을 최대화하는 것과 MSE를 최소화하는 것이 같다. 03번 레슨에서 같은 논리로 classification loss를 만든다.
+
+### Gradient 유도
+
+$r_i = w x_i + b - y_i$라고 두면 $L = \frac{1}{N}\sum r_i^2$이다. chain rule로
+
+$$
+\frac{\partial L}{\partial w} = \frac{1}{N} \sum_i 2 r_i \cdot \frac{\partial r_i}{\partial w} = \frac{2}{N} \sum_i r_i \, x_i
+$$
+
+$$
+\frac{\partial L}{\partial b} = \frac{1}{N} \sum_i 2 r_i \cdot \frac{\partial r_i}{\partial b} = \frac{2}{N} \sum_i r_i
+$$
+
+벡터로 쓰면 ($\mathbf{r} = X\mathbf{w} - \mathbf{y}$)
+
+$$
+\nabla_{\mathbf{w}} L = \frac{2}{N} X^\top (X\mathbf{w} - \mathbf{y})
+$$
+
+**읽는 법**: 잔차가 클수록, 그리고 그 데이터의 입력 $x_i$가 클수록 $w$를 크게 고친다. 잔차가 양수(너무 크게 예측)면 gradient가 양수라서, gradient 반대 방향으로 가면 $w$가 줄어든다.
+
+### Gradient descent 한 걸음
+
+$$
+w \leftarrow w - \eta \frac{\partial L}{\partial w}, \qquad b \leftarrow b - \eta \frac{\partial L}{\partial b}
+$$
+
+$\eta$는 learning rate다. 얼마나 크게 가야 하는지는 최적화 모듈에서 다룬다.
+
+## Worked example
+
+데이터 4개: $(1, 3), (2, 5), (3, 6), (4, 9)$. 현재 파라미터 $w = 2$, $b = 0$.
+
+**Step 1. 예측과 잔차**
+
+| $x_i$ | $y_i$ | $\hat{y}_i = 2x_i$ | $r_i = \hat{y}_i - y_i$ | $r_i^2$ | $r_i x_i$ |
+|---|---|---|---|---|---|
+| 1 | 3 | 2 | −1 | 1 | −1 |
+| 2 | 5 | 4 | −1 | 1 | −2 |
+| 3 | 6 | 6 | 0 | 0 | 0 |
+| 4 | 9 | 8 | −1 | 1 | −4 |
+| 합 | | | −3 | 3 | −7 |
+
+**Step 2. Loss**
+
+$$
+L = \frac{3}{4} = 0.75
+$$
+
+**Step 3. Gradient**
+
+$$
+\frac{\partial L}{\partial w} = \frac{2}{4} \times (-7) = -3.5, \qquad \frac{\partial L}{\partial b} = \frac{2}{4} \times (-3) = -1.5
+$$
+
+둘 다 음수다. 모델이 전체적으로 너무 작게 예측하고 있으니 $w$와 $b$를 **키워야** 한다는 뜻이다.
+
+**Step 4. 한 걸음** ($\eta = 0.05$)
+
+$$
+w = 2 - 0.05 \times (-3.5) = 2.175, \qquad b = 0 - 0.05 \times (-1.5) = 0.075
+$$
+
+이 데이터의 최적해는 $w = 1.9$, $b = 1.0$이고 그때 MSE는 0.175다 (02번 레슨에서 직접 구한다). 한 걸음 만에 $w$는 최적값을 지나쳤지만 $b$는 아직 멀다. gradient descent는 이렇게 여러 걸음에 걸쳐 둘을 같이 맞춰간다.
+
+### Outlier의 영향
+
+마지막 점을 $(4, 20)$으로 바꾸면 최적 직선이 $w = 1.9, b = 1.0$에서 $w = 5.2, b = -4.5$로 확 꺾인다. 잔차를 **제곱**하기 때문이다. 잔차가 1, 1, 1, 10인 경우를 보면
+
+| loss | 값 | 잔차 10이 차지하는 비율 |
+|---|---|---|
+| MSE | $(1 + 1 + 1 + 100) / 4 = 25.75$ | 97% |
+| MAE (평균 절댓값 오차) | $(1 + 1 + 1 + 10) / 4 = 3.25$ | 77% |
+
+MSE는 큰 오차 하나에 끌려간다.
+
+## 코드
+
+```python
+import numpy as np
+
+x = np.array([1, 2, 3, 4], dtype=float)
+y = np.array([3, 5, 6, 9], dtype=float)
+
+def mse_and_grad(w, b):
+    r = w * x + b - y
+    loss = np.mean(r ** 2)
+    dw = 2 * np.mean(r * x)
+    db = 2 * np.mean(r)
+    return loss, dw, db
+
+loss, dw, db = mse_and_grad(2.0, 0.0)
+print(f"L={loss:.3f}  dL/dw={dw:.3f}  dL/db={db:.3f}")
+
+# gradient가 맞는지 수치 미분으로 확인 (gradient check, Backpropagation 모듈에서 다시 나옴)
+eps = 1e-5
+num_dw = (mse_and_grad(2 + eps, 0)[0] - mse_and_grad(2 - eps, 0)[0]) / (2 * eps)
+print(f"numerical dL/dw = {num_dw:.5f}")
+
+# gradient descent
+w, b, lr = 0.0, 0.0, 0.05
+for step in range(2001):
+    loss, dw, db = mse_and_grad(w, b)
+    w -= lr * dw
+    b -= lr * db
+    if step in (0, 10, 100, 2000):
+        print(f"step {step:4d}  L={loss:.4f}  w={w:.4f}  b={b:.4f}")
+
+# 정답 확인: least squares
+X = np.c_[x, np.ones_like(x)]
+print("lstsq:", np.linalg.lstsq(X, y, rcond=None)[0])
+```
+
+볼 포인트: 2000 걸음이 지나면 $w, b$가 `lstsq`의 답 $(1.9, 1.0)$에 붙는다. 초반에는 $w$가 빨리 맞고 $b$가 천천히 따라오는데, 이 속도 차이가 최적화 모듈에서 다룰 conditioning 문제다.
+
+## 흔한 오해
+
+<Aside type="caution" title="Linear regression은 직선만 맞출 수 있다?">
+"linear"는 **파라미터에 대해** 선형이라는 뜻이다. 입력을 $x, x^2, \sin x$처럼 바꿔서 feature로 넣으면 $\hat{y} = w_1 x + w_2 x^2 + b$도 linear regression이고 곡선을 맞춘다.
+</Aside>
+
+<Aside type="caution" title="MSE가 낮을수록 항상 좋은 모델이다?">
+학습 데이터에서의 MSE만 보면 안 된다. 파라미터가 많으면 학습 데이터의 노이즈까지 외워서 MSE를 0으로 만들 수 있다. 처음 보는 데이터에서의 성능이 중요하다 (일반화 모듈).
+</Aside>
+
+<Aside type="caution" title="Gradient 방향으로 가면 loss가 줄어든다?">
+gradient는 loss가 **가장 빨리 커지는** 방향이다. 줄이려면 **반대 방향**으로 간다. 그래서 업데이트 식에 마이너스가 붙는다.
+</Aside>
+
+## Efficient ML 연결
+
+**Linear layer = 출력마다 linear regression.** 신경망의 linear layer $\mathbf{y} = W\mathbf{x}$는 출력 하나하나가 linear regression이다. LLM 파라미터의 대부분이 이 linear layer에 있고, [roofline 레슨](/learning-website/arch-foundations/22-roofline-for-dl/)에서 분석한 GEMV/GEMM이 바로 이 계산이다.
+
+**Quantization은 least squares 문제다.** GPTQ 같은 post-training quantization은 layer마다 "원래 출력 $W X$와 quantize된 출력 $\hat{W} X$의 차이 제곱합 $\lVert WX - \hat{W}X \rVert^2$"을 최소화하는 $\hat{W}$를 찾는다. 이 레슨의 MSE를 weight 공간에서 푸는 것이다. MIT 6.5940 quantization 강의에서 이 식이 다시 나온다.
+
+**Distillation의 feature matching.** 큰 teacher 모델의 중간 activation을 작은 student가 따라 하게 할 때 MSE를 loss로 쓰는 경우가 많다.
+
+## 체크 퀴즈
+
+<Quiz
+  q="데이터 (0, 1), (1, 2), (2, 5)에 대해 w = 1, b = 1일 때 MSE는?"
+  options={['4', '약 1.33', '약 0.67', '2']}
+  answer={1}
+  explain="예측은 1, 2, 3이고 잔차는 0, 0, -2다. MSE = (0 + 0 + 4) / 3 ≈ 1.33. 4는 평균을 내지 않은 제곱합이고, 약 0.67은 잔차 제곱 대신 잔차 절댓값의 평균(MAE)을 구한 값이다."
+/>
+
+<Quiz
+  q="같은 데이터와 파라미터(w = 1, b = 1)에서 dL/dw는?"
+  options={['약 -1.33', '약 2.67', '-4', '약 -2.67']}
+  answer={3}
+  explain="dL/dw = (2/N) Σ r_i x_i = (2/3) × (0×0 + 0×1 + (-2)×2) = -8/3 ≈ -2.67. 약 -1.33은 x를 곱하지 않은 dL/db다. 음수이므로 w를 키워야 loss가 줄어든다."
+/>
+
+<Quiz
+  q="잔차가 2, 2, 2, 20인 네 데이터에서 MSE와 MAE는?"
+  options={['MSE 103, MAE 6.5', 'MSE 6.5, MAE 103', 'MSE 412, MAE 26', 'MSE 103, MAE 26']}
+  answer={0}
+  explain="MSE = (4 + 4 + 4 + 400) / 4 = 103, MAE = (2 + 2 + 2 + 20) / 4 = 6.5. MSE에서는 잔차 20 하나가 400 / 412 ≈ 97%를 차지한다. 412와 26은 4로 나누지 않은 합이다."
+/>
+
+<Quiz
+  q="모델이 모든 데이터에서 정답보다 크게 예측하고 있다(모든 잔차가 양수). 입력 x가 전부 양수일 때 gradient descent 한 걸음 후 w와 b는?"
+  options={['둘 다 커진다', '둘 다 작아진다', 'w는 커지고 b는 작아진다', '변하지 않는다']}
+  answer={1}
+  explain="모든 r_i와 x_i가 양수라 dL/dw와 dL/db가 모두 양수다. 업데이트는 gradient의 반대 방향이므로 w와 b 둘 다 작아진다. 너무 크게 예측하고 있으니 줄이는 게 맞다."
+/>
+
+## 서술형
+
+### 문제. gradient descent 두 걸음 손으로 따라가기
+
+데이터 $(1, 2), (2, 4), (3, 7)$, 초기값 $w = 1, b = 0$, learning rate $\eta = 0.1$이다.
+
+(a) 초기 loss와 gradient $\partial L / \partial w$, $\partial L / \partial b$를 구하라.
+
+(b) 한 걸음 업데이트한 $w, b$와 그때의 loss를 구하라.
+
+(c) 두 번째 걸음의 gradient 부호는 첫 걸음과 어떻게 다른가? 무엇을 뜻하는가?
+
+(d) 이 데이터의 최적 직선은 $w = 2.5, b \approx -0.667$이다. 첫 걸음에서 $w$가 최적값에 비해 어떻게 움직였는지와, $b$가 최적값과 반대 방향으로 움직인 이유를 설명하라.
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** 예측 1, 2, 3, 잔차 $-1, -2, -4$.
+
+$$
+L = \frac{1 + 4 + 16}{3} = 7
+$$
+
+$$
+\frac{\partial L}{\partial w} = \frac{2}{3}(-1 \cdot 1 - 2 \cdot 2 - 4 \cdot 3) = \frac{2}{3}(-17) \approx -11.33, \qquad \frac{\partial L}{\partial b} = \frac{2}{3}(-7) \approx -4.67
+$$
+
+**(b)**
+
+$$
+w = 1 - 0.1 \times (-11.33) \approx 2.133, \qquad b = 0 - 0.1 \times (-4.67) \approx 0.467
+$$
+
+예측 2.6, 4.73, 6.87, 잔차 0.6, 0.73, −0.13 → $L \approx 0.305$. 한 걸음에 7에서 0.3으로 줄었다.
+
+**(c)** 두 번째 걸음의 gradient는 $\partial L/\partial w \approx 1.11$, $\partial L/\partial b \approx 0.80$으로 둘 다 **양수**가 됐다. 첫 걸음이 너무 커서 반대편으로 넘어갔다는 뜻이다. 이제는 $w, b$를 줄이는 방향으로 돌아온다.
+
+**(d)** 첫 걸음에 $w$는 1에서 2.133으로 최적값 2.5 쪽으로 잘 움직였다. 반면 $b$는 0에서 0.467로 **커졌는데** 최적값은 −0.667이다. 처음에는 모든 잔차가 음수라 "전부 더 크게 예측하라"는 신호만 있어서, $w$와 $b$를 둘 다 키운다. $b$가 음수여야 한다는 정보는 $w$가 충분히 커진 뒤에야 잔차에 나타난다. 파라미터끼리 얽혀 있어서 gradient descent가 지그재그로 수렴하는 이유이고, 02번 레슨의 closed-form 해가 이 문제를 한 번에 푼다.
+
+</details>
+
+## 더 읽을거리
+
+- [Linear regression (Wikipedia)](https://en.wikipedia.org/wiki/Linear_regression)
+- [CS229 Lecture Notes: Linear Regression (Stanford)](https://cs229.stanford.edu/main_notes.pdf)
+- [GPTQ: Accurate Post-Training Quantization for Generative Pre-trained Transformers (Frantar et al., 2022)](https://arxiv.org/abs/2210.17323)
