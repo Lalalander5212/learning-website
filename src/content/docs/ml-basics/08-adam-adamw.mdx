@@ -1,0 +1,310 @@
+---
+title: "Adam과 AdamW"
+description: "파라미터마다 step 크기를 따로 맞추는 adaptive optimizer를 AdaGrad, RMSProp, Adam 순으로 유도하고, bias correction, decoupled weight decay, optimizer state 메모리까지 계산하기"
+track: ml-basics
+module: optimization
+est: 35min
+prereq: [ml-basics/07-momentum]
+sidebar:
+  order: 8
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+05~07번 레슨의 방법은 모든 파라미터에 **같은 learning rate**를 쓴다. 그런데 신경망에서는 파라미터마다 gradient 크기가 수십~수천 배 다르다. 자주 나오는 token의 embedding과 드물게 나오는 token의 embedding, 첫 layer와 마지막 layer가 그렇다. 하나의 $\eta$를 큰 gradient에 맞추면 작은 쪽은 거의 안 움직이고, 작은 쪽에 맞추면 큰 쪽이 발산한다. Adam은 **파라미터마다 최근 gradient 크기로 나눠서** step 크기를 자동으로 맞춘다. Transformer와 LLM은 거의 전부 Adam 계열(AdamW)로 학습한다. 대신 파라미터마다 state를 두 개 들고 있어야 해서 메모리가 크게 든다.
+
+## 직관: 파라미터별 볼륨 조절
+
+```text
+           gradient 크기           SGD step (η·g)         Adam step (≈ η)
+param A    ██████████ 100          ██████████ 너무 큼      ███ η
+param B    ▏ 0.01                  ▏ 거의 0                ███ η
+```
+
+Adam은 각 파라미터의 gradient를 "최근 이 파라미터의 gradient가 보통 이 정도 크기였다"는 값($\sqrt{s}$)으로 나눈다. 그러면 크기가 1 근처로 정규화되고, 실제 step은 대략 $\eta$가 된다. 방향(부호)과 일관성만 남고 절대 크기는 지워진다.
+
+## 정식 설명
+
+### 용어
+
+**Adaptive learning rate (적응적 학습률)**: 파라미터마다 gradient 이력에 따라 다른 step 크기를 쓰는 방법.
+*Per-parameter step sizes computed from the history of that parameter's gradients.*
+
+**First moment (1차 모멘트)** $m$: gradient의 EMA. 07번 레슨의 momentum과 같은 역할이다.
+
+**Second moment (2차 모멘트)** $s$ (논문에서는 $v$): gradient **제곱**의 EMA. gradient 크기의 척도.
+*An exponential moving average of the squared gradient.*
+
+**Bias correction (편향 보정)**: EMA를 0에서 시작해서 생기는 초반의 과소추정을 $1 - \beta^t$로 나눠 바로잡는 것.
+
+**Weight decay (가중치 감쇠)**: 매 step weight를 0 쪽으로 조금 줄이는 것. SGD에서는 L2 regularization과 같지만 Adam에서는 다르다.
+
+**Preconditioning (전처리)**: gradient에 행렬을 곱해서 찌그러진 골짜기를 둥글게 보이게 만드는 것. Adam은 대각 행렬 $\text{diag}(1/\sqrt{s})$로 하는 근사적 preconditioning이다.
+
+### 1단계: AdaGrad
+
+$$
+G_t = G_{t-1} + g_t^2, \qquad w_{t+1} = w_t - \frac{\eta}{\sqrt{G_t} + \epsilon}\, g_t
+$$
+
+(연산은 모두 원소별.) gradient가 컸던 파라미터는 $G$가 커서 step이 작아지고, 드물게 gradient를 받는 파라미터는 큰 step을 유지한다. 문제는 $G$가 **계속 더해지기만** 해서 learning rate가 0으로 줄어든다는 것이다. 학습이 길면 멈춘다.
+
+### 2단계: RMSProp
+
+합 대신 EMA를 쓴다.
+
+$$
+s_t = \beta_2 s_{t-1} + (1 - \beta_2)\, g_t^2, \qquad w_{t+1} = w_t - \frac{\eta}{\sqrt{s_t} + \epsilon}\, g_t
+$$
+
+최근 약 $1/(1 - \beta_2)$ step의 gradient 크기만 기억한다. 이름은 root mean square에서 왔다.
+
+### 3단계: Adam = RMSProp + momentum + bias correction
+
+$$
+\begin{aligned}
+m_t &= \beta_1 m_{t-1} + (1 - \beta_1)\, g_t \\
+s_t &= \beta_2 s_{t-1} + (1 - \beta_2)\, g_t^2 \\
+\hat{m}_t &= \frac{m_t}{1 - \beta_1^t}, \qquad \hat{s}_t = \frac{s_t}{1 - \beta_2^t} \\
+w_{t+1} &= w_t - \eta \, \frac{\hat{m}_t}{\sqrt{\hat{s}_t} + \epsilon}
+\end{aligned}
+$$
+
+기본값 $\beta_1 = 0.9$, $\beta_2 = 0.999$, $\epsilon = 10^{-8}$. $m$은 EMA 형식이라서 07번 레슨의 PyTorch momentum과 달리 $(1 - \beta_1)$이 곱해져 있다.
+
+### Bias correction 유도
+
+$m_0 = 0$에서 풀어 쓰면
+
+$$
+m_t = (1 - \beta_1)\sum_{k=1}^{t} \beta_1^{t-k} g_k
+$$
+
+gradient의 기댓값이 일정하게 $\mathbb{E}[g]$라고 하면
+
+$$
+\mathbb{E}[m_t] = (1 - \beta_1)\,\mathbb{E}[g] \sum_{j=0}^{t-1}\beta_1^{j} = (1 - \beta_1)\,\mathbb{E}[g]\,\frac{1 - \beta_1^t}{1 - \beta_1} = (1 - \beta_1^t)\,\mathbb{E}[g]
+$$
+
+그래서 $1 - \beta_1^t$로 나누면 unbiased가 된다. $s_t$도 같다. 이 보정이 특히 중요한 것은 $s$ 쪽이다. $\beta_2 = 0.999$면 $t = 10$에서도 $1 - \beta_2^{10} \approx 0.01$이라 $s$가 실제의 1% 수준이고, 보정하지 않으면 $\sqrt{s}$가 10배 작아서 step이 크게 튄다.
+
+### Adam step의 크기
+
+- **첫 step**: $\hat{m}_1 = g_1$, $\hat{s}_1 = g_1^2$이므로 step $= \eta \cdot g_1 / \lvert g_1 \rvert = \eta \cdot \text{sign}(g_1)$. gradient 크기와 상관없이 정확히 $\eta$만큼 움직인다.
+- **Scale 불변**: 모든 gradient에 상수 $c$를 곱해도 $\hat{m}$은 $c$배, $\sqrt{\hat{s}}$도 $c$배라 step이 같다. loss에 상수를 곱하는 것에 영향을 받지 않는다.
+- **정상 상태**: gradient 평균 $\mu_g$, 표준편차 $\sigma_g$이면 대략 $\hat{m} \approx \mu_g$, $\hat{s} \approx \mu_g^2 + \sigma_g^2$이고 step은 $\eta \cdot \mu_g / \sqrt{\mu_g^2 + \sigma_g^2}$. 신호가 일관되면 $\eta$에 가깝고, noise가 지배하면(최솟값 근처) 작아진다.
+
+그래서 Adam의 $\eta$는 "**파라미터 단위로 한 step에 움직일 거리**"로 읽으면 된다. SGD의 $\eta$와 의미가 다르고 값도 다르다(Adam은 보통 $10^{-4} \sim 10^{-3}$).
+
+### AdamW: decoupled weight decay
+
+L2 regularization $\frac{\lambda}{2}\lVert w \rVert^2$을 loss에 넣으면 gradient에 $\lambda w$가 더해진다. SGD에서는 이게 $w \leftarrow w - \eta\lambda w$, 즉 weight decay와 같다. 그런데 Adam에서는 이 $\lambda w$도 $\sqrt{\hat{s}}$로 나뉜다. gradient가 큰 파라미터일수록 decay가 약해져서 의도한 regularization이 되지 않는다.
+
+AdamW는 decay를 adaptive 부분 밖으로 뺀다.
+
+$$
+w_{t+1} = w_t - \eta\left(\frac{\hat{m}_t}{\sqrt{\hat{s}_t} + \epsilon} + \lambda w_t\right)
+$$
+
+모든 파라미터가 매 step 같은 비율 $\eta\lambda$로 줄어든다. 현재 LLM 학습의 기본 optimizer다. (이 식은 PyTorch `AdamW`와 같은 형식이다. 원 논문은 decay에 schedule 배수만 곱하는 형식이다.)
+
+### Optimizer state 메모리
+
+mixed precision(FP16/BF16 계산, FP32 master weight) Adam 학습에서 파라미터 하나당
+
+| 항목 | 바이트 |
+|---|---|
+| FP16 weight (계산용) | 2 |
+| FP16 gradient | 2 |
+| FP32 master weight | 4 |
+| FP32 $m$ | 4 |
+| FP32 $s$ | 4 |
+| 합계 | **16** |
+
+weight 자체(2 B)의 8배다. activation 메모리는 별도다.
+
+## Worked example
+
+### 예제 1. Gradient 크기가 1만 배 다른 두 파라미터
+
+$\eta = 10^{-3}$, $\beta_1 = 0.9$, $\beta_2 = 0.999$. 파라미터 A, B의 gradient가 step 1에 $(100, 0.01)$, step 2에 $(50, 0.01)$이다.
+
+**Step 1**
+
+- $m_1 = 0.1 \times (100, 0.01) = (10, 0.001)$
+- $s_1 = 0.001 \times (10^4, 10^{-4}) = (10, 10^{-7})$
+- $\hat{m}_1 = m_1 / 0.1 = (100, 0.01)$, $\hat{s}_1 = s_1 / 0.001 = (10^4, 10^{-4})$, $\sqrt{\hat{s}_1} = (100, 0.01)$
+- step $= 10^{-3} \times (100/100,\; 0.01/0.01) = (0.001, 0.001)$
+
+두 파라미터가 **똑같이 $\eta$만큼** 움직인다. SGD였다면 같은 $\eta$로 A는 0.1, B는 $10^{-5}$ 움직여서 1만 배 차이가 난다.
+
+**bias correction이 없으면**: $m_1 / \sqrt{s_1} = 10 / \sqrt{10} = 3.16$이라 step이 $0.00316$, 의도의 3.16배다.
+
+**Step 2**
+
+- $m_2 = 0.9 \times 10 + 0.1 \times 50 = 14$ (A), $0.9 \times 0.001 + 0.001 = 0.0019$ (B)
+- $s_2 = 0.999 \times 10 + 0.001 \times 2500 = 12.49$ (A), $0.999 \times 10^{-7} + 10^{-7} = 1.999 \times 10^{-7}$ (B)
+- 보정 계수 $1 - 0.9^2 = 0.19$, $1 - 0.999^2 = 0.001999$
+- A: $\hat{m} = 14/0.19 = 73.7$, $\hat{s} = 12.49/0.001999 = 6248$, $\sqrt{\hat{s}} = 79.0$, step $= 10^{-3} \times 73.7/79.0 = 0.000932$
+- B: $\hat{m} = 0.01$, $\sqrt{\hat{s}} = 0.01$, step $= 0.001$
+
+A는 gradient가 100에서 50으로 바뀌어 "일관성"이 조금 떨어졌으므로 step이 $\eta$보다 약간 작아졌다. B는 일정해서 정확히 $\eta$다.
+
+### 예제 2. 7B 모델 학습 메모리
+
+$7 \times 10^9 \times 16 \text{ B} = 112 \text{ GB}$. 80 GB GPU 한 장에 optimizer까지 올릴 수 없다. 추론용 FP16 weight는 14 GB뿐인데, 학습은 그 8배를 activation 없이도 먹는다.
+
+## 코드
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+N = 200
+# 단위가 아주 다른 두 feature (평균 0으로 맞춤): x1은 수백 단위, x2는 0.1 단위
+X = np.c_[rng.normal(0, 300, N), rng.normal(0, 0.1, N)]
+w_true = np.array([0.02, 30.0])
+y = X @ w_true + rng.normal(0, 0.1, N)
+w_star = np.linalg.lstsq(X, y, rcond=None)[0]
+
+grad = lambda w: (2 / N) * X.T @ (X @ w - y)
+loss = lambda w: np.mean((X @ w - y) ** 2)
+H = (2 / N) * X.T @ X
+print(f"curvatures = {np.diag(H).round(3)}, kappa = {np.linalg.cond(H):.2e}")
+
+def gd(lr, steps):
+    w = np.zeros(2)
+    for _ in range(steps):
+        w -= lr * grad(w)
+    return w
+
+def adam(lr, steps, b1=0.9, b2=0.999, eps=1e-8):
+    w, m, s = np.zeros(2), np.zeros(2), np.zeros(2)
+    for t in range(1, steps + 1):
+        g = grad(w)
+        m = b1 * m + (1 - b1) * g
+        s = b2 * s + (1 - b2) * g * g
+        m_hat = m / (1 - b1 ** t)
+        s_hat = s / (1 - b2 ** t)
+        w -= lr * m_hat / (np.sqrt(s_hat) + eps)
+    return w
+
+lr_gd = 1 / np.linalg.eigvalsh(H).max()       # GD가 쓸 수 있는 안전한 최대치 근처
+for name, w in [("GD   lr=1/L ", gd(lr_gd, 2000)),
+                ("Adam lr=0.1 ", adam(0.1, 2000)),
+                ("Adam lr=0.01", adam(0.01, 2000))]:
+    print(f"{name}: w = {w.round(4)}, loss = {loss(w):.4f}")
+print(f"optimum     : w = {w_star.round(4)}, loss = {loss(w_star):.4f}")
+```
+
+```text
+curvatures = [1.66337601e+05 2.10000000e-02], kappa = 7.89e+06
+GD   lr=1/L : w = [0.0193 0.0076], loss = 9.5321
+Adam lr=0.1 : w = [2.00000e-02 3.00587e+01], loss = 0.0099
+Adam lr=0.01: w = [ 0.0197 16.9477], loss = 1.8225
+optimum     : w = [2.00000e-02 3.00587e+01], loss = 0.0099
+```
+
+볼 포인트:
+- $\kappa \approx 8 \times 10^6$. GD는 큰 곡률(16만)에 맞춰 learning rate를 잡아야 해서 $w_2$가 2000 step 동안 0.0076밖에 못 갔다. 05번 레슨 식으로 $w_2$ 방향 배율이 $1 - 0.021/166{,}338 \approx 1 - 1.3 \times 10^{-7}$이다.
+- Adam은 같은 2000 step에 최적값에 도착했다. 축 방향으로 찌그러진 문제는 대각 preconditioning이 정확히 고친다.
+- Adam lr=0.01은 $w_2$가 16.9에서 멈췄다. step이 대략 $\eta$라서 30까지 가려면 최소 3000 step이 필요하다. **Adam의 learning rate는 거리 단위**라는 것을 그대로 보여준다.
+
+## 흔한 오해
+
+<Aside type="caution" title="Adam은 learning rate 튜닝이 필요 없다?">
+gradient 크기에는 둔감하지만 $\eta$ 자체(한 step 거리)는 여전히 중요하다. LLM에서도 $\eta$, warmup, decay schedule을 신중히 고른다. 너무 크면 loss spike가 생기고, 너무 작으면 위 코드의 lr=0.01처럼 도착을 못 한다.
+</Aside>
+
+<Aside type="caution" title="Adam에 L2 regularization을 넣으면 weight decay와 같다?">
+SGD에서만 같다. Adam에서는 L2 gradient $\lambda w$가 $\sqrt{\hat{s}}$로 나뉘어서 gradient가 큰 파라미터일수록 decay가 약해진다. 의도한 대로 쓰려면 AdamW를 쓴다. PyTorch의 `Adam(weight_decay=...)`은 L2 방식, `AdamW`가 decoupled 방식이다.
+</Aside>
+
+<Aside type="caution" title="Adam은 Hessian을 쓰는 2차 방법이다?">
+아니다. $s$는 gradient 제곱의 평균이지 곡률이 아니다. 축 방향 scale 차이는 고치지만 회전된 찌그러짐(feature끼리 상관)은 대각 행렬로 고칠 수 없다. 05번 레슨 예제 2(01번 레슨 데이터)처럼 비대각 원소가 큰 경우가 그렇다.
+</Aside>
+
+<Aside type="caution" title="ε은 0으로 나누기 방지용이라 상관없다?">
+대부분 그렇지만 gradient가 아주 작은 파라미터(예: FP16에서)나 $\sqrt{\hat{s}}$가 $10^{-8}$ 근처로 작아지는 경우 $\epsilon$이 사실상 learning rate를 정한다. 저정밀 학습에서는 $\epsilon$을 키우기도 한다.
+</Aside>
+
+## Efficient ML 연결
+
+**Optimizer state 압축.** 예제 2의 16 B/param 중 8 B가 $m$, $s$다. 8-bit Adam(Dettmers et al., 2021)은 $m$, $s$를 block-wise quantization으로 1 B씩 저장해서 16 B를 10 B로 줄인다. 이것은 MIT 6.5940의 quantization 기법(scale을 block마다 따로 두기)이 weight가 아니라 **optimizer state**에 쓰인 예다. QLoRA도 같은 아이디어의 paged 8-bit optimizer를 쓴다.
+
+**State 자체를 줄이기.** LoRA는 학습하는 파라미터 수를 줄여서 state 메모리를 줄이고, ZeRO는 여러 GPU에 state를 나눠 저장한다. Adafactor는 행렬 모양 파라미터의 $s$를 행 평균과 열 평균으로 근사해서 $O(mn)$을 $O(m + n)$으로 줄인다.
+
+**Edge에서의 학습.** on-device training에서는 Adam의 2배 state가 부담이라 momentum SGD나 state가 없는 SGD를 쓰는 경우가 많다. 이 레슨의 표가 그 선택의 근거다.
+
+## 체크 퀴즈
+
+<Quiz
+  q="Adam(β1 = 0.9, β2 = 0.999, bias correction 사용, ε 무시)에서 learning rate 0.01, 첫 step의 gradient가 -0.004인 파라미터는 얼마나 바뀌는가?"
+  options={['+0.00004', '-0.01', '+0.01', '약 +0.0316']}
+  answer={2}
+  explain="첫 step은 m̂ = g, ŝ = g² 이라 step = η × g / |g| = η × sign(g). gradient가 음수이므로 w는 +0.01 바뀐다. +0.00004는 SGD의 η × |g|, -0.01은 부호를 반대로 한 값, 약 +0.0316은 bias correction을 빼서 m / √s = 0.1 / √0.001 ≈ 3.16배가 된 값이다."
+/>
+
+<Quiz
+  q="1.3B 파라미터 모델을 mixed precision Adam(FP16 weight와 gradient, FP32 master weight, FP32 m과 s)으로 학습할 때 weight, gradient, optimizer state의 메모리 합은? activation은 제외."
+  options={['20.8 GB', '5.2 GB', '10.4 GB', '2.6 GB']}
+  answer={0}
+  explain="파라미터당 2 + 2 + 4 + 4 + 4 = 16 B, 1.3 × 10^9 × 16 = 20.8 GB. 10.4 GB는 m과 s를 빼고 8 B로 센 값, 5.2 GB는 FP32 weight 하나(4 B)만 센 값, 2.6 GB는 추론용 FP16 weight만 센 값이다."
+/>
+
+<Quiz
+  q="β1 = 0.9, β2 = 0.999에서 gradient가 처음부터 일정한 값 g로 들어온다. t = 10일 때 bias correction 없이 m / √s를 쓰면 의도한 step(η)의 대략 몇 배가 되나?"
+  options={['약 0.65배', '약 10배', '1배', '약 6.5배']}
+  answer={3}
+  explain="m = (1 - 0.9^10) g ≈ 0.651 g, s = (1 - 0.999^10) g² ≈ 0.00995 g², √s ≈ 0.0998 |g|. 비율 0.651 / 0.0998 ≈ 6.5배. 약 0.65배는 s의 보정만 하고 m을 보정하지 않은 값, 약 10배는 m 쪽 감소(0.651)를 빼먹은 값이다. 초반에 s 보정이 없으면 step이 크게 튄다."
+/>
+
+<Quiz
+  q="Adam에 L2 regularization(gradient에 λw를 더하는 방식)을 쓸 때, 최근 gradient가 아주 큰(√ŝ가 큰) 파라미터에서 weight decay 효과는 어떻게 되나?"
+  options={['다른 파라미터보다 약해진다', '다른 파라미터보다 강해진다', '모든 파라미터에서 같다', '정확히 0이 된다']}
+  answer={0}
+  explain="λw도 √ŝ로 나뉘므로 √ŝ가 클수록 decay 항이 작아진다. 모든 파라미터에서 같은 비율로 줄이려면 AdamW처럼 decay를 나눗셈 밖으로 빼야 한다. 0이 되지는 않고 상대적으로 약해질 뿐이다."
+/>
+
+## 서술형
+
+### 문제. Adam의 정상 상태 step과 메모리 예산
+
+(a) gradient가 매 step 평균 $\mu_g$, 표준편차 $\sigma_g$인 독립 확률변수라고 하자. 충분히 지난 뒤 $\hat{m} \approx \mu_g$, $\hat{s} \approx \mu_g^2 + \sigma_g^2$임을 보이고, Adam step의 크기를 $\eta, \mu_g, \sigma_g$로 나타내라.
+
+(b) $\mu_g = 0.3$, $\sigma_g = 0.4$, $\eta = 10^{-3}$이면 step은 얼마인가? 최솟값 근처에서 $\mu_g \to 0$이 되면 어떻게 되나? 06번 레슨의 SGD noise floor와 비교해서 설명하라.
+
+(c) 7B 모델을 16 B/param Adam으로 학습하는 대신 (i) $m$, $s$를 8-bit로 저장하는 경우, (ii) LoRA로 전체의 0.5%만 학습하고 나머지 weight는 FP16으로 고정하는 경우의 weight + gradient + optimizer state 메모리를 각각 구하라. (ii)에서 학습하는 파라미터는 16 B/param으로 센다.
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** bias correction을 하면 $\hat{m}_t$는 $g_1, \dots, g_t$의 가중 평균(가중치 합 1)이다. 기댓값을 취하면 $\mathbb{E}[\hat{m}] = \mu_g$. $\beta_1 = 0.9$면 약 10 step을 평균하므로 분산도 줄어 $\hat{m} \approx \mu_g$로 본다.
+
+같은 방식으로 $\mathbb{E}[\hat{s}] = \mathbb{E}[g^2] = \text{Var}[g] + (\mathbb{E}[g])^2 = \sigma_g^2 + \mu_g^2$. $\beta_2 = 0.999$는 약 1000 step을 평균하므로 이 근사가 더 잘 맞는다.
+
+$$
+\lvert \Delta w \rvert \approx \eta \frac{\lvert\mu_g\rvert}{\sqrt{\mu_g^2 + \sigma_g^2}}
+$$
+
+**(b)** $\sqrt{0.09 + 0.16} = 0.5$이므로 step $\approx 10^{-3} \times 0.3 / 0.5 = 6 \times 10^{-4}$.
+
+$\mu_g \to 0$이면 분자가 0으로 가므로 평균 step도 0으로 간다. 즉 신호 대 잡음비(SNR)가 떨어지면 Adam은 **스스로 걸음을 줄인다.** SGD는 06번 레슨처럼 $\eta$를 직접 줄이지 않으면 $\eta\sigma^2/B$ 수준의 noise floor에 머문다. 다만 $\hat{m}$ 자체도 noise가 있어서 Adam도 완전히 멈추지는 않으므로, 실전에서는 Adam에도 learning rate decay를 같이 쓴다.
+
+**(c)** 파라미터 $P = 7 \times 10^9$.
+
+(i) $m$, $s$를 1 B씩: $2 + 2 + 4 + 1 + 1 = 10$ B/param → $70$ GB. 원래 112 GB에서 42 GB 줄었다.
+
+(ii) 학습 파라미터 $0.005 \times 7 \times 10^9 = 3.5 \times 10^7$개 × 16 B $= 0.56$ GB. 고정 weight는 FP16으로 $7 \times 10^9 \times 2 = 14$ GB, gradient와 optimizer state가 없다. 합계 약 $14.56$ GB. weight 자체가 거의 전부가 되어 GPU 한 장(24 GB급)에 들어간다. 여기서 고정 weight를 4-bit로 quantize하면 약 3.5 GB가 되는데, 이것이 QLoRA의 계산이다.
+
+</details>
+
+## 더 읽을거리
+
+- [Adam: A Method for Stochastic Optimization (Kingma & Ba, 2014)](https://arxiv.org/abs/1412.6980)
+- [Decoupled Weight Decay Regularization (Loshchilov & Hutter, 2017)](https://arxiv.org/abs/1711.05101): AdamW
+- [8-bit Optimizers via Block-wise Quantization (Dettmers et al., 2021)](https://arxiv.org/abs/2110.02861)
+- [Adafactor: Adaptive Learning Rates with Sublinear Memory Cost (Shazeer & Stern, 2018)](https://arxiv.org/abs/1804.04235)
+- [QLoRA: Efficient Finetuning of Quantized LLMs (Dettmers et al., 2023)](https://arxiv.org/abs/2305.14314)
