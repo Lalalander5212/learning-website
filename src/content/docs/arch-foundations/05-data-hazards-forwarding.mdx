@@ -324,39 +324,93 @@ float sum = psum[0] + psum[1] + psum[2] + psum[3];
 ## 체크 퀴즈
 
 <Quiz
-  q="Forwarding이 있는 5-stage pipeline에서 add x1,x2,x3 바로 다음에 sub x4,x1,x5가 오면 stall은 몇 사이클인가?"
-  options={['0', '1', '2', '3']}
-  answer={0}
-  explain="add의 결과는 EX 끝에 나오고, EX/MEM 레지스터에서 바로 다음 명령어의 EX 입력으로 forwarding되므로 stall이 없다."
+  q="Forwarding이 있는 5-stage pipeline에서 lw x5,8(x6) 다음에 독립 명령어 add x7,x8,x9가 하나 있고, 그다음에 add x10,x5,x11이 온다. stall은 몇 사이클인가?"
+  options={['1', '2', '0', '3']}
+  answer={2}
+  explain="lw의 데이터는 MEM 끝에 나오고, 두 칸 뒤 명령어는 그다음 사이클에 EX에 들어가므로 MEM/WB에서 forwarding하면 기다릴 필요가 없다. 독립 명령어 하나가 load-use 슬롯을 채운 것이다. 1은 lw 바로 다음에 쓰는 경우의 값이다."
 />
 
 <Quiz
-  q="Forwarding이 있어도 lw x1,0(x2) 바로 다음에 add x3,x1,x4가 오면 stall은 몇 사이클인가?"
-  options={['0', '1', '2', '3']}
-  answer={1}
-  explain="load-use hazard다. lw의 데이터는 MEM 끝에 나오는데 add는 그 사이클의 시작에 EX에서 값이 필요하므로 1 사이클은 반드시 기다려야 한다."
+  q="Forwarding이 없고 register file이 전반부 쓰기, 후반부 읽기다. add x1,x2,x3 다음에 독립 명령어가 하나 있고, 그다음 sub x4,x1,x5가 x1을 읽는다. stall은 몇 사이클인가?"
+  options={['0', '2', '3', '1']}
+  answer={3}
+  explain="add는 사이클 5에 WB한다. sub는 원래 사이클 4에 ID에서 레지스터를 읽으므로 사이클 5까지 1 사이클 기다리면 같은 사이클 후반부에 새 값을 읽는다. 2는 바로 다음 명령어가 쓰는 경우의 값으로, 사이에 낀 독립 명령어 하나가 한 사이클을 벌어준다."
 />
 
 <Quiz
   q="Forwarding이 없고 register file이 전반부 쓰기, 후반부 읽기일 때, ALU 명령어 결과를 바로 다음 명령어가 쓰면 stall은?"
-  options={['0', '1', '2', '3']}
-  answer={2}
+  options={['2', '0', '1', '3']}
+  answer={0}
   explain="생산자는 사이클 5(WB)에 쓰고, 소비자는 같은 사이클 후반부에 읽을 수 있다. 소비자의 원래 ID는 사이클 3이므로 2 사이클을 기다려야 한다. register file 트릭이 없으면 3이 된다."
 />
 
 <Quiz
   q="In-order 5-stage pipeline에서 실제로 stall을 일으키는 의존성은?"
-  options={['RAW', 'WAR', 'WAW', '셋 다']}
-  answer={0}
+  options={['WAR', 'RAW', 'WAW', '셋 다']}
+  answer={1}
   explain="in-order 5-stage에서는 읽기가 항상 ID, 쓰기가 항상 WB에서 순서대로 일어나므로 WAR과 WAW는 문제가 되지 않는다. 둘은 out-of-order 실행에서 문제가 된다."
 />
 
 <Quiz
   q="HLS에서 sum += a[i]*b[i] 루프에 PIPELINE II=1을 줬는데 float 덧셈 latency가 4라서 II가 4가 됐다. 가장 적절한 해결책은?"
-  options={['클럭을 낮춘다', '독립 누적기 여러 개(psum[4])로 나누고 마지막에 합친다', 'pragma를 지운다', '배열을 더 크게 만든다']}
-  answer={1}
+  options={['클럭을 낮춘다', 'pragma를 지운다', '독립 누적기 여러 개(psum[4])로 나누고 마지막에 합친다', '배열을 더 크게 만든다']}
+  answer={2}
   explain="II가 늘어난 원인은 sum에 대한 loop-carried RAW 의존성이다. 누적기를 4개로 나누면 같은 누적기에 대한 의존 간격이 4 iteration으로 벌어져서 덧셈 latency를 숨길 수 있다."
 />
+
+## 서술형
+
+### 문제. 두 개의 load-use를 스케줄링으로 없애기
+
+5-stage in-order pipeline에서 다음 코드를 실행한다. register file은 전반부 쓰기, 후반부 읽기다.
+
+```text
+lw  x1, 0(x10)
+add x2, x1, x3
+lw  x4, 4(x10)
+add x5, x4, x6
+sw  x2, 8(x10)
+sw  x5, 12(x10)
+```
+
+(a) forwarding이 있을 때 총 사이클 수와 stall 수는? 어느 명령어 쌍에서 stall이 생기는가?
+
+(b) 의미를 바꾸지 않고 명령어 순서를 바꿔서 forwarding이 있을 때 stall을 0으로 만들어라. 총 사이클 수는?
+
+(c) forwarding이 없다면 (a)의 원래 순서와 (b)의 재배치 순서는 각각 몇 사이클인가? (sw는 저장할 데이터를 레지스터에서 읽어야 한다고 가정한다.)
+
+(d) (b)의 재배치가 레지스터 사용 측면에서 치르는 비용은?
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** 이상적인 경우 $5 + 6 - 1 = 10$ 사이클. `lw x1` → `add x2`, `lw x4` → `add x5` 두 쌍이 load-use라서 각각 1 stall → **12 사이클, stall 2**. `sw`는 저장 데이터를 MEM에서 쓰므로 forwarding으로 해결된다.
+
+**(b)** 두 load를 먼저 올린다.
+
+```text
+lw  x1, 0(x10)
+lw  x4, 4(x10)
+add x2, x1, x3    # x1은 2칸 전에 load → stall 없음
+add x5, x4, x6    # x4도 2칸 전에 load → stall 없음
+sw  x2, 8(x10)
+sw  x5, 12(x10)
+```
+
+**10 사이클, stall 0**.
+
+**(c)** forwarding이 없으면 소비자의 레지스터 읽기가 생산자의 WB와 같거나 이후 사이클이어야 한다. 위 코드 섹션의 시뮬레이터로 돌린 결과:
+
+| 순서 | forwarding 있음 | forwarding 없음 |
+|---|---|---|
+| 원래 | 12 | 15 |
+| 재배치 | 10 | 12 |
+
+재배치는 forwarding이 없을 때도 3 사이클을 줄인다. 의존 명령어 사이의 거리를 벌리는 것은 어느 쪽이든 이득이다.
+
+**(d)** 원래 순서에서는 `x1`이 `add x2`에서 쓰이고 나면 더 필요 없지만, 재배치하면 `x1`과 `x4`가 동시에 살아 있어야 한다. 동시에 살아 있는 레지스터가 늘어난다(register pressure). 루프 전체를 이렇게 펼치다 보면 레지스터가 모자라 메모리로 내보내는(spill) 코드가 생길 수 있다.
+
+</details>
 
 ## 더 읽을거리
 
