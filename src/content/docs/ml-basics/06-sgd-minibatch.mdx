@@ -1,0 +1,329 @@
+---
+title: "SGD와 mini-batch"
+description: "Mini-batch gradient가 왜 unbiased이고 분산이 1/B로 줄어드는지 유도하고, 그 noise가 learning rate, batch size, schedule을 어떻게 정하는지 보기"
+track: ml-basics
+module: optimization
+est: 35min
+prereq: [ml-basics/05-gradient-descent-learning-rate]
+sidebar:
+  order: 6
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+05번 레슨의 gradient descent는 한 걸음마다 **데이터 전체**의 gradient를 계산했다. 데이터가 100만 장의 이미지나 1조 개의 token이면 한 걸음에 데이터 전체를 한 번 훑어야 한다. 대신 데이터 일부만 보고 gradient를 **추정**해서 바로 걸음을 내딛으면, 같은 계산량으로 훨씬 많은 걸음을 걸을 수 있다. 대가는 noise다. 이 레슨은 그 noise의 크기를 정확히 계산하고, 그게 learning rate, batch size, learning rate schedule 선택으로 어떻게 이어지는지 본다.
+
+## 직관: 여론조사
+
+전 국민(데이터 전체)에게 물어보면 정확하지만 비싸다. 무작위로 1000명(mini-batch)에게 물어보면 싸고, **평균적으로는** 정답과 같다. 다만 매번 조금씩 틀린다. 표본을 4배 늘리면 오차(표준편차)는 절반이 된다.
+
+```text
+full-batch GD      ●───────►───────►───────►★        걸음은 정확, 걸음당 비용 N
+mini-batch SGD     ●─╮ ╭─►─╮  ╭►─╮╭►─╮ ╭►──★~       걸음은 흔들림, 걸음당 비용 B
+                     ╰─╯   ╰──╯  ╰╯  ╰─╯     ↖ 끝에서도 계속 흔들림 (noise floor)
+```
+
+초반에는 정답 방향이 뚜렷해서 대충 맞는 방향으로만 가도 충분하다. 최솟값 근처에서는 gradient 자체가 작아져서 noise가 상대적으로 커진다. 그래서 끝에 가면 learning rate를 줄인다.
+
+## 정식 설명
+
+### 용어
+
+**Mini-batch (미니배치)**: 한 걸음의 gradient를 계산하는 데 쓰는 데이터 부분집합. 크기를 batch size $B$라고 한다.
+*A random subset of training examples used for one update.*
+
+**SGD (Stochastic Gradient Descent, 확률적 경사 하강법)**: mini-batch로 추정한 gradient로 업데이트하는 gradient descent. 원래는 $B = 1$을 뜻했지만 지금은 mini-batch를 쓰는 경우를 다 SGD라고 부른다.
+*Gradient descent using a gradient estimated from a random mini-batch.*
+
+**Iteration / step (반복, 스텝)**: 업데이트 한 번.
+
+**Epoch (에폭)**: 데이터 전체를 한 번 다 보는 것. epoch당 step 수는 $\lceil N / B \rceil$.
+*One full pass over the training set.*
+
+**Unbiased estimator (불편 추정량)**: 기댓값이 추정하려는 값과 정확히 같은 추정량.
+*An estimator whose expected value equals the true quantity.*
+
+**Gradient noise (그래디언트 잡음)**: mini-batch gradient와 full gradient의 차이.
+
+**Learning rate schedule (학습률 스케줄)**: 학습 중에 $\eta$를 step에 따라 바꾸는 규칙.
+
+### Mini-batch gradient는 unbiased다
+
+loss가 데이터별 loss의 평균이라고 하자.
+
+$$
+L(\mathbf{w}) = \frac{1}{N}\sum_{i=1}^{N} \ell_i(\mathbf{w}), \qquad \nabla L = \frac{1}{N}\sum_{i=1}^{N} \nabla \ell_i
+$$
+
+인덱스 $I_1, \dots, I_B$를 $\{1, \dots, N\}$에서 균등하게 독립으로 뽑고(복원 추출)
+
+$$
+\mathbf{g}_B = \frac{1}{B}\sum_{k=1}^{B} \nabla \ell_{I_k}
+$$
+
+를 쓴다. 하나의 $I_k$에 대해 $\mathbb{E}[\nabla \ell_{I_k}] = \sum_i \frac{1}{N}\nabla \ell_i = \nabla L$이므로 기댓값의 선형성으로
+
+$$
+\mathbb{E}[\mathbf{g}_B] = \nabla L
+$$
+
+평균적으로는 정확한 방향이다.
+
+### 분산은 1/B로 줄어든다
+
+샘플 하나의 gradient 분산을 (스칼라로 보기 위해 좌표 하나에 대해)
+
+$$
+\sigma^2 = \frac{1}{N}\sum_{i=1}^{N} \left(\nabla \ell_i - \nabla L\right)^2
+$$
+
+라고 하자. $I_k$들이 독립이면 독립인 확률변수 합의 분산은 분산의 합이므로
+
+$$
+\text{Var}[\mathbf{g}_B] = \frac{1}{B^2}\sum_{k=1}^{B}\text{Var}[\nabla \ell_{I_k}] = \frac{1}{B^2} \cdot B\sigma^2 = \frac{\sigma^2}{B}
+$$
+
+표준편차는 $\sigma / \sqrt{B}$다. **batch를 4배 키우면 noise는 절반**이 된다. 계산량은 4배 드는데 noise는 2배만 줄어든다. 이게 batch를 무한정 키우지 않는 이유다.
+
+(비복원 추출이면 $\frac{N - B}{N - 1}$이 곱해져서 조금 더 작다. $N \gg B$면 무시한다.)
+
+### Noise floor: learning rate를 고정하면 끝까지 흔들린다
+
+05번 레슨처럼 1차원 2차식 $L(w) = \frac{a}{2}(w - w^*)^2$에서 gradient에 noise $\xi_t$(평균 0, 분산 $s^2 = \sigma^2 / B$)가 붙는다고 하자.
+
+$$
+e_{t+1} = (1 - \eta a)\, e_t - \eta\, \xi_t
+$$
+
+$e_t$와 $\xi_t$는 독립이므로 분산은
+
+$$
+\text{Var}[e_{t+1}] = (1 - \eta a)^2\, \text{Var}[e_t] + \eta^2 s^2
+$$
+
+오래 돌려 분산이 더 이상 변하지 않는 값(정상 상태, stationary)을 $v$라고 하면 $v = (1 - \eta a)^2 v + \eta^2 s^2$이고
+
+$$
+v = \frac{\eta^2 s^2}{1 - (1 - \eta a)^2} = \frac{\eta^2 s^2}{\eta a(2 - \eta a)} = \frac{\eta\, s^2}{a(2 - \eta a)} \approx \frac{\eta}{2a} \cdot \frac{\sigma^2}{B}
+$$
+
+(근사는 $\eta a \ll 1$일 때.) 세 가지가 보인다.
+
+1. $v$는 0이 아니다. **고정 learning rate SGD는 최솟값에 도착하지 않고 그 주변에서 흔들린다.**
+2. 흔들림은 $\eta / B$에 비례한다. learning rate를 반으로 줄이거나 batch를 2배로 키우면 noise floor가 절반이 된다.
+3. 그래서 batch를 $k$배 키울 때 learning rate도 $k$배 키우면 noise 수준이 대략 유지된다. 이것을 **linear scaling rule**이라고 한다 (Goyal et al., 2017). 단 $\eta a$가 커지면 $(2 - \eta a)$ 항과 05번 레슨의 발산 경계 때문에 깨진다.
+
+### Learning rate schedule
+
+noise floor를 낮추려면 끝으로 갈수록 $\eta$를 줄이면 된다. 지금 많이 쓰는 것은 **linear warmup + cosine decay**다. 총 $T$ step, warmup $T_w$ step일 때
+
+$$
+\eta_t =
+\begin{cases}
+\eta_{\max} \cdot \dfrac{t}{T_w} & t < T_w \\[2ex]
+\eta_{\min} + \dfrac{1}{2}(\eta_{\max} - \eta_{\min})\left(1 + \cos\left(\pi \dfrac{t - T_w}{T - T_w}\right)\right) & t \ge T_w
+\end{cases}
+$$
+
+- **Warmup**: 학습 초반에는 weight가 무작위라 gradient가 크고 방향도 들쭉날쭉하고, Adam(08번 레슨) 같은 optimizer의 통계도 아직 안 쌓였다. 처음부터 큰 $\eta$를 쓰면 발산하기 쉽다. 작게 시작해서 키운다.
+- **Decay**: 끝에서 $\eta$를 줄여 noise floor를 낮춘다. cosine은 처음엔 천천히, 중간에 빠르게, 끝에서 다시 천천히 줄인다.
+
+## Worked example
+
+### 예제 1. 평균 구하기를 SGD로
+
+데이터 $x = \{1, 2, 3, 6\}$, 샘플별 loss $\ell_i(w) = \frac{1}{2}(w - x_i)^2$. 전체 loss의 최솟값은 평균 $w^* = 3$, 곡률 $a = 1$이다.
+
+**Step 1. 샘플별 gradient**: $\nabla \ell_i = w - x_i$. $w = 0$이면 $-1, -2, -3, -6$이고 평균(= full gradient)은 $-3$이다.
+
+**Step 2. 샘플 하나의 분산**: 평균과의 차이 $2, 1, 0, -3$, 제곱 $4, 1, 0, 9$, 평균 $\sigma^2 = 14/4 = 3.5$. (이 문제에서는 $w$와 상관없이 $\sigma^2 = \text{Var}(x)$다.)
+
+**Step 3. Batch size별 noise**
+
+| $B$ | 분산 $\sigma^2 / B$ | 표준편차 |
+|---|---|---|
+| 1 | 3.5 | 1.87 |
+| 4 | 0.875 | 0.935 |
+| 16 | 0.219 | 0.468 |
+
+full gradient가 $-3$인데 $B = 1$이면 표준편차가 1.87이다. 그래도 평균은 맞는 방향이다.
+
+**Step 4. Noise floor** ($a = 1$)
+
+$$
+v = \frac{\eta\, s^2}{2 - \eta}
+$$
+
+| $\eta$ | $B$ | $\eta / B$ | $v$ | 최솟값 주변 표준편차 |
+|---|---|---|---|---|
+| 0.1 | 1 | 0.1 | $0.1 \times 3.5 / 1.9 = 0.184$ | 0.43 |
+| 0.1 | 4 | 0.025 | $0.1 \times 0.875 / 1.9 = 0.046$ | 0.21 |
+| 0.05 | 1 | 0.05 | $0.05 \times 3.5 / 1.95 = 0.090$ | 0.30 |
+| 0.4 | 4 | 0.1 | $0.4 \times 0.875 / 1.6 = 0.219$ | 0.47 |
+
+첫 줄과 마지막 줄은 $\eta / B$가 같다(linear scaling). $v$가 0.184와 0.219로 비슷하지만 같지는 않다. $\eta a = 0.4$라 $(2 - \eta a)$ 근사가 덜 맞기 때문이다.
+
+### 예제 2. Warmup + cosine
+
+$\eta_{\max} = 3 \times 10^{-4}$, $\eta_{\min} = 3 \times 10^{-5}$, $T_w = 2000$, $T = 100{,}000$.
+
+- $t = 1000$: warmup 중. $3 \times 10^{-4} \times 1000/2000 = 1.5 \times 10^{-4}$
+- $t = 2000$: 최대 $3 \times 10^{-4}$
+- $t = 51{,}000$: decay 구간의 정확히 절반. $\cos(\pi/2) = 0$이므로 $3 \times 10^{-5} + \frac{1}{2}(2.7 \times 10^{-4}) = 1.65 \times 10^{-4}$
+- $t = 100{,}000$: $\cos \pi = -1$이므로 $\eta_{\min} = 3 \times 10^{-5}$
+
+## 코드
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+x = np.array([1, 2, 3, 6], dtype=float)   # 데이터. loss = mean of 0.5*(w - x_i)^2
+w_star, sigma2 = x.mean(), x.var()          # 최솟값 3, 샘플별 gradient 분산 3.5
+print(f"w*={w_star}, sigma^2={sigma2}")
+
+def sgd(lr, B, steps=200_000, burn=2_000):
+    w, trace = 0.0, []
+    for t in range(steps):
+        idx = rng.integers(0, len(x), size=B)      # 복원 추출 mini-batch
+        g = np.mean(w - x[idx])                    # mini-batch gradient
+        w -= lr * g
+        if t >= burn:
+            trace.append(w)
+    return np.var(trace)
+
+for lr, B in [(0.1, 1), (0.1, 4), (0.05, 1), (0.4, 4)]:
+    s2 = sigma2 / B
+    theory = lr * s2 / (2 - lr)                    # a = 1
+    print(f"lr={lr:<5} B={B}  Var(w) sim={sgd(lr, B):.4f}  theory={theory:.4f}")
+
+# gradient accumulation: micro-batch 4개 평균 == batch 16 한 번
+idx = rng.integers(0, len(x), size=16)
+w = 0.5
+g_big = np.mean(w - x[idx])
+g_acc = np.mean([np.mean(w - x[idx[i:i+4]]) for i in range(0, 16, 4)])
+print(f"batch 16 grad={g_big:.6f}  accumulated 4x4 grad={g_acc:.6f}")
+```
+
+```text
+w*=3.0, sigma^2=3.5
+lr=0.1   B=1  Var(w) sim=0.1815  theory=0.1842
+lr=0.1   B=4  Var(w) sim=0.0462  theory=0.0461
+lr=0.05  B=1  Var(w) sim=0.0901  theory=0.0897
+lr=0.4   B=4  Var(w) sim=0.2170  theory=0.2188
+batch 16 grad=-3.062500  accumulated 4x4 grad=-3.062500
+```
+
+볼 포인트:
+- 시뮬레이션과 유도한 공식이 소수 둘째 자리까지 맞는다.
+- 마지막 줄: micro-batch 4개의 gradient를 평균하면 batch 16 한 번과 **정확히 같다.** 메모리가 부족할 때 쓰는 gradient accumulation이 수학적으로 큰 batch와 동등한 이유다 (micro-batch 크기가 모두 같을 때).
+
+## 흔한 오해
+
+<Aside type="caution" title="Batch가 클수록 무조건 좋다?">
+noise는 $1/\sqrt{B}$로만 줄고 계산은 $B$배 든다. 어느 크기(critical batch size)를 넘으면 batch를 2배로 키워도 필요한 step 수가 거의 안 줄어서 계산만 낭비된다. GPU를 꽉 채울 만큼은 키우되, 그 이상은 이득이 줄어든다.
+</Aside>
+
+<Aside type="caution" title="SGD의 noise는 단점일 뿐이다?">
+noise 덕분에 날카로운 최솟값(sharp minimum)에서 튕겨 나와 넓은 최솟값으로 가는 경향이 있고, 넓은 최솟값이 일반화가 잘 된다는 관찰이 많다. 작은 batch가 regularization처럼 작동하기도 한다 (일반화 모듈).
+</Aside>
+
+<Aside type="caution" title="Epoch 수가 같으면 batch size와 상관없이 학습량이 같다?">
+계산량(본 샘플 수)은 같지만 step 수는 $N/B$라서 batch가 클수록 업데이트 횟수가 적다. linear scaling rule로 $\eta$를 같이 키우지 않으면 같은 epoch에서 덜 학습된다.
+</Aside>
+
+## Efficient ML 연결
+
+**Gradient accumulation과 on-device training.** 엣지 기기나 GPU 하나로 fine-tuning할 때는 activation 메모리 때문에 batch를 크게 못 잡는다. micro-batch를 여러 번 돌려 gradient를 더한 뒤 한 번 업데이트하면 위 코드처럼 큰 batch와 같은 gradient를 얻는다. 메모리는 micro-batch만큼, 시간은 큰 batch만큼 든다. MIT 6.5940의 on-device training(256KB 메모리로 학습하기, Lin et al., 2022)은 batch 1에 가까운 조건에서 학습을 성립시키는 문제다.
+
+**LLM pretraining의 batch.** LLM은 batch를 token 수로 센다(예: step당 수백만 token). 여러 GPU에 batch를 나눠 계산하는 data parallelism에서 GPU를 늘리면 global batch가 커지고, 그에 맞게 learning rate와 warmup을 조정해야 한다. 이때 쓰는 근거가 이 레슨의 $\eta / B$와 critical batch size다 (McCandlish et al., 2018).
+
+**Warmup + cosine은 거의 표준이다.** 공개된 LLM 학습 설정 대부분이 이 schedule이나 그 변형을 쓴다. QAT나 LoRA fine-tuning에서도 짧은 warmup 뒤 decay가 기본이다.
+
+## 체크 퀴즈
+
+<Quiz
+  q="데이터 x = 2, 4, 9이고 샘플별 loss가 0.5 × (w - x_i)²일 때, 복원 추출 batch size 2인 mini-batch gradient의 표준편차는?"
+  options={['약 4.33', '약 2.94', '약 2.08', '약 1.47']}
+  answer={2}
+  explain="샘플 하나의 gradient w - x_i의 분산은 Var(x) = (9 + 1 + 16) / 3 = 8.67. B = 2면 분산 8.67 / 2 = 4.33, 표준편차 √4.33 ≈ 2.08. 4.33은 분산에서 멈춘 값, 2.94는 B = 1의 표준편차, 1.47은 표준편차를 √B가 아니라 B로 나눈 값이다."
+/>
+
+<Quiz
+  q="batch size 256, learning rate 0.1로 SGD 학습이 잘 됐다. GPU를 늘려 batch를 2048로 키울 때 linear scaling rule이 권하는 learning rate는?"
+  options={['0.0125', '0.1', '약 0.283', '0.8']}
+  answer={3}
+  explain="batch가 8배이므로 learning rate도 8배, 0.8. noise floor가 η / B에 비례하므로 둘을 같은 비율로 바꾸면 noise 수준이 유지된다. 약 0.283은 √8배(square-root scaling)로 Adam 계열에서 가끔 쓰는 규칙이고, 0.0125는 반대로 나눈 값이다. 실제로는 이렇게 키울 때 warmup을 같이 써야 안정적이다."
+/>
+
+<Quiz
+  q="학습 데이터 50,000개, batch size 128로 10 epoch 학습하면 업데이트(step)는 몇 번인가? 마지막 batch는 작아도 버리지 않는다."
+  options={['391', '3,900', '3,910', '6,400,000']}
+  answer={2}
+  explain="epoch당 ceil(50,000 / 128) = 391 step, 10 epoch이면 3,910. 391은 1 epoch만 센 값, 3,900은 내림해서 마지막 작은 batch를 버린 값이다. 6,400,000은 B로 나눌 것을 곱한(128 × 50,000) 값이다."
+/>
+
+<Quiz
+  q="고정 learning rate SGD의 noise floor가 대략 η / B에 비례한다고 하자. 지금 η = 0.1, B = 32다. 다음 중 noise floor를 가장 많이 낮추는 변경은?"
+  options={['η = 0.05, B = 32', 'η = 0.4, B = 256', 'η = 0.1, B = 64', 'η = 0.1, B = 128']}
+  answer={3}
+  explain="η / B를 비교하면 원래 0.1 / 32에 대해 η = 0.05는 0.5배, (0.4, 256)은 0.4/256 ÷ 0.1/32 = 0.5배, B = 64는 0.5배, B = 128은 0.25배. learning rate를 키우면서 batch도 키운 (0.4, 256)은 batch 증가분의 절반을 learning rate가 상쇄한다."
+/>
+
+## 서술형
+
+### 문제. Noise floor를 원하는 크기로 맞추기
+
+예제 1의 데이터 $x = \{1, 2, 3, 6\}$, 샘플별 loss $\frac{1}{2}(w - x_i)^2$로 SGD를 돌린다.
+
+(a) 정상 상태 분산 $v = \dfrac{\eta\, s^2}{a(2 - \eta a)}$, $s^2 = \sigma^2 / B$를 직접 유도하라. 어떤 독립성 가정이 필요한가?
+
+(b) $\eta = 0.1$로 고정했을 때, 최솟값 주변 표준편차를 0.1 이하로 만들려면 batch size가 최소 얼마여야 하나?
+
+(c) 반대로 $B = 1$로 고정하면 learning rate를 얼마 이하로 줄여야 하나? (b)와 비교해서 수렴까지의 step 수 측면에서 어느 쪽이 유리한지 05번 레슨의 배율로 설명하라.
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** gradient = $a(w_t - w^*) + \xi_t$, 업데이트 $w_{t+1} = w_t - \eta(a e_t + \xi_t)$이므로 $e_{t+1} = (1 - \eta a)e_t - \eta \xi_t$.
+
+$\xi_t$가 $e_t$와 독립이고 평균 0이면 교차항 $\mathbb{E}[e_t \xi_t] = 0$이라서
+
+$$
+\text{Var}[e_{t+1}] = (1 - \eta a)^2 \text{Var}[e_t] + \eta^2 s^2
+$$
+
+필요한 가정: step $t$의 mini-batch가 과거 mini-batch(그래서 $e_t$)와 독립으로 새로 뽑힌다. 정상 상태 $v$를 대입하면
+
+$$
+v\left(1 - (1 - \eta a)^2\right) = \eta^2 s^2,\quad 1 - (1 - \eta a)^2 = \eta a (2 - \eta a) \;\Rightarrow\; v = \frac{\eta s^2}{a(2 - \eta a)}
+$$
+
+**(b)** 표준편차 0.1이면 $v \le 0.01$. $a = 1$, $\eta = 0.1$:
+
+$$
+\frac{0.1 \times 3.5 / B}{1.9} \le 0.01 \;\Rightarrow\; B \ge \frac{0.1 \times 3.5}{0.019} = 18.4
+$$
+
+$B = 19$ 이상.
+
+**(c)** $B = 1$이면
+
+$$
+\frac{3.5\eta}{2 - \eta} \le 0.01 \;\Rightarrow\; 3.5\eta \le 0.02 - 0.01\eta \;\Rightarrow\; \eta \le \frac{0.02}{3.51} \approx 0.0057
+$$
+
+수렴 속도: 오차의 평균은 05번 레슨처럼 매 step $(1 - \eta a)$배가 된다. $\eta = 0.1$이면 0.9배라서 초기 오차 3을 0.1 수준으로 줄이는 데 $\ln 30 / \ln(1/0.9) \approx 32$ step이면 된다. $\eta = 0.0057$이면 0.9943배라 $\ln 30 / 0.0057 \approx 600$ step 가까이 걸린다.
+
+계산량(본 샘플 수)으로 보면 (b)는 $32 \times 19 \approx 600$개, (c)는 약 600개로 비슷하다. 차이는 **(b)는 19개를 병렬로 한 번에 계산할 수 있어서 step 수(= 순차 시간)가 20배 가까이 적다**는 것이다. GPU에서 batch를 키우는 이유가 이것이다. 실제로는 (c)처럼 처음엔 큰 $\eta$, 끝에서 작은 $\eta$를 쓰는 schedule이 둘의 장점을 섞는다.
+
+</details>
+
+## 더 읽을거리
+
+- [Accurate, Large Minibatch SGD: Training ImageNet in 1 Hour (Goyal et al., 2017)](https://arxiv.org/abs/1706.02677): linear scaling rule과 warmup
+- [An Empirical Model of Large-Batch Training (McCandlish et al., 2018)](https://arxiv.org/abs/1812.06162): critical batch size
+- [SGDR: Stochastic Gradient Descent with Warm Restarts (Loshchilov & Hutter, 2016)](https://arxiv.org/abs/1608.03983): cosine schedule
+- [On-Device Training Under 256KB Memory (Lin et al., 2022)](https://arxiv.org/abs/2206.15472)

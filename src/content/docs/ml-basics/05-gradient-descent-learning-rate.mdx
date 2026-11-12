@@ -1,0 +1,304 @@
+---
+title: "Gradient descent와 learning rate"
+description: "2차식 loss에서 GD가 언제 수렴하고 언제 발산하는지 유도하고, condition number가 속도를 정한다는 것 보기"
+track: ml-basics
+module: optimization
+est: 35min
+prereq: [ml-basics/02-closed-form-vs-numerical]
+sidebar:
+  order: 5
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+01번 레슨에서 learning rate $\eta = 0.05$로 gradient descent를 돌렸더니 382 걸음이 걸렸다. 0.1로 올리면 빨라질까? 0.2면? 실제로 해보면 어느 값부터는 loss가 줄지 않고 **폭발**한다. learning rate는 딥러닝에서 가장 먼저 튜닝하는 hyperparameter인데, "적당히 작게"라는 감으로만 고르면 학습이 느리거나 터진다. 이 레슨에서는 2차식 loss에서 그 경계를 정확히 유도한다. 신경망도 최솟값 근처에서는 2차식처럼 보이기 때문에 이 결론이 그대로 쓰인다.
+
+## 직관: 골짜기에서 공 굴리기
+
+loss 표면을 골짜기라고 생각하자. 한 방향(가로)은 완만하고, 다른 방향(세로)은 가파르다.
+
+```text
+     세로(가파름, 곡률 큼)
+        │
+   ─────┼──────────────────────────── 가로(완만, 곡률 작음)
+        │
+ η 작음:  ● → → → → → → → → → → → ★     세로는 금방 끝, 가로는 한참 걸림
+ η 적당:  ●╲╱╲╱╲╱→→→→→★                   세로로 약간 튀면서 가로로 빨리 감
+ η 너무 큼: ●  ╲    ╱      ╲         ╱     세로로 점점 크게 튀어서 발산
+```
+
+- 걸음 크기는 **가장 가파른 방향**이 정한다. 거기서 너무 크게 가면 반대쪽 벽으로 넘어가고, 넘어간 거리가 점점 커지면 발산한다.
+- 속도는 **가장 완만한 방향**이 정한다. 거기서는 gradient가 작아서 조금씩밖에 못 간다.
+- 두 방향의 곡률 차이가 크면(찌그러진 골짜기) 작은 learning rate를 써야 하는데 완만한 방향은 그 작은 걸음으로 가야 하니 느리다.
+
+## 정식 설명
+
+### 용어
+
+**Learning rate (학습률, step size)** $\eta$: gradient 방향으로 한 번에 얼마나 움직일지 정하는 양수.
+*The scalar that multiplies the gradient in each update.*
+
+**Hessian (헤시안)** $H$: loss의 2차 편미분을 모은 행렬. $H_{ij} = \partial^2 L / \partial w_i \partial w_j$. 각 방향의 곡률(curvature)을 담는다.
+*The matrix of second partial derivatives; it encodes curvature.*
+
+**Smoothness constant (매끄러움 상수)** $L$: Hessian의 가장 큰 eigenvalue. 가장 가파른 방향의 곡률.
+*The largest eigenvalue of the Hessian (the largest curvature).*
+
+**Strong convexity constant** $\mu$: Hessian의 가장 작은 eigenvalue. 가장 완만한 방향의 곡률.
+*The smallest eigenvalue of the Hessian.*
+
+**Condition number (조건수)** $\kappa = L / \mu$: 골짜기가 얼마나 찌그러졌는지. 1이면 동그란 그릇이다.
+*The ratio of the largest to smallest curvature.*
+
+**Sharpness**: 딥러닝 논문에서 Hessian의 최대 eigenvalue를 부르는 이름. $L$과 같은 것이다.
+
+### 1차원부터
+
+$L(w) = \frac{a}{2}(w - w^*)^2$, $a > 0$이라고 하자. gradient는 $a(w - w^*)$이므로
+
+$$
+w_{t+1} = w_t - \eta a (w_t - w^*)
+$$
+
+오차 $e_t = w_t - w^*$로 쓰면
+
+$$
+e_{t+1} = (1 - \eta a)\, e_t \quad\Rightarrow\quad e_t = (1 - \eta a)^t e_0
+$$
+
+오차가 매 걸음 $(1 - \eta a)$배가 된다. 수렴하려면 $\lvert 1 - \eta a \rvert < 1$, 즉
+
+$$
+0 < \eta < \frac{2}{a}
+$$
+
+구간별로 보면
+
+| $\eta a$ | 배율 $1 - \eta a$ | 동작 |
+|---|---|---|
+| $0 \sim 1$ | $0 \sim 1$ | 한쪽에서 단조롭게 다가감 |
+| $= 1$ | $0$ | 한 걸음에 도착 ($\eta = 1/a$는 Newton step) |
+| $1 \sim 2$ | $-1 \sim 0$ | 반대편으로 넘어갔다 돌아오며(진동) 수렴 |
+| $> 2$ | $< -1$ | 진동 폭이 커지면서 발산 |
+
+### 여러 차원: eigen 방향으로 쪼개기
+
+$L(\mathbf{w}) = \frac{1}{2}(\mathbf{w} - \mathbf{w}^*)^\top H (\mathbf{w} - \mathbf{w}^*)$, $H$는 대칭 positive definite다. gradient는 $H(\mathbf{w} - \mathbf{w}^*)$이므로
+
+$$
+\mathbf{e}_{t+1} = (I - \eta H)\, \mathbf{e}_t
+$$
+
+$H = Q \Lambda Q^\top$로 eigen 분해하고 $\mathbf{z} = Q^\top \mathbf{e}$로 좌표를 돌리면 각 성분이 따로 움직인다.
+
+$$
+z_{i,\,t+1} = (1 - \eta \lambda_i)\, z_{i,\,t}
+$$
+
+즉 **eigen 방향마다 1차원 문제가 하나씩** 있다. 모든 방향이 수렴하려면 가장 큰 $\lambda$에서 조건이 맞아야 한다.
+
+$$
+\boxed{0 < \eta < \frac{2}{L}}, \qquad L = \lambda_{\max}(H)
+$$
+
+### 가장 좋은 learning rate와 수렴 속도
+
+전체 오차는 가장 느린 방향이 정한다. 배율의 최댓값 $\max_i \lvert 1 - \eta\lambda_i \rvert$은 양 끝 $\lambda = \mu$, $\lambda = L$에서 정해진다. 이 둘을 같게 맞추면($1 - \eta\mu = \eta L - 1$) 최악의 경우가 가장 작아진다.
+
+$$
+\eta^* = \frac{2}{L + \mu}, \qquad
+\text{배율} = \frac{L - \mu}{L + \mu} = \frac{\kappa - 1}{\kappa + 1}
+$$
+
+자주 쓰는 안전한 선택 $\eta = 1/L$이면 배율은 $1 - \mu / L = 1 - 1/\kappa$다. 어느 쪽이든 **$\kappa$가 크면 배율이 1에 가까워져서 느리다.** 오차를 $\varepsilon$배로 줄이는 데 필요한 걸음 수는 대략
+
+$$
+t \approx \kappa \ln(1/\varepsilon)
+$$
+
+로($\eta = 1/L$일 때) $\kappa$에 비례한다.
+
+### MSE의 Hessian
+
+02번 레슨에서 MSE의 Hessian이 $H = \frac{2}{N}X^\top X$였다. 그래서 linear regression의 learning rate 상한과 속도는 **데이터 행렬 $X$의 모양**이 정한다. feature 단위가 크거나 feature끼리 상관이 크면 $\kappa$가 커진다. feature를 standardize하면(평균 0, 분산 1) $\kappa$가 1에 가까워진다.
+
+## Worked example
+
+### 예제 1. 찌그러진 그릇
+
+$L(w_1, w_2) = \frac{1}{2}(1 \cdot w_1^2 + 10 \cdot w_2^2)$, 최솟값 $(0, 0)$, 시작점 $(10, 1)$.
+
+$H = \text{diag}(1, 10)$이므로 $\mu = 1$, $L = 10$, $\kappa = 10$, 발산 경계 $2/L = 0.2$, 최적 $\eta^* = 2/11 \approx 0.182$.
+
+각 좌표의 배율은 $(1 - \eta \cdot 1,\; 1 - \eta \cdot 10)$이다.
+
+| $\eta$ | $w_1$ 배율 | $w_2$ 배율 | 처음 세 걸음 | $\lvert w \rvert_\infty < 0.01$까지 |
+|---|---|---|---|---|
+| 0.1 | 0.9 | 0 | (9, 0) → (8.1, 0) → (7.29, 0) | 66 걸음 |
+| 2/11 | 0.818 | −0.818 | (8.18, −0.82) → (6.69, 0.67) → (5.48, −0.55) | 35 걸음 |
+| 0.19 | 0.81 | −0.9 | (8.1, −0.9) → (6.56, 0.81) → (5.31, −0.73) | 44 걸음 |
+| 0.21 | 0.79 | −1.1 | (7.9, −1.1) → (6.24, 1.21) → (4.93, −1.33) | 발산 |
+
+읽는 법:
+- $\eta = 0.1$은 $w_2$에 대해 정확히 $1/\lambda_2$라서 한 걸음에 $w_2 = 0$이 된다. 그런데 $w_1$은 매번 0.9배밖에 안 줄어서 66 걸음이 걸린다. $10 \times 0.9^{k} < 0.01$을 풀면 $k > \ln 1000 / \ln(1/0.9) = 65.6$.
+- $\eta^*$는 $w_2$를 진동시키는 대신 $w_1$을 빨리 줄인다. 두 배율의 절댓값이 0.818로 같다.
+- $\eta = 0.19$는 $w_2$ 진동이 0.9배로 느리게 줄어서 오히려 손해다. 경계 0.2 바로 아래는 위험하다.
+- $\eta = 0.21$은 $w_2$가 매번 −1.1배라서 발산한다. $w_1$은 잘 줄고 있는데도 전체는 터진다.
+
+### 예제 2. 01번 레슨이 왜 382 걸음이었나
+
+데이터 $(1,3), (2,5), (3,6), (4,9)$, 02번 레슨에서 $X^\top X = \begin{bmatrix} 30 & 10 \\ 10 & 4 \end{bmatrix}$였다.
+
+**Step 1. Hessian**: $H = \frac{2}{4} X^\top X = \begin{bmatrix} 15 & 5 \\ 5 & 2 \end{bmatrix}$
+
+**Step 2. Eigenvalue**: trace $= 17$, det $= 30 - 25 = 5$.
+
+$$
+\lambda = \frac{17 \pm \sqrt{17^2 - 4 \cdot 5}}{2} = \frac{17 \pm 16.40}{2} \;\Rightarrow\; L \approx 16.70,\; \mu \approx 0.299
+$$
+
+**Step 3. 해석**: $\kappa \approx 55.8$. 발산 경계 $2/L \approx 0.120$. $\eta = 0.05$이면 느린 방향 배율이 $1 - 0.05 \times 0.299 \approx 0.985$라서 매 걸음 오차가 1.5%밖에 안 줄어든다. 그래서 382 걸음이다.
+
+**Step 4. 원인**: $x$가 1~4로 모두 양수라서 $w$ 열과 bias 열(전부 1)이 강하게 상관돼 있다. 서술형에서 standardize하면 어떻게 되는지 계산한다.
+
+## 코드
+
+```python
+import numpy as np
+
+# 01번 레슨 데이터
+X = np.array([[1, 1], [2, 1], [3, 1], [4, 1]], dtype=float)
+y = np.array([3, 5, 6, 9], dtype=float)
+w_star = np.linalg.solve(X.T @ X, X.T @ y)          # [1.9, 1.0]
+
+H = (2 / len(y)) * X.T @ X
+mu, L = np.linalg.eigvalsh(H)
+print(f"mu={mu:.3f}  L={L:.3f}  kappa={L/mu:.1f}  2/L={2/L:.4f}")
+
+def run_gd(lr, max_steps=20000):
+    w = np.zeros(2)
+    for k in range(1, max_steps + 1):
+        w -= lr * (2 / len(y)) * X.T @ (X @ w - y)
+        if np.abs(w - w_star).max() < 1e-3:
+            return f"{k} steps"
+        if np.abs(w).max() > 1e6:
+            return f"diverged at step {k}"
+    return "not converged"
+
+for lr in [0.05, 0.1, 0.11, 0.119, 0.12, 0.125]:
+    print(f"lr={lr:<6} -> {run_gd(lr)}")
+```
+
+```text
+mu=0.299  L=16.701  kappa=55.8  2/L=0.1198
+lr=0.05   -> 382 steps
+lr=0.1    -> 190 steps
+lr=0.11   -> 172 steps
+lr=0.119  -> 599 steps
+lr=0.12   -> diverged at step 3228
+lr=0.125  -> diverged at step 157
+```
+
+볼 포인트:
+- 경계 $2/L \approx 0.1198$ 바로 아래(0.119)는 수렴은 하지만 빠른 방향이 거의 −1배로 진동해서 오히려 느리다.
+- 0.12는 경계를 아주 조금 넘었다. 배율이 $1 - 0.12 \times 16.70 \approx -1.004$라 3000 걸음 넘게 버티다가 발산한다. "처음 몇 걸음 괜찮으니 괜찮다"가 아니다.
+- 이 데이터에서 $\eta^* = 2/(L + \mu) \approx 0.118$로 돌리면 212 걸음이 걸린다. 0.11(172 걸음)보다 느린 이유는 $\eta^*$가 **최악의 시작점** 기준으로 최적이기 때문이다. 실제 시작점에서 오차가 어느 eigen 방향에 많이 실려 있느냐에 따라 달라진다.
+
+## 흔한 오해
+
+<Aside type="caution" title="Learning rate는 작을수록 안전하고 좋다?">
+안전하긴 하지만 느리다. 수렴 속도는 대략 $\eta \mu$에 비례하므로 $\eta$를 10배 줄이면 걸음 수가 10배 는다. 경계 $2/L$의 절반 정도가 대개 좋은 출발점이다.
+</Aside>
+
+<Aside type="caution" title="Loss가 처음에 줄었으니 발산하지 않는다?">
+가파른 방향의 배율이 −1.004처럼 −1을 살짝 넘으면, 완만한 방향의 큰 오차가 줄어드는 동안 loss가 계속 내려가 보인다. 가파른 방향 성분이 충분히 커진 뒤에 갑자기 터진다. 위 코드의 lr=0.12가 3228 걸음에서 발산한 게 그 예다.
+</Aside>
+
+<Aside type="caution" title="Gradient가 크면 learning rate를 키워야 한다?">
+반대다. gradient 크기가 아니라 곡률(Hessian eigenvalue)이 learning rate 상한을 정한다. 곡률이 큰 곳에서는 gradient가 빠르게 변하므로 걸음을 줄여야 한다.
+</Aside>
+
+## Efficient ML 연결
+
+**Edge of stability.** 신경망을 full-batch GD로 학습하면 sharpness(Hessian 최대 eigenvalue)가 올라가다가 **정확히 $2/\eta$ 근처에서 멈춘다**는 관찰이 있다 (Cohen et al., 2021). 이 레슨의 발산 경계 $\eta < 2/L$을 뒤집은 것이다. learning rate가 모델이 도달할 수 있는 sharpness를 제한한다.
+
+**Hessian과 quantization.** sharpness가 큰 layer는 weight를 조금만 흔들어도 loss가 크게 변한다. quantization은 weight에 작은 오차를 더하는 것이므로, HAWQ 계열 mixed-precision 방법은 layer별 Hessian 최대 eigenvalue를 보고 **sharp한 layer에 bit를 더 준다.** 이 레슨의 $\frac{1}{2}\lambda e^2$이 오차 $e$가 만드는 loss 증가량이다.
+
+**Conditioning과 normalization.** feature를 standardize하면 $\kappa$가 줄어 learning rate를 크게 쓸 수 있었다. 신경망 안에서 같은 일을 하는 게 BatchNorm, LayerNorm이다 (deep-learning 트랙). LLM fine-tuning이나 QAT(quantization-aware training)에서 learning rate를 pretraining보다 훨씬 작게 잡는 것도 이미 날카로운 최솟값 근처에서 시작하기 때문이다.
+
+## 체크 퀴즈
+
+<Quiz
+  q="L(w1, w2) = 0.5 × (2·w1² + 8·w2²)에 gradient descent를 쓸 때, 수렴하는 learning rate의 상한은?"
+  options={['0.25', '1', '0.125', '0.2']}
+  answer={0}
+  explain="Hessian은 diag(2, 8), L = 8이므로 상한은 2 / 8 = 0.25. 1은 작은 eigenvalue로 계산한 2 / 2이고, 이러면 w2 방향이 발산한다. 0.125는 1 / L로 안전한 선택이지 상한이 아니다. 0.2는 최적 learning rate 2 / (L + μ)다."
+/>
+
+<Quiz
+  q="같은 loss L(w1, w2) = 0.5 × (2·w1² + 8·w2²)에서 최악의 경우를 가장 빠르게 만드는 learning rate와, 그때 오차가 매 걸음 몇 배가 되는지는?"
+  options={['η = 0.25, 0.5배', 'η = 0.125, 0.75배', 'η = 0.2, 0.25배', 'η = 0.2, 0.6배']}
+  answer={3}
+  explain="η* = 2 / (L + μ) = 2 / 10 = 0.2. 배율은 (κ - 1) / (κ + 1) = (4 - 1) / (4 + 1) = 0.6. 확인: 1 - 0.2 × 2 = 0.6, 1 - 0.2 × 8 = -0.6. η = 0.125(= 1/L)이면 배율 1 - 2/8 = 0.75로 더 느리다. η = 0.25면 w2 방향 배율이 -1이라 수렴하지 않는다."
+/>
+
+<Quiz
+  q="L(w) = 3(w - 2)², 시작점 w = 0, learning rate 0.2로 gradient descent 두 걸음 후 w는?"
+  options={['2.4', '2.08', '1.92', '1.68']}
+  answer={2}
+  explain="gradient = 6(w - 2), 오차 배율 = 1 - 0.2 × 6 = -0.2. 오차 -2 → 0.4 → -0.08이므로 w = 2.4 → 1.92. 2.4는 한 걸음만 간 값, 2.08은 부호를 틀린 값이다. 1.68은 미분에서 2를 빼먹어 gradient를 3(w - 2)로 쓴 경우(배율 0.4)다."
+/>
+
+<Quiz
+  q="linear regression y = wx + b에서 x의 단위를 m에서 mm로 바꿨다(값이 1000배). bias 쪽은 그대로라고 할 때, w 방향 곡률과 쓸 수 있는 learning rate 상한은 어떻게 되나?"
+  options={['곡률 1000배, 상한 1/1000배', '변하지 않는다', '곡률 10^6배, 상한 1/10^6배', '곡률 1/1000배, 상한 1000배']}
+  answer={2}
+  explain="w 방향 곡률은 (2/N) Σ x² 이라 x가 1000배면 10^6배가 된다. 상한 2/L은 대략 1/10^6배로 줄어든다. x에 1차로 비례한다고 생각하면 1000배를 고르게 되는데, Hessian에는 x가 제곱으로 들어간다. 그래서 feature 단위 하나가 condition number를 크게 망친다."
+/>
+
+## 서술형
+
+### 문제. Standardize하면 몇 걸음이면 되나
+
+01번 레슨 데이터 $(1, 3), (2, 5), (3, 6), (4, 9)$에서 입력을 $x' = (x - \bar{x}) / \sigma_x$로 바꾼다 ($\sigma_x$는 모집단 표준편차, 즉 $N$으로 나눈 것).
+
+(a) $\bar{x}$, $\sigma_x$를 구하고 $\sum x'_i$, $\sum x'^2_i$를 구하라.
+
+(b) 모델 $y = w' x' + b$의 MSE Hessian을 구하고 $\kappa$를 구하라. 원래 데이터의 $\kappa \approx 55.8$과 비교하라.
+
+(c) 이 Hessian에서 최적 learning rate는 얼마이고, 그 값으로 gradient descent를 하면 몇 걸음 만에 정확한 해에 도착하나? 이유를 배율로 설명하라.
+
+(d) 찾은 $w', b$를 원래 단위의 $w, b$로 바꿔서 02번 레슨의 해($w = 1.9$, $b = 1.0$)와 같은지 확인하라.
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** $\bar{x} = 10/4 = 2.5$. 편차 $-1.5, -0.5, 0.5, 1.5$, 제곱합 $2.25 + 0.25 + 0.25 + 2.25 = 5$, 분산 $5/4 = 1.25$, $\sigma_x = \sqrt{1.25} \approx 1.118$.
+
+standardize했으므로 정의상 $\sum x'_i = 0$이고 $\sum x'^2_i = N \cdot 1 = 4$다.
+
+**(b)** $X'^\top X' = \begin{bmatrix} \sum x'^2 & \sum x' \\ \sum x' & N \end{bmatrix} = \begin{bmatrix} 4 & 0 \\ 0 & 4 \end{bmatrix}$
+
+$$
+H = \frac{2}{4} X'^\top X' = \begin{bmatrix} 2 & 0 \\ 0 & 2 \end{bmatrix}
+$$
+
+두 eigenvalue가 모두 2이므로 $\kappa = 1$. 원래 55.8에서 1로 줄었다. 평균을 빼서 $w$ 열과 bias 열의 상관(비대각 원소)이 없어졌고, 표준편차로 나눠서 두 방향의 곡률이 같아졌다.
+
+**(c)** $\eta^* = 2/(L + \mu) = 2/4 = 0.5$. 배율이 $1 - 0.5 \times 2 = 0$이므로 **한 걸음**에 도착한다. $\kappa = 1$이면 모든 방향 곡률이 같아서 $\eta = 1/\lambda$ 하나로 모든 방향을 동시에 한 번에 맞출 수 있다.
+
+**(d)** 한 걸음 후의 값은 normal equation 해와 같다. $b = \bar{y} = 23/4 = 5.75$, $w' = \sum x'_i y_i / \sum x'^2_i$.
+
+$\sum (x_i - \bar{x}) y_i = -1.5 \times 3 - 0.5 \times 5 + 0.5 \times 6 + 1.5 \times 9 = -4.5 - 2.5 + 3 + 13.5 = 9.5$이므로 $\sum x'_i y_i = 9.5 / 1.118 \approx 8.497$, $w' \approx 2.124$.
+
+원래 단위로: $y = w'(x - 2.5)/\sigma_x + 5.75$이므로 $w = w'/\sigma_x = 2.124 / 1.118 = 1.9$, $b = 5.75 - 1.9 \times 2.5 = 1.0$. 02번 레슨과 같다.
+
+</details>
+
+## 더 읽을거리
+
+- [Why Momentum Really Works (Goh, Distill 2017)](https://distill.pub/2017/momentum/): 이 레슨의 eigen 분해 그림을 인터랙티브로 볼 수 있다. 다음 레슨들의 momentum도 같이 다룬다.
+- [Gradient Descent on Neural Networks Typically Occurs at the Edge of Stability (Cohen et al., 2021)](https://arxiv.org/abs/2103.00065)
+- [HAWQ: Hessian AWare Quantization of Neural Networks with Mixed-Precision (Dong et al., 2019)](https://arxiv.org/abs/1905.03696)

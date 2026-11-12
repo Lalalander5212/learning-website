@@ -1,0 +1,321 @@
+---
+title: "Momentum"
+description: "과거 gradient를 누적하는 heavy ball 방법을 유도하고, 수렴 속도가 κ가 아니라 √κ에 비례하게 되는 이유 보기"
+track: ml-basics
+module: optimization
+est: 30min
+prereq: [ml-basics/05-gradient-descent-learning-rate]
+sidebar:
+  order: 7
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+05번 레슨에서 gradient descent의 걸음 수는 condition number $\kappa$에 비례했다. 가파른 방향 때문에 learning rate를 크게 못 잡고, 그 작은 걸음으로 완만한 방향을 기어가야 했다. 그 과정을 보면 가파른 방향에서는 gradient 부호가 매번 바뀌며 **지그재그**로 왔다 갔다 하고, 완만한 방향에서는 매번 **같은 방향**의 작은 gradient가 나온다. 과거 gradient를 더해 두면 지그재그는 서로 상쇄되고 같은 방향은 쌓인다. 이것이 momentum이고, 걸음 수를 $\kappa$에서 $\sqrt{\kappa}$ 수준으로 줄인다. 오늘날 SGD를 쓴다면 거의 항상 momentum과 같이 쓴다.
+
+## 직관: 무거운 공
+
+gradient descent는 매 순간 발밑 경사만 보고 움직이는, 관성이 없는 점이다. momentum은 **무거운 공**이다. 속도를 기억하고 있어서
+
+```text
+GD (관성 없음)                     Momentum (무거운 공)
+
+ ╲  ╱╲  ╱╲  ╱╲  ╱                   ╲   ╱‾‾╲__
+  ╲╱  ╲╱  ╲╱  ╲╱→→→ ★               ╲_╱      ‾‾‾───────→ ★
+ 가파른 방향: 매번 튐                  가파른 방향: 반대 부호끼리 상쇄
+ 완만한 방향: 매번 같은 작은 걸음        완만한 방향: 같은 부호가 쌓여 가속
+```
+
+- 같은 방향 gradient가 계속 오면 속도가 붙는다 (최대 $1/(1 - \beta)$배).
+- 부호가 번갈아 오면 서로 깎아 먹어서 진동이 줄어든다.
+
+## 정식 설명
+
+### 용어
+
+**Momentum (모멘텀, 관성)**: 과거 gradient의 지수 가중 합을 속도로 들고 다니며 업데이트하는 방법. Polyak의 heavy ball method라고도 한다.
+*An update that accumulates an exponentially decaying sum of past gradients.*
+
+**Momentum coefficient** $\beta$: 이전 속도를 얼마나 남길지 정하는 값. $0 \le \beta < 1$, 보통 0.9.
+
+**Velocity (속도)** $\mathbf{v}$: 누적된 gradient. 업데이트 방향이 된다.
+
+**Exponential moving average, EMA (지수 이동 평균)**: $m_t = \beta m_{t-1} + (1 - \beta) x_t$처럼 과거 값에 $\beta^k$ 가중치를 주는 평균.
+*An average that weights a value from k steps ago by β^k.*
+
+**Nesterov momentum (네스테로프 모멘텀)**: 현재 위치가 아니라 속도만큼 미리 가 본 위치에서 gradient를 계산하는 momentum 변형.
+
+### 업데이트 식
+
+PyTorch `torch.optim.SGD(momentum=β)`가 쓰는 형식이다.
+
+$$
+\mathbf{v}_{t+1} = \beta\, \mathbf{v}_t + \nabla L(\mathbf{w}_t), \qquad
+\mathbf{w}_{t+1} = \mathbf{w}_t - \eta\, \mathbf{v}_{t+1}
+$$
+
+$\mathbf{v}_0 = 0$에서 풀어 쓰면
+
+$$
+\mathbf{v}_{t+1} = \nabla L_t + \beta \nabla L_{t-1} + \beta^2 \nabla L_{t-2} + \cdots = \sum_{k=0}^{t} \beta^k \nabla L_{t-k}
+$$
+
+$k$ step 전 gradient는 $\beta^k$만큼 줄어서 들어간다. $\beta = 0.9$면 대략 최근 $1/(1-\beta) = 10$ step을 기억한다.
+
+**같은 gradient가 계속 오면** ($\nabla L = \mathbf{g}$ 고정) $\mathbf{v} \to \mathbf{g}(1 + \beta + \beta^2 + \cdots) = \dfrac{\mathbf{g}}{1 - \beta}$. 실질 learning rate가 $\dfrac{\eta}{1 - \beta}$가 된다. $\beta = 0.9$면 10배다.
+
+**부호가 번갈아 오면** ($+\mathbf{g}, -\mathbf{g}, +\mathbf{g}, \dots$) 정상 상태에서 $\lvert \mathbf{v} \rvert \to \dfrac{\lvert \mathbf{g} \rvert}{1 + \beta}$. $\beta = 0.9$면 0.53배로 줄어든다.
+
+(교재에 따라 $\mathbf{v}_{t+1} = \beta \mathbf{v}_t + (1 - \beta)\nabla L$처럼 EMA 형식으로 쓰기도 한다. 이 경우 $\mathbf{v}$가 $(1 - \beta)$배 작으므로 같은 동작을 하려면 $\eta$가 $1/(1 - \beta)$배 커야 한다. 논문과 코드의 learning rate를 비교할 때 조심한다.)
+
+### 2차식에서의 분석
+
+05번 레슨처럼 eigen 방향 하나(곡률 $a$, 오차 $e$)만 보자. gradient가 $a e_t$이므로
+
+$$
+v_{t+1} = \beta v_t + a e_t, \qquad e_{t+1} = e_t - \eta v_{t+1} = (1 - \eta a)e_t - \eta\beta v_t
+$$
+
+상태 $(e, v)$에 대한 2×2 선형 시스템이다.
+
+$$
+\begin{bmatrix} e_{t+1} \\ v_{t+1} \end{bmatrix} =
+\underbrace{\begin{bmatrix} 1 - \eta a & -\eta\beta \\ a & \beta \end{bmatrix}}_{M}
+\begin{bmatrix} e_t \\ v_t \end{bmatrix}
+$$
+
+오차는 $M$의 eigenvalue $\lambda$의 크기(절댓값)만큼씩 줄어든다. $\text{tr}\,M = 1 + \beta - \eta a$, $\det M = \beta(1 - \eta a) + \eta\beta a = \beta$이므로 특성방정식은
+
+$$
+\lambda^2 - (1 + \beta - \eta a)\lambda + \beta = 0
+$$
+
+**핵심 관찰**: 두 근의 곱이 $\beta$다. 근이 복소수(켤레)면 두 근의 크기가 같으므로 $\lvert\lambda\rvert^2 = \beta$, 즉
+
+$$
+\lvert\lambda\rvert = \sqrt{\beta}
+$$
+
+곡률 $a$와 무관하다.
+
+근이 복소수가 될 조건은 판별식 $(1 + \beta - \eta a)^2 < 4\beta$, 정리하면
+
+$$
+(1 - \sqrt{\beta})^2 < \eta a < (1 + \sqrt{\beta})^2
+$$
+
+이 구간 안의 모든 방향은 곡률이 얼마든 **같은 속도 $\sqrt{\beta}$로** 수렴한다. 그러니 가장 작은 곡률 $\mu$와 가장 큰 곡률 $L$이 이 구간의 양 끝에 오도록 맞추면 된다.
+
+$$
+\sqrt{\eta\mu} = 1 - \sqrt{\beta}, \qquad \sqrt{\eta L} = 1 + \sqrt{\beta}
+$$
+
+두 식을 더하면 $\sqrt{\eta}(\sqrt{L} + \sqrt{\mu}) = 2$, 빼면 $\sqrt{\eta}(\sqrt{L} - \sqrt{\mu}) = 2\sqrt{\beta}$이므로
+
+$$
+\boxed{\eta^* = \frac{4}{(\sqrt{L} + \sqrt{\mu})^2}, \qquad \sqrt{\beta^*} = \frac{\sqrt{\kappa} - 1}{\sqrt{\kappa} + 1}}
+$$
+
+배율이 $\dfrac{\sqrt{\kappa} - 1}{\sqrt{\kappa} + 1}$이다. 05번 레슨 GD의 $\dfrac{\kappa - 1}{\kappa + 1}$에서 $\kappa$가 $\sqrt{\kappa}$로 바뀌었다. 걸음 수가 $\kappa$ 대신 $\sqrt{\kappa}$에 비례한다. $\kappa = 100$이면 대략 10배 빠르다.
+
+**발산 경계도 넓어진다.** $\lvert\lambda\rvert < 1$일 조건($\beta < 1$일 때)은 $\lvert 1 + \beta - \eta a\rvert < 1 + \beta$, 즉 $0 < \eta a < 2(1 + \beta)$다. GD의 $\eta < 2/L$보다 $(1 + \beta)$배 큰 learning rate까지 쓸 수 있다.
+
+### Nesterov momentum
+
+$$
+\mathbf{v}_{t+1} = \beta \mathbf{v}_t + \nabla L(\mathbf{w}_t - \eta\beta \mathbf{v}_t), \qquad
+\mathbf{w}_{t+1} = \mathbf{w}_t - \eta \mathbf{v}_{t+1}
+$$
+
+"어차피 관성으로 $\eta\beta\mathbf{v}_t$만큼 갈 테니, 거기서 gradient를 보자"는 것이다. 지나치기 직전에 미리 브레이크를 밟는 효과가 있어서 진동이 덜하다. 2차식에서의 최적 속도는 heavy ball과 같은 $\sqrt{\kappa}$ 차수이고, convex 함수 일반에서는 Nesterov만 이 속도가 이론적으로 보장된다.
+
+## Worked example
+
+### 예제 1. 속도 쌓이는 과정
+
+$\beta = 0.9$, gradient가 계속 1이면 $v_1 = 1$, $v_2 = 0.9 + 1 = 1.9$, $v_3 = 1.71 + 1 = 2.71$, … $\to 10$. 부호가 $+1, -1, \dots$로 번갈아 오면 $v$는 $\pm 0.526$ 근처로 수렴한다 ($1/1.9$).
+
+### 예제 2. 05번 레슨의 찌그러진 그릇
+
+$L(w_1, w_2) = \frac{1}{2}(w_1^2 + 10w_2^2)$, $\mu = 1$, $L = 10$, $\kappa = 10$, 시작점 $(10, 1)$.
+
+**Step 1. 최적 파라미터**: $\sqrt{\kappa} = 3.162$
+
+$$
+\sqrt{\beta^*} = \frac{2.162}{4.162} = 0.519, \quad \beta^* = 0.270, \quad \eta^* = \frac{4}{(1 + 3.162)^2} = \frac{4}{17.32} = 0.231
+$$
+
+$\eta^* = 0.231$은 GD의 발산 경계 0.2보다 크다. momentum이 있으면 경계가 $2(1 + \beta)/L = 0.254$로 넓어져서 괜찮다.
+
+**Step 2. 처음 두 step** ($v_0 = 0$)
+
+- $t = 0$: gradient $= (10, 10)$, $v_1 = (10, 10)$, $w_1 = (10, 1) - 0.231 \times (10, 10) = (7.69, -1.31)$
+- $t = 1$: gradient $= (7.69, -13.09)$, $v_2 = 0.27 \times (10, 10) + (7.69, -13.09) = (10.39, -10.39)$, $w_2 = (7.69, -1.31) - 0.231 \times (10.39, -10.39) = (5.29, 1.09)$
+
+(소수 둘째 자리에서 반올림. 코드로 돌리면 $(7.691, -1.309)$, $(5.292, 1.090)$.)
+
+**Step 3. 결과 비교** ($\lvert w \rvert_\infty < 0.01$까지)
+
+| 방법 | 배율 | step 수 |
+|---|---|---|
+| GD, $\eta = 2/11$ | 0.818 | 35 |
+| Heavy ball, $\eta^*, \beta^*$ | 0.519 | 14 |
+
+## 코드
+
+```python
+import numpy as np
+
+# 01번 레슨 데이터
+X = np.array([[1, 1], [2, 1], [3, 1], [4, 1]], dtype=float)
+y = np.array([3, 5, 6, 9], dtype=float)
+w_star = np.linalg.solve(X.T @ X, X.T @ y)
+grad = lambda w: (2 / len(y)) * X.T @ (X @ w - y)
+
+mu, L = np.linalg.eigvalsh((2 / len(y)) * X.T @ X)
+kappa = L / mu
+
+def run(lr, beta, max_steps=5000):
+    w, v = np.zeros(2), np.zeros(2)
+    for k in range(1, max_steps + 1):
+        v = beta * v + grad(w)        # heavy ball (PyTorch SGD momentum 형식)
+        w = w - lr * v
+        if np.abs(w - w_star).max() < 1e-3:
+            return k
+    return None
+
+# GD: 05번 레슨의 최적 learning rate
+lr_gd = 2 / (L + mu)
+print(f"kappa={kappa:.1f}")
+print(f"GD        lr={lr_gd:.4f}            rate={(kappa-1)/(kappa+1):.4f}  steps={run(lr_gd, 0.0)}")
+
+# Heavy ball: 이 레슨에서 유도한 최적값
+sq = np.sqrt(kappa)
+beta = ((sq - 1) / (sq + 1)) ** 2
+lr_hb = 4 / (np.sqrt(L) + np.sqrt(mu)) ** 2
+print(f"momentum  lr={lr_hb:.4f} beta={beta:.4f}  rate={(sq-1)/(sq+1):.4f}  steps={run(lr_hb, beta)}")
+
+# 흔히 쓰는 기본값 beta=0.9
+for lr in [0.005, 0.01, 0.05, 0.1]:
+    print(f"momentum  lr={lr:<6} beta=0.9   steps={run(lr, 0.9)}")
+```
+
+```text
+kappa=55.8
+GD        lr=0.1176            rate=0.9648  steps=212
+momentum  lr=0.1863 beta=0.5834  rate=0.7638  steps=45
+momentum  lr=0.005  beta=0.9   steps=332
+momentum  lr=0.01   beta=0.9   steps=123
+momentum  lr=0.05   beta=0.9   steps=101
+momentum  lr=0.1    beta=0.9   steps=109
+```
+
+볼 포인트:
+- 최적 momentum은 GD의 212 step을 45 step으로 줄였다. 배율이 0.965에서 0.764로 줄어든 결과다.
+- $\beta = 0.9$로 고정하면 learning rate를 20배 바꿔도(0.005 제외) step 수가 100~120으로 거의 같다. 모든 방향이 복소근 구간에 들어가면 배율이 $\sqrt{0.9} = 0.949$로 고정되기 때문이다. learning rate에 덜 민감하다는 것이 실전에서 momentum의 큰 장점이다.
+- lr=0.005가 느린 이유: 느린 방향의 $\eta\mu = 0.0015$가 구간 하한 $(1 - \sqrt{0.9})^2 = 0.0026$보다 작아서 복소근 구간 밖(실근)으로 나갔다. 그 방향은 $\sqrt{\beta}$보다 느리게 줄어든다.
+
+## 흔한 오해
+
+<Aside type="caution" title="β를 크게 할수록 빨라진다?">
+$\beta$가 크면 복소근 구간이 넓어져 많은 방향을 덮지만, 그 구간의 배율이 $\sqrt{\beta}$라서 $\beta \to 1$이면 오히려 느려진다(진동이 오래 남는다). 최적값은 $\kappa$로 정해진다. 0.9는 $\kappa$가 수백 정도인 문제에 맞는 값이다.
+</Aside>
+
+<Aside type="caution" title="Momentum을 켜도 learning rate는 그대로 두면 된다?">
+같은 방향 gradient에 대해 실질 learning rate가 $\eta/(1 - \beta)$로 커진다. momentum 없이 잘 되던 $\eta$에 $\beta = 0.9$를 켜면 10배 큰 걸음이 되어 발산할 수 있다. 반대로 EMA 형식 구현이면 $\eta$를 키워야 한다. 구현이 어느 형식인지 먼저 확인한다.
+</Aside>
+
+<Aside type="caution" title="Momentum은 SGD의 noise를 줄이려고 쓰는 것이다?">
+과거 gradient를 평균하니 noise가 다소 줄긴 하지만, 주된 효과는 이 레슨에서 본 ill-conditioning 해소다. noise floor는 결국 실질 learning rate $\eta / (1 - \beta)$와 $B$가 정한다 (06번 레슨).
+</Aside>
+
+## Efficient ML 연결
+
+**Optimizer state = 메모리.** momentum을 쓰면 파라미터마다 $\mathbf{v}$를 하나 더 저장해야 한다. 7B 모델을 FP32 momentum으로 학습하면 $\mathbf{v}$만 28 GB다. 08번 레슨의 Adam은 이런 state가 두 개다. MIT 6.5940의 on-device training이나 LLM fine-tuning에서 optimizer state가 weight보다 큰 메모리를 차지하는 이유다.
+
+**EMA는 어디에나 있다.** 같은 식 $m \leftarrow \beta m + (1 - \beta)x$가 BatchNorm의 running mean/variance, quantization에서 activation 범위(min/max)를 추적하는 observer, 학습된 weight의 EMA(평가용 모델)에 그대로 쓰인다. 기억 길이 $1/(1-\beta)$라는 감각을 이 레슨에서 가져가면 된다.
+
+**지그재그와 normalization.** momentum은 찌그러진 골짜기를 알고리즘으로 버티는 방법이고, normalization layer는 골짜기 자체를 둥글게 만드는 방법이다 (05번 레슨의 standardize). 실전에서는 둘 다 쓴다.
+
+## 체크 퀴즈
+
+<Quiz
+  q="PyTorch 형식 momentum(v ← βv + g, w ← w - ηv)에서 β = 0.8이고 gradient g가 오래 일정할 때, 실질 learning rate는 η의 몇 배인가?"
+  options={['5배', '1.25배', '0.2배', '1.8배']}
+  answer={0}
+  explain="v → g × (1 + β + β² + ...) = g / (1 - β) = g / 0.2 = 5g. 1.25는 1 / β, 0.2는 1 - β를 그대로 쓴 값, 1.8은 첫 두 항(1 + β)만 더한 값이다."
+/>
+
+<Quiz
+  q="condition number κ = 100인 2차식에서 최적으로 튜닝한 heavy ball momentum의 오차 배율(1 step당)은 대략 얼마인가?"
+  options={['약 0.990', '약 0.980', '약 0.818', '약 0.900']}
+  answer={2}
+  explain="(√κ - 1) / (√κ + 1) = (10 - 1) / (10 + 1) ≈ 0.818. 약 0.980은 최적 GD의 (κ - 1) / (κ + 1), 약 0.990은 η = 1/L인 GD의 1 - 1/κ, 약 0.900은 1 - 1/√κ로 근사한 값이다."
+/>
+
+<Quiz
+  q="1차원에서 w = 0, v = 0으로 시작해 η = 0.1, β = 0.5인 PyTorch 형식 momentum을 쓴다. 세 step 동안 gradient가 차례로 4, 2, 1이었다면 세 step 후 w는?"
+  options={['-0.7', '-0.3', '-0.55', '-1.1']}
+  answer={3}
+  explain="v1 = 4, v2 = 0.5 × 4 + 2 = 4, v3 = 0.5 × 4 + 1 = 3. w = -0.1 × (4 + 4 + 3) = -1.1. -0.7은 momentum 없이 gradient만 더한 값, -0.3은 마지막 v만 쓴 값, -0.55는 EMA 형식 v ← βv + (1 - β)g로 계산한 값이다."
+/>
+
+<Quiz
+  q="β = 0.9인 momentum에서 gradient가 +1, -1, +1, -1, ...로 계속 번갈아 온다. 충분히 지난 뒤 속도 v의 크기는?"
+  options={['10', '1', '약 0.53', '0.1']}
+  answer={2}
+  explain="정상 상태에서 v와 다음 v는 부호만 반대이므로 -v = βv + g의 꼴, 즉 |v| = 1 / (1 + β) = 1 / 1.9 ≈ 0.53. 10은 같은 부호가 계속 올 때의 1 / (1 - β)다. 번갈아 오는 성분은 오히려 줄어든다."
+/>
+
+## 서술형
+
+### 문제. 01번 레슨 데이터에 최적 momentum 걸기
+
+01번 레슨 데이터의 MSE Hessian eigenvalue는 $\mu \approx 0.299$, $L \approx 16.70$이다 (05번 레슨).
+
+(a) 최적 $\eta^*$와 $\beta^*$를 구하라.
+
+(b) 이 $\eta^*$는 GD의 발산 경계 $2/L$보다 큰가 작은가? momentum이 있을 때의 발산 경계를 유도하고 $\eta^*$가 그 안에 있는지 확인하라.
+
+(c) 오차를 $10^{-3}$배로 줄이는 데 필요한 step 수를 최적 GD와 최적 momentum에 대해 배율로 어림하라. 코드의 212 step, 45 step과 비교하라.
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** $\sqrt{L} = 4.087$, $\sqrt{\mu} = 0.547$.
+
+$$
+\eta^* = \frac{4}{(4.087 + 0.547)^2} = \frac{4}{21.47} = 0.186, \qquad
+\sqrt{\beta^*} = \frac{4.087 - 0.547}{4.087 + 0.547} = 0.764, \quad \beta^* = 0.583
+$$
+
+**(b)** GD 경계는 $2/16.70 = 0.120$이므로 $\eta^* = 0.186$이 더 크다.
+
+momentum 경계: 특성방정식 $\lambda^2 - T\lambda + \beta = 0$ ($T = 1 + \beta - \eta a$)의 두 근이 단위원 안에 있을 조건은, $\beta < 1$일 때 $\lvert T \rvert < 1 + \beta$다. (실근이면 $p(\lambda) = \lambda^2 - T\lambda + \beta$가 $p(1) > 0$, $p(-1) > 0$이어야 하고, 이것이 $1 - T + \beta > 0$, $1 + T + \beta > 0$이다. 복소근이면 크기가 $\sqrt{\beta} < 1$로 자동 만족.)
+
+$T > -(1 + \beta)$에서 $1 + \beta - \eta a > -(1 + \beta)$, 즉 $\eta a < 2(1 + \beta)$. 가장 큰 곡률에서
+
+$$
+\eta < \frac{2(1 + \beta)}{L} = \frac{2 \times 1.583}{16.70} = 0.190
+$$
+
+$\eta^* = 0.186 < 0.190$이므로 수렴한다. 여유가 많지 않다는 것도 보인다.
+
+**(c)** 최적 GD 배율 $(\kappa - 1)/(\kappa + 1) = 54.8/56.8 = 0.965$, 최적 momentum 배율 $0.764$.
+
+$$
+t_{\text{GD}} \approx \frac{\ln 1000}{\ln(1/0.965)} = \frac{6.91}{0.0358} \approx 193, \qquad
+t_{\text{mom}} \approx \frac{6.91}{\ln(1/0.764)} = \frac{6.91}{0.269} \approx 26
+$$
+
+실제 212, 45와 차수가 맞는다. 차이는 (1) 시작 오차가 $10^{-3}$의 1000배가 아니라 약 1.9배 더 크다는 것($w^* = 1.9$에서 출발), (2) momentum은 복소근이 겹치는 경계($\beta^*$로 맞춘 양 끝)에서 중근이 되어 $t \cdot \lambda^t$ 꼴의 항이 생겨 처음 몇 십 step이 더 걸린다는 것이다. 비율로 보면 이론 7.4배, 실제 4.7배 빨라졌다.
+
+</details>
+
+## 더 읽을거리
+
+- [Why Momentum Really Works (Goh, Distill 2017)](https://distill.pub/2017/momentum/): 이 레슨의 2×2 분석을 인터랙티브로 볼 수 있다.
+- [On the importance of initialization and momentum in deep learning (Sutskever et al., 2013)](https://proceedings.mlr.press/v28/sutskever13.html): 딥러닝에서 Nesterov momentum
+- [torch.optim.SGD 문서](https://pytorch.org/docs/stable/generated/torch.optim.SGD.html): 구현 형식(dampening, nesterov 옵션)
