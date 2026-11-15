@@ -1,0 +1,305 @@
+---
+title: "Overfitting과 bias-variance"
+description: "Train error와 test error가 왜 갈라지는지 다항식 fitting으로 보고, 기대 test error를 bias², variance, noise로 분해하는 식을 유도하기"
+track: ml-basics
+module: generalization
+est: 35min
+prereq: [ml-basics/02-closed-form-vs-numerical]
+sidebar:
+  order: 13
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+01~12번 레슨에서 한 일은 전부 **학습 데이터의 loss를 줄이는 것**이었다. 12번 레슨의 MLP는 spiral 학습 데이터를 100% 맞췄다. 그런데 우리가 원하는 건 처음 보는 데이터에서 잘하는 모델이다. 학습 데이터를 외워서 loss를 0으로 만드는 건 쉽지만 그런 모델은 새 데이터에서 엉망일 수 있다. 이 레슨은 그 차이(generalization gap)가 어디서 오는지를 bias와 variance라는 두 원인으로 나눠서 정량적으로 본다. 14~16번 레슨의 validation, regularization, dropout은 전부 이 분해의 어느 한 항을 줄이는 도구다.
+
+## 직관: 과녁 맞히기
+
+학습 데이터를 새로 뽑을 때마다 모델을 새로 학습해서 과녁에 쏜다고 생각하자. 과녁 중심이 진짜 함수다.
+
+```text
+   낮은 bias, 낮은 variance   높은 bias, 낮은 variance   낮은 bias, 높은 variance
+        ┌───────────┐            ┌───────────┐            ┌───────────┐
+        │     ◎     │            │     ◎     │            │ •   ◎   • │
+        │    •••    │            │           │            │     •     │
+        │     •     │            │  •••      │            │  •      • │
+        └───────────┘            └──••───────┘            └───────────┘
+          이상적                     underfitting              overfitting
+                                  (모델이 너무 단순)        (데이터 noise까지 외움)
+```
+
+- **Bias**: 데이터를 무한히 다시 뽑아 평균을 내도 남는 체계적인 빗나감. 모델이 너무 단순해서 생긴다.
+- **Variance**: 데이터를 새로 뽑을 때마다 예측이 흔들리는 정도. 모델이 데이터의 우연한 noise에 맞춰서 생긴다.
+
+## 정식 설명
+
+### 용어
+
+**Generalization (일반화)**: 학습에 쓰지 않은 데이터에서도 잘 동작하는 성질.
+*Performance on data not seen during training.*
+
+**Training error / test error (학습 오차 / 테스트 오차)**: 학습 데이터에서의 loss / 같은 분포에서 새로 뽑은 데이터에서의 loss.
+
+**Generalization gap (일반화 격차)**: test error − training error.
+
+**Overfitting (과적합)**: training error는 낮은데 test error가 높은 상태. 학습 데이터의 noise까지 맞춘다.
+*Fitting the training data so closely that test error increases.*
+
+**Underfitting (과소적합)**: training error부터 높은 상태. 모델이 데이터의 구조를 표현하지 못한다.
+
+**Capacity (용량, 모델 복잡도)**: 모델이 표현할 수 있는 함수의 다양함. 다항식 차수, 파라미터 수, 학습 시간 등이 키운다.
+
+**Bias (편향)**: $\mathbb{E}_D[\hat{f}(x)] - f(x)$. 학습 데이터 $D$에 대한 평균 예측과 진짜 값의 차이.
+*The difference between the average prediction over training sets and the true value.*
+
+**Variance (분산)**: $\mathbb{E}_D\left[(\hat{f}(x) - \mathbb{E}_D[\hat{f}(x)])^2\right]$. 학습 데이터에 따라 예측이 흔들리는 정도.
+*How much the prediction varies across training sets.*
+
+**Irreducible error (줄일 수 없는 오차)**: 데이터 자체의 noise $\sigma^2$. 어떤 모델로도 못 줄인다.
+
+### 설정
+
+데이터는 $y = f(x) + \varepsilon$, $\mathbb{E}[\varepsilon] = 0$, $\text{Var}[\varepsilon] = \sigma^2$로 생성된다. 학습 데이터 $D$로 학습한 모델을 $\hat{f}_D$라 하자. $D$가 무작위이므로 $\hat{f}_D(x)$도 확률변수다. 새 test 점 $(x, y)$의 noise $\varepsilon$은 $D$와 독립이다.
+
+### Bias-variance 분해 유도
+
+고정된 $x$에서 기대 test MSE를 $D$와 $\varepsilon$에 대해 구한다. 표기를 줄이려고 $\hat{f} = \hat{f}_D(x)$, $\bar{f} = \mathbb{E}_D[\hat{f}]$로 쓴다.
+
+**Step 1. Noise 떼어내기**
+
+$$
+\mathbb{E}\left[(y - \hat{f})^2\right] = \mathbb{E}\left[(f - \hat{f} + \varepsilon)^2\right]
+= \mathbb{E}\left[(f - \hat{f})^2\right] + 2\,\mathbb{E}\left[(f - \hat{f})\varepsilon\right] + \mathbb{E}[\varepsilon^2]
+$$
+
+$\varepsilon$은 $D$와 독립이고 평균 0이므로 가운데 항은 $\mathbb{E}[f - \hat{f}] \cdot \mathbb{E}[\varepsilon] = 0$. 마지막 항은 $\sigma^2$.
+
+**Step 2. 평균 예측 더하고 빼기**
+
+$$
+\mathbb{E}_D\left[(f - \hat{f})^2\right] = \mathbb{E}_D\left[(f - \bar{f} + \bar{f} - \hat{f})^2\right]
+= (f - \bar{f})^2 + 2(f - \bar{f})\,\mathbb{E}_D[\bar{f} - \hat{f}] + \mathbb{E}_D\left[(\bar{f} - \hat{f})^2\right]
+$$
+
+$f - \bar{f}$는 $D$에 대해 상수이고 $\mathbb{E}_D[\bar{f} - \hat{f}] = 0$이라 가운데 항이 사라진다.
+
+**결과**
+
+$$
+\boxed{\mathbb{E}\left[(y - \hat{f}(x))^2\right] = \underbrace{\left(\bar{f}(x) - f(x)\right)^2}_{\text{bias}^2} + \underbrace{\mathbb{E}_D\left[(\hat{f}(x) - \bar{f}(x))^2\right]}_{\text{variance}} + \underbrace{\sigma^2}_{\text{noise}}}
+$$
+
+$x$에 대해 평균을 내면 전체 기대 test MSE가 된다. 세 항 모두 0 이상이라 test MSE는 $\sigma^2$ 밑으로 못 내려간다.
+
+### Capacity에 따른 tradeoff
+
+capacity를 키우면 대체로 bias는 줄고 variance는 는다. test error는 그 합이라 U자 모양이 된다.
+
+```text
+ capacity      낮음 ─────────────────────────► 높음
+ bias²         ██████████   ████   ██    ▏     ▏
+ variance      ▏     ▏      ██    ████   ████████
+ test error    높음  ────►  최소  ────►  높음          (U자)
+ train error   높음  ──────────────────► 0 쪽으로 계속 감소
+```
+
+training error는 capacity를 키우면 계속 줄어든다. 그래서 training error만 보고는 최적 capacity를 고를 수 없다 (14번 레슨의 validation set이 필요한 이유).
+
+### 데이터 수의 효과
+
+데이터 $N$을 늘리면 variance가 준다(평균의 분산이 $\sigma^2 / N$이었던 것과 같은 이유, 06번 레슨). bias는 모델 구조가 정하므로 $N$으로 줄지 않는다. 그래서 **overfitting은 데이터를 늘리면 완화되고, underfitting은 데이터를 늘려도 안 낫는다.**
+
+## Worked example
+
+### 예제 1. 평균을 일부러 줄여서 추정하면 더 정확해진다
+
+진짜 값 $\theta = 1$을 noise 분산 $\sigma^2 = 2$인 샘플 $n = 2$개로 추정한다. 표본평균 $\bar{y}$의 분산은 $\sigma^2 / n = 1$이다. 추정량 $\hat{\theta}_c = c\,\bar{y}$ ($0 \le c \le 1$)를 생각하자.
+
+- $\mathbb{E}[\hat{\theta}_c] = c\theta$ → bias $= (c - 1)\theta$
+- $\text{Var}[\hat{\theta}_c] = c^2 \cdot \sigma^2/n = c^2$
+
+| $c$ | bias² | variance | MSE |
+|---|---|---|---|
+| 1 (표본평균) | 0 | 1 | **1** |
+| 0.75 | $0.0625$ | $0.5625$ | 0.625 |
+| 0.5 | $0.25$ | $0.25$ | **0.5** |
+| 0.25 | $0.5625$ | $0.0625$ | 0.625 |
+| 0 | 1 | 0 | 1 |
+
+unbiased인 표본평균보다 일부러 0 쪽으로 당긴(shrink) $0.5\bar{y}$가 MSE가 절반이다. bias를 조금 받아들이고 variance를 크게 줄였다. 이게 15번 레슨의 L2 regularization(weight를 0 쪽으로 당기기)이 하는 일이다. 최적 $c$는 서술형에서 유도한다.
+
+### 예제 2. 다항식 fitting
+
+$f(x) = \sin(2\pi x)$, noise $\sigma = 0.3$ ($\sigma^2 = 0.09$), $[0, 1]$에 고르게 놓인 10개 점. 차수를 바꿔 가며 least squares로 맞춘다(02번 레슨의 normal equation과 같은 문제, feature만 $1, x, x^2, \dots$). 아래 코드의 결과를 표로 옮기면
+
+| 차수 | train MSE | bias² | variance | bias² + var + noise |
+|---|---|---|---|---|
+| 1 | 0.187 | 0.223 | 0.017 | 0.330 |
+| 3 | 0.017 | 0.006 | 0.031 | **0.127** |
+| 5 | 0.015 | 0.000 | 0.046 | 0.136 |
+| 7 | 0.000 | 0.000 | 0.077 | 0.167 |
+| 9 | 0.000 | 0.000 | 0.575 | 0.665 |
+
+- 1차: 직선이라 sin을 못 따라간다. bias가 대부분이다(underfitting).
+- 9차: 점 10개를 정확히 지나는 다항식(파라미터 10개)이라 train MSE가 0이다. bias도 0 근처지만 variance가 폭발한다(overfitting).
+- 3차가 합이 가장 작다. train MSE 기준으로 고르면 9차를 골랐을 것이다.
+
+## 코드
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+f = lambda x: np.sin(2 * np.pi * x)          # 진짜 함수
+sigma = 0.3                                   # noise 표준편차
+N = 10                                        # 학습 데이터 수
+
+def make_data(n, x=None):
+    x = rng.uniform(0, 1, n) if x is None else x
+    return x, f(x) + rng.normal(0, sigma, n)
+
+def fit_predict(x, y, deg, x_new):
+    A = np.vander(x, deg + 1)                 # [x^deg, ..., x, 1]
+    coef = np.linalg.lstsq(A, y, rcond=None)[0]
+    return np.vander(x_new, deg + 1) @ coef
+
+# 1) 데이터셋 하나로 train / test MSE
+x_fixed = np.linspace(0, 1, N)                # 학습 입력은 고정, noise만 새로 뽑음
+x_tr, y_tr = make_data(N, x_fixed)
+x_te, y_te = make_data(2000)
+print(" deg | train MSE | test MSE")
+for deg in [1, 3, 5, 7, 9]:
+    tr = np.mean((fit_predict(x_tr, y_tr, deg, x_tr) - y_tr) ** 2)
+    te = np.mean((fit_predict(x_tr, y_tr, deg, x_te) - y_te) ** 2)
+    print(f" {deg:3d} | {tr:9.4f} | {te:10.4f}")
+
+# 2) noise를 500번 새로 뽑아 bias^2, variance 추정
+x_grid = np.linspace(0, 1, 200)
+print("\n deg |  bias^2 | variance | bias^2+var+noise")
+for deg in [1, 3, 5, 7, 9]:
+    preds = np.array([fit_predict(*make_data(N, x_fixed), deg, x_grid) for _ in range(500)])
+    bias2 = np.mean((preds.mean(axis=0) - f(x_grid)) ** 2)
+    var = np.mean(preds.var(axis=0))
+    print(f" {deg:3d} | {bias2:7.4f} | {var:8.4f} | {bias2 + var + sigma**2:10.4f}")
+```
+
+```text
+ deg | train MSE | test MSE
+   1 |    0.1872 |     0.2964
+   3 |    0.0174 |     0.1205
+   5 |    0.0146 |     0.1157
+   7 |    0.0002 |     0.1416
+   9 |    0.0000 |     0.1502
+
+ deg |  bias^2 | variance | bias^2+var+noise
+   1 |  0.2232 |   0.0168 |     0.3300
+   3 |  0.0064 |   0.0308 |     0.1273
+   5 |  0.0002 |   0.0459 |     0.1360
+   7 |  0.0001 |   0.0772 |     0.1673
+   9 |  0.0001 |   0.5749 |     0.6650
+```
+
+볼 포인트:
+- 위 표(데이터셋 1개의 test MSE)와 아래 표(500개 데이터셋의 평균)가 조금 다르다. 9차는 이 데이터셋에서는 운이 좋아 test MSE 0.150이 나왔지만, 평균적으로는 0.665다. **데이터셋 하나로 잰 test error도 확률변수**다.
+- 아래 표의 마지막 열이 기대 test MSE다. 유도한 분해식 그대로 bias²와 variance와 noise 0.09를 더한 것이다.
+- 9차의 variance는 대부분 점과 점 사이, 특히 양 끝에서 다항식이 크게 출렁여서 생긴다.
+
+## 흔한 오해
+
+<Aside type="caution" title="Unbiased 추정량이 항상 가장 좋다?">
+예제 1처럼 bias를 조금 허용하고 variance를 크게 줄이면 MSE가 더 작아진다. 머신러닝의 regularization 대부분이 이렇게 일부러 bias를 넣는 방법이다.
+</Aside>
+
+<Aside type="caution" title="파라미터가 데이터보다 많으면 무조건 overfitting이다?">
+고전적인 U자 그림은 다항식 같은 경우에 잘 맞지만, 큰 신경망은 파라미터가 데이터보다 훨씬 많아도 잘 일반화한다. capacity를 interpolation 지점(train error가 0이 되는 곳)보다 더 키우면 test error가 다시 줄어드는 **double descent**도 관찰된다. SGD의 암묵적 regularization, 초기화, 구조가 함께 작용한다. 그래도 bias-variance 분해식 자체는 언제나 성립한다. 모양이 U자가 아닐 뿐이다.
+</Aside>
+
+<Aside type="caution" title="Training loss가 0이면 학습이 잘된 것이다?">
+예제 2의 9차 다항식이 train MSE 0이다. 데이터에 noise가 있으면($\sigma^2 > 0$) 진짜 함수의 train MSE는 약 $\sigma^2$이어야 정상이다. 그보다 훨씬 작으면 noise를 외우고 있다는 신호다.
+</Aside>
+
+## Efficient ML 연결
+
+**압축은 capacity를 줄인다.** pruning이나 quantization은 모델이 표현할 수 있는 함수를 제한한다. 그래서 약간의 압축은 오히려 test 정확도를 올리기도 하고(regularization 효과), 과하면 bias가 커져서 정확도가 떨어진다. 압축 강도를 정할 때 보는 것은 항상 test(validation) 정확도다.
+
+**작은 데이터로 fine-tuning하면 variance가 문제다.** on-device fine-tuning이나 개인화는 데이터가 수십~수백 개다. 모델 전체(수백만 파라미터)를 학습하면 variance가 크다. bias만, 또는 LoRA처럼 적은 파라미터만 학습하는 것은 메모리 절약이면서 동시에 capacity를 줄여 variance를 낮추는 선택이다.
+
+**PTQ의 calibration set.** post-training quantization은 128~512개 정도의 calibration 샘플로 scale을 정한다. GPTQ처럼 calibration 데이터로 weight를 다시 맞추는 방법은 그 작은 데이터에 overfit할 수 있어서, calibration 데이터의 양과 분포가 결과에 영향을 준다.
+
+## 체크 퀴즈
+
+<Quiz
+  q="진짜 값 θ = 3, noise 분산 9, 샘플 9개의 표본평균 ȳ에 0.9를 곱한 추정량 0.9ȳ의 MSE는?"
+  options={['0.90', '1', '0.81', '0.99']}
+  answer={0}
+  explain="Var(ȳ) = 9 / 9 = 1. bias = (0.9 - 1) × 3 = -0.3, bias² = 0.09. variance = 0.9² × 1 = 0.81. MSE = 0.90. 0.81은 variance만, 1은 표본평균 그대로의 MSE, 0.99는 variance에서 c를 제곱하지 않고 0.9로 쓴 값이다."
+/>
+
+<Quiz
+  q="train loss 0.02, validation loss 0.40인 모델이 있다. 가장 먼저 시도할 만한 것은?"
+  options={['모델을 더 크게 키운다', '학습을 더 오래 돌린다', 'learning rate를 키운다', '데이터를 늘리거나 regularization을 강하게 한다']}
+  answer={3}
+  explain="train은 낮고 validation은 높은 큰 gap은 high variance(overfitting)다. variance는 데이터를 늘리거나 regularization으로 capacity를 줄이면 준다. 모델을 키우거나 오래 학습하는 것은 capacity를 키워 gap을 더 벌린다. train loss부터 높았다면 그쪽이 맞는 처방이다."
+/>
+
+<Quiz
+  q="어떤 모델의 기대 test MSE가 0.5, 데이터 noise 분산이 0.1, 예측의 variance가 0.15일 때 bias²는?"
+  options={['0.35', '0.25', '0.4', '0.15']}
+  answer={1}
+  explain="test MSE = bias² + variance + noise이므로 0.5 - 0.15 - 0.1 = 0.25. 0.35는 noise를 빼먹은 값, 0.4는 variance를 빼먹은 값이다."
+/>
+
+<Quiz
+  q="모델 구조는 그대로 두고 학습 데이터 수만 10배로 늘렸다. bias-variance 분해에서 주로 변하는 항은?"
+  options={['bias²가 줄어든다', 'noise가 줄어든다', 'variance가 줄어든다', '세 항 모두 그대로다']}
+  answer={2}
+  explain="데이터가 많아지면 우연한 noise의 영향이 평균되어 예측이 덜 흔들린다(variance 감소). bias는 모델이 표현할 수 있는 함수의 한계라 데이터 수로 줄지 않는다. noise σ²는 데이터 생성 과정의 성질이라 그대로다."
+/>
+
+## 서술형
+
+### 문제. 최적의 shrinkage
+
+진짜 값 $\theta$를 noise 분산 $\sigma^2$인 독립 샘플 $n$개로 추정한다. 추정량 $\hat{\theta}_c = c\,\bar{y}$.
+
+(a) $\text{MSE}(c) = \mathbb{E}[(\hat{\theta}_c - \theta)^2]$를 bias²와 variance로 나눠 $c, \theta, \sigma^2, n$으로 쓰라.
+
+(b) MSE를 최소화하는 $c^*$와 그때의 MSE를 구하라. $c^* < 1$인 이유를 한 문장으로 설명하라.
+
+(c) $\theta = 2$, $\sigma^2 = 4$, $n = 4$일 때 $c^*$와 MSE를 구하고, 표본평균의 MSE와 비교하라.
+
+(d) $c^*$의 식에는 모르는 값 $\theta$가 들어 있다. 실전에서는 이런 shrinkage 강도를 어떻게 정하나?
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** $\mathbb{E}[\hat{\theta}_c] = c\theta$, $\text{Var}[\hat{\theta}_c] = c^2\sigma^2/n$이므로
+
+$$
+\text{MSE}(c) = (c - 1)^2\theta^2 + \frac{c^2\sigma^2}{n}
+$$
+
+**(b)** 미분해서 0으로 놓으면 $2(c - 1)\theta^2 + 2c\sigma^2/n = 0$
+
+$$
+c^* = \frac{\theta^2}{\theta^2 + \sigma^2/n}, \qquad
+\text{MSE}(c^*) = \frac{\theta^2 \cdot \sigma^2/n}{\theta^2 + \sigma^2/n}
+$$
+
+($c^*$를 대입해 정리: $(c^* - 1)^2\theta^2 = \frac{(\sigma^2/n)^2 \theta^2}{(\theta^2 + \sigma^2/n)^2}$, $c^{*2}\sigma^2/n = \frac{\theta^4 \sigma^2/n}{(\theta^2 + \sigma^2/n)^2}$, 더하면 위 식.)
+
+$c = 1$에서 MSE의 기울기가 $2\sigma^2/n > 0$이라, 1에서 조금 줄이면 bias² 증가($(c-1)^2$이라 처음엔 거의 0)보다 variance 감소가 커서 이득이다.
+
+**(c)** $\sigma^2/n = 1$, $c^* = 4/(4 + 1) = 0.8$. $\text{MSE} = 4 \times 1 / 5 = 0.8$. 표본평균은 $\text{MSE} = 1$이므로 20% 줄었다. 검산: bias² $= 0.04 \times 4 = 0.16$, variance $= 0.64$, 합 0.80.
+
+**(d)** $\theta$를 모르므로 공식으로 정할 수 없다. 대신 여러 강도 후보로 학습하고 학습에 쓰지 않은 **validation set**에서 오차를 재서 고른다(14번 레슨). 신경망의 weight decay 계수 $\lambda$, dropout 비율 등이 모두 이렇게 정해진다. 또 이 식은 신호($\theta^2$)에 비해 noise($\sigma^2/n$)가 클수록, 즉 데이터가 적을수록 더 세게 줄여야 한다는 것을 알려 준다.
+
+</details>
+
+## 더 읽을거리
+
+- [The Elements of Statistical Learning, Ch. 7: Model Assessment and Selection (Hastie, Tibshirani, Friedman)](https://hastie.su.domains/ElemStatLearn/)
+- [Reconciling modern machine learning practice and the bias-variance trade-off (Belkin et al., 2019)](https://arxiv.org/abs/1812.11118): double descent
+- [Deep Double Descent (Nakkiran et al., 2019)](https://arxiv.org/abs/1912.02292)

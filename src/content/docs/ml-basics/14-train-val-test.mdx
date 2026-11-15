@@ -1,0 +1,300 @@
+---
+title: "Train / validation / test 분리"
+description: "Hyperparameter를 고를 때 왜 test set을 쓰면 안 되는지 selection bias로 계산하고, k-fold cross-validation과 data leakage를 코드로 확인하기"
+track: ml-basics
+module: generalization
+est: 30min
+prereq: [ml-basics/13-overfitting-bias-variance]
+sidebar:
+  order: 14
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+13번 레슨에서 다항식 차수를 고를 때 test MSE를 봤다. 그런데 test 데이터를 보고 차수를 골랐다면, 그 test MSE는 더 이상 "처음 보는 데이터"의 성능이 아니다. 고르는 과정 자체가 test 데이터에 맞춘 것이기 때문이다. learning rate, weight decay, layer 수 같은 hyperparameter를 수십 번 바꿔 보며 가장 좋은 것을 고르면 이 효과가 커진다. 이 레슨에서는 데이터를 **용도별로 나누는 규칙**을 세우고, 규칙을 어기면 숫자가 얼마나 부풀려지는지 계산한다.
+
+## 직관: 모의고사와 수능
+
+```text
+ ┌──────────────── 전체 데이터 ────────────────┐
+ │  train (교과서)        │ validation │ test  │
+ │  weight 학습에 사용     │ (모의고사)  │(수능) │
+ │                        │ 설정 고르기 │ 마지막 │
+ │                        │ 여러 번 봄  │ 한 번 │
+ └────────────────────────┴────────────┴───────┘
+```
+
+- 교과서(train)로 공부한다.
+- 모의고사(validation)를 여러 번 보면서 공부 방법(hyperparameter)을 고친다. 모의고사 문제에 익숙해지므로 점수가 실력보다 조금 높게 나온다.
+- 수능(test)은 **마지막에 한 번**만 본다. 그 점수가 진짜 실력의 추정이다. 수능을 보고 공부 방법을 바꾸면 그건 또 하나의 모의고사가 된다.
+
+## 정식 설명
+
+### 용어
+
+**Training set (학습 데이터)**: 모델 파라미터(weight)를 학습하는 데 쓰는 데이터.
+
+**Validation set (검증 데이터, dev set)**: hyperparameter와 모델 구조를 고르는 데 쓰는 데이터. weight 학습에는 쓰지 않는다.
+*Held-out data used for model selection and hyperparameter tuning.*
+
+**Test set (테스트 데이터)**: 모든 결정이 끝난 뒤 최종 성능을 한 번 추정하는 데 쓰는 데이터.
+*Held-out data used only once, for the final performance estimate.*
+
+**Hyperparameter (하이퍼파라미터)**: 학습으로 정해지지 않고 사람이 정하는 값. learning rate, batch size, weight decay, layer 수, 다항식 차수 등.
+
+**Model selection (모델 선택)**: 여러 후보 중 하나를 고르는 것. 고르는 기준에 쓴 데이터는 그 순간부터 "본 데이터"다.
+
+**Selection bias (선택 편향)**: 여러 후보 중 측정값이 가장 좋은 것을 고르면, 고른 후보의 측정값이 진짜 값보다 체계적으로 좋게 나오는 현상.
+*The optimistic bias from reporting the best of several noisy estimates.*
+
+**k-fold cross-validation (k겹 교차검증)**: 데이터를 $k$등분해서 하나씩 돌아가며 validation으로 쓰고 나머지로 학습한 뒤 $k$개 결과를 평균하는 것.
+
+**Data leakage (데이터 누수)**: validation/test 데이터의 정보가 학습이나 모델 선택 과정에 섞여 들어가는 것.
+*When information from evaluation data influences training or model selection.*
+
+### Validation 추정의 오차
+
+validation 샘플 $n$개에서 정확도를 재면, 각 샘플의 정답 여부는 확률 $p$(진짜 정확도)인 Bernoulli다. 측정한 정확도 $\hat{p}$의 표준오차(standard error)는
+
+$$
+\text{SE}(\hat{p}) = \sqrt{\frac{p(1 - p)}{n}}
+$$
+
+$p = 0.9$, $n = 1000$이면 $\text{SE} \approx 0.0095$, 약 1%p다. 두 모델이 90.0%와 90.5%로 나왔다면 이 차이는 측정 오차 범위 안이다. 차이를 믿으려면 validation set이 커야 한다. 오차가 $1/\sqrt{n}$으로 줄므로 오차를 절반으로 하려면 $n$이 4배 필요하다.
+
+### Selection bias
+
+후보 $K$개의 진짜 정확도가 **모두 같다**고 해도, validation 측정값은 각각 $\pm\text{SE}$만큼 흔들린다. 그중 최댓값을 고르면 그 값은 진짜 정확도보다 크다.
+
+$$
+\mathbb{E}\left[\max_{k} \hat{p}_k\right] > p
+$$
+
+측정값이 정규분포라면 $K = 2$일 때 $p + \text{SE}/\sqrt{\pi}$ (서술형에서 유도), $K = 20$이면 약 $p + 1.87\,\text{SE}$다. 고른 모델을 같은 validation 점수로 보고하면 이만큼 부풀려진다. 그래서 **선택에 쓰지 않은 test set**으로 다시 재야 한다.
+
+### k-fold cross-validation
+
+데이터가 적으면 validation을 떼어 내기가 아깝고, 작은 validation은 SE가 크다. k-fold CV는 모든 데이터를 한 번씩 validation으로 쓴다.
+
+```text
+ fold:     1     2     3     4     5
+ round 1 [val] [tr ] [tr ] [tr ] [tr ]
+ round 2 [tr ] [val] [tr ] [tr ] [tr ]
+ ...
+ round 5 [tr ] [tr ] [tr ] [tr ] [val]   →  5개 val error 평균
+```
+
+비용은 학습 $k$번이다. 후보 $M$개를 비교하면 $kM$번, 고른 뒤 전체 데이터로 한 번 더 학습하면 $kM + 1$번. 그래서 딥러닝처럼 학습이 비싸고 데이터가 많으면 고정된 validation set 하나를 쓰고, 데이터가 적은 고전 ML에서 k-fold를 많이 쓴다.
+
+### Data leakage의 흔한 형태
+
+1. **전처리 통계**: standardization의 평균·표준편차, PCA, feature selection을 전체 데이터로 계산한 뒤 나눈다. 전처리도 학습의 일부라서 train에서만 계산해야 한다.
+2. **중복**: 같은(거의 같은) 샘플이 train과 test에 동시에 있다. 웹 크롤링 데이터, 같은 사람의 사진 여러 장.
+3. **시간**: 시계열에서 미래 데이터로 학습하고 과거를 예측한다. 시간 순서로 나눠야 한다.
+4. **반복 확인**: test 점수를 보고 설정을 바꾸는 일을 반복한다. test가 validation이 된다.
+
+## Worked example
+
+### 예제 1. Validation set 크기 정하기
+
+진짜 정확도가 약 85%인 분류기 두 개의 차이를 1%p 정도까지 구분하고 싶다. SE를 0.5%p 이하로 만들려면
+
+$$
+\sqrt{\frac{0.85 \times 0.15}{n}} \le 0.005 \;\Rightarrow\; n \ge \frac{0.1275}{0.000025} = 5100
+$$
+
+validation 샘플 5,100개 이상이 필요하다. 1,000개라면 SE $= \sqrt{0.1275/1000} = 0.0113$, 약 1.1%p라서 1%p 차이를 구분할 수 없다.
+
+### 예제 2. 20개 설정 중 최고
+
+진짜 정확도가 모두 80%인 설정 20개를 validation 200개로 비교한다.
+
+- SE $= \sqrt{0.8 \times 0.2 / 200} = 0.0283$
+- 최고 점수의 기댓값 $\approx 0.80 + 1.87 \times 0.0283 = 0.853$
+
+전부 똑같은 모델인데 "최고 모델은 85.3%"라고 보고하게 된다. 새 test set에서 재면 80%가 나온다. 아래 코드의 시뮬레이션 결과(0.851)와 맞는다.
+
+### 예제 3. 5-fold CV 비용
+
+데이터 1,000개, 5-fold, weight decay 후보 4개.
+
+- 각 round: train 800개, val 200개
+- 학습 횟수: $5 \times 4 = 20$번으로 후보 비교, 고른 값으로 전체 1,000개에 1번 더 → 21번
+
+## 코드
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+
+# 1) Selection bias: 진짜 정확도가 모두 80%인 설정 20개를 validation 200개로 비교
+true_acc, n_val, K = 0.80, 200, 20
+best = []
+for trial in range(2000):
+    val_acc = rng.binomial(n_val, true_acc, size=K) / n_val
+    best.append(val_acc.max())
+print(f"[selection] 1개 val acc 평균 = {true_acc:.3f}, "
+      f"20개 중 최고 val acc 평균 = {np.mean(best):.3f}, SE = {np.sqrt(true_acc*(1-true_acc)/n_val):.4f}")
+
+# 2) k-fold CV로 다항식 차수 고르기 (13번 레슨 설정, 데이터 30개)
+f = lambda x: np.sin(2 * np.pi * x)
+x = rng.uniform(0, 1, 30); y = f(x) + rng.normal(0, 0.3, 30)
+x_te = rng.uniform(0, 1, 5000); y_te = f(x_te) + rng.normal(0, 0.3, 5000)
+
+def fit(xs, ys, deg):
+    return np.linalg.lstsq(np.vander(xs, deg + 1), ys, rcond=None)[0]
+
+def mse(coef, xs, ys, deg):
+    return np.mean((np.vander(xs, deg + 1) @ coef - ys) ** 2)
+
+folds = np.array_split(rng.permutation(30), 5)
+print("\n deg | train MSE | 5-fold CV MSE | test MSE")
+for deg in [1, 3, 5, 7, 9]:
+    cv = []
+    for k in range(5):
+        va = folds[k]; tr = np.concatenate([folds[j] for j in range(5) if j != k])
+        cv.append(mse(fit(x[tr], y[tr], deg), x[va], y[va], deg))
+    c = fit(x, y, deg)
+    print(f" {deg:3d} | {mse(c, x, y, deg):9.4f} | {np.mean(cv):13.4f} | {mse(c, x_te, y_te, deg):8.4f}")
+
+# 3) Data leakage: label과 무관한 random feature에서 feature selection을 CV 밖에서 하면?
+N, D, top = 50, 5000, 20
+X = rng.normal(size=(N, D)); lab = rng.integers(0, 2, N)       # label은 순수 무작위
+
+def select(Xs, ls):           # label과 상관이 큰 feature top개
+    corr = np.abs([np.corrcoef(Xs[:, j], ls)[0, 1] for j in range(Xs.shape[1])])
+    return np.argsort(corr)[-top:]
+
+def centroid_acc(Xtr, ltr, Xva, lva):
+    c0, c1 = Xtr[ltr == 0].mean(0), Xtr[ltr == 1].mean(0)
+    pred = (np.linalg.norm(Xva - c1, axis=1) < np.linalg.norm(Xva - c0, axis=1)).astype(int)
+    return (pred == lva).mean()
+
+folds = np.array_split(rng.permutation(N), 5)
+leak, clean = [], []
+sel_all = select(X, lab)                                       # 잘못: 전체 데이터로 선택
+for k in range(5):
+    va = folds[k]; tr = np.concatenate([folds[j] for j in range(5) if j != k])
+    leak.append(centroid_acc(X[tr][:, sel_all], lab[tr], X[va][:, sel_all], lab[va]))
+    s = select(X[tr], lab[tr])                                 # 맞음: fold 안에서 선택
+    clean.append(centroid_acc(X[tr][:, s], lab[tr], X[va][:, s], lab[va]))
+print(f"\n[leakage] CV acc, selection outside CV = {np.mean(leak):.2f}, inside CV = {np.mean(clean):.2f}")
+```
+
+```text
+[selection] 1개 val acc 평균 = 0.800, 20개 중 최고 val acc 평균 = 0.851, SE = 0.0283
+
+ deg | train MSE | 5-fold CV MSE | test MSE
+   1 |    0.3981 |        0.4541 |   0.3054
+   3 |    0.1040 |        0.1358 |   0.1345
+   5 |    0.0963 |        0.2892 |   0.1168
+   7 |    0.0581 |        0.2071 |   0.2326
+   9 |    0.0544 |       14.1081 |   0.2649
+
+[leakage] CV acc, selection outside CV = 0.98, inside CV = 0.56
+```
+
+볼 포인트:
+- **Selection**: 20개가 모두 같은 모델인데 최고 validation 점수가 평균 85.1%다. SE 2.8%p의 약 1.8배만큼 부풀었다.
+- **k-fold CV**: CV MSE가 가장 작은 3차를 고른다. test MSE는 5차가 조금 더 작지만(0.117 vs 0.135) CV 오차 범위 안이다. train MSE로 골랐다면 9차를 골랐고, 9차의 CV MSE는 14로 폭발한다. 데이터 30개 중 6개를 빼고 학습하면 9차 다항식이 크게 출렁이기 때문이다.
+- **Leakage**: label과 아무 관계 없는 무작위 feature인데, 전체 데이터로 feature를 고르고 CV를 하면 정확도 98%가 나온다. fold 안에서 고르면 56%, 즉 동전 던지기 수준이다. 5000개 feature 중 우연히 이 50개 샘플의 label과 상관이 큰 20개를 골랐기 때문이다.
+
+## 흔한 오해
+
+<Aside type="caution" title="Validation 점수가 최종 성능이다?">
+validation은 선택에 썼으므로 낙관적으로 편향돼 있다. 후보가 많을수록 더 그렇다. 최종 성능은 선택에 쓰지 않은 test set으로 보고한다.
+</Aside>
+
+<Aside type="caution" title="Test set을 한 번 보고 고치는 정도는 괜찮다?">
+한 번 보고 고치면 그 test set은 validation이 된다. 여러 사람이 같은 benchmark test set으로 수년간 모델을 고르면 benchmark 전체가 overfit된다. 새 test set을 만들면 점수가 떨어지는 사례가 많다.
+</Aside>
+
+<Aside type="caution" title="Standardization 같은 전처리는 전체 데이터로 해도 영향이 작다?">
+평균·표준편차는 영향이 작은 편이지만, 코드의 feature selection처럼 label을 보는 전처리는 결과를 완전히 바꾼다. 원칙은 같다. 학습 과정에 포함되는 모든 계산은 train에서만 하고, 그 결과를 val/test에 **적용**만 한다.
+</Aside>
+
+## Efficient ML 연결
+
+**압축 설정 고르기도 model selection이다.** layer별 bit-width, pruning 비율을 validation 정확도로 고른다. 후보가 많을수록 selection bias가 커지므로 최종 숫자는 따로 둔 test set으로 보고해야 한다.
+
+**NAS는 후보가 수천~수만 개다.** MCUNet, Once-for-All 같은 neural architecture search는 엄청나게 많은 구조를 validation 정확도로 비교한다. 이 레슨의 selection bias가 극단적으로 커지는 상황이라, 탐색용 validation과 최종 보고용 test를 엄격히 분리한다.
+
+**LLM 평가와 contamination.** LLM은 인터넷 전체로 학습하므로 benchmark 문제가 학습 데이터에 섞여 들어가는 leakage(contamination)가 흔하다. quantization 논문에서 perplexity를 잴 때도 calibration 데이터와 평가 데이터를 같은 분할에서 뽑지 않는다(예: calibration은 train split, 평가는 test split).
+
+## 체크 퀴즈
+
+<Quiz
+  q="validation 샘플 500개에서 정확도가 95%로 나왔다. 이 정확도 추정의 표준오차는 대략?"
+  options={['약 0.2%p', '약 22%p', '약 1%p', '약 0.01%p']}
+  answer={2}
+  explain="√(0.95 × 0.05 / 500) = √0.000095 ≈ 0.0097, 약 1%p. 약 22%p는 n으로 나누지 않은 √(p(1-p)), 약 0.2%p는 p(1 - p)를 √n으로 나눠서 루트를 잘못 씌운 값이다."
+/>
+
+<Quiz
+  q="데이터 10,000개로 10-fold CV를 써서 hyperparameter 후보 6개를 비교하고, 고른 값으로 전체 데이터에 다시 학습한다. 학습은 총 몇 번인가?"
+  options={['61', '60', '16', '70']}
+  answer={0}
+  explain="후보마다 fold 10번씩 6 × 10 = 60번, 최종 학습 1번을 더해 61번. 60은 최종 학습을 빼먹은 값, 16은 곱 대신 더한 값이다."
+/>
+
+<Quiz
+  q="다음 중 data leakage에 해당하는 것은?"
+  options={['train에서 구한 평균과 표준편차로 validation을 standardize한다', '모든 결정이 끝난 뒤 test를 한 번만 평가한다', 'train 안에서 k-fold로 hyperparameter를 고른다', '전체 데이터로 평균과 표준편차를 구해 standardize한 뒤 train/test로 나눈다']}
+  answer={3}
+  explain="전처리 통계 계산도 학습의 일부라서 test의 정보가 들어가면 leakage다. 올바른 방법은 train에서만 통계를 구하고 그 값으로 validation/test를 변환하는 것이다."
+/>
+
+<Quiz
+  q="hyperparameter 설정 50개를 같은 validation set으로 비교해 가장 높은 91%짜리를 골랐다. 이 모델을 새 test set에서 평가하면?"
+  options={['91%와 같을 것으로 기대된다', '91%보다 낮을 가능성이 크다', '91%보다 높을 가능성이 크다', '설정이 50개면 validation이 더 정확해진다']}
+  answer={1}
+  explain="여러 noisy 측정값 중 최댓값을 고르면 그 값은 위로 편향된다(selection bias). 고른 설정의 진짜 성능은 평균적으로 91%보다 낮다. 후보가 많아지면 편향은 오히려 커진다."
+/>
+
+## 서술형
+
+### 문제. 두 모델 중 고를 때의 selection bias
+
+진짜 정확도가 똑같이 $p$인 모델 두 개를 validation set으로 평가한다. 측정값 $\hat{p}_1, \hat{p}_2$는 독립이고 $\mathcal{N}(p, s^2)$를 따른다고 근사한다.
+
+(a) $\max(a, b) = \frac{a + b}{2} + \frac{\lvert a - b \rvert}{2}$를 이용해 $\mathbb{E}[\max(\hat{p}_1, \hat{p}_2)] = p + s/\sqrt{\pi}$를 보여라. ($Z \sim \mathcal{N}(0, \tau^2)$이면 $\mathbb{E}\lvert Z \rvert = \tau\sqrt{2/\pi}$.)
+
+(b) $p = 0.8$, validation 400개일 때 편향은 몇 %p인가?
+
+(c) 편향을 0.25%p 이하로 줄이려면 validation이 최소 몇 개 필요한가?
+
+(d) 편향이 있다는 걸 알았으니 고른 모델의 validation 점수에서 $s/\sqrt{\pi}$를 빼서 보고하면 될까? test set을 따로 두는 것과 비교해서 답하라.
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** $\mathbb{E}\left[\frac{\hat{p}_1 + \hat{p}_2}{2}\right] = p$. $\hat{p}_1 - \hat{p}_2 \sim \mathcal{N}(0, 2s^2)$이므로 $\tau = \sqrt{2}\,s$,
+
+$$
+\mathbb{E}\lvert \hat{p}_1 - \hat{p}_2 \rvert = \sqrt{2}\,s\sqrt{\frac{2}{\pi}} = \frac{2s}{\sqrt{\pi}}
+$$
+
+반으로 나눠 더하면 $\mathbb{E}[\max] = p + \frac{s}{\sqrt{\pi}}$.
+
+**(b)** $s = \sqrt{0.8 \times 0.2 / 400} = \sqrt{0.0004} = 0.02$. 편향 $= 0.02 / 1.772 = 0.0113$, 약 1.1%p.
+
+**(c)** $s/\sqrt{\pi} \le 0.0025 \Rightarrow s \le 0.0025 \times 1.772 = 0.00443$.
+
+$$
+\frac{0.16}{n} \le 0.00443^2 = 1.96 \times 10^{-5} \;\Rightarrow\; n \ge 8150
+$$
+
+모델 두 개 중 고르는 편향을 0.25%p로 줄이는 데도 8천 개 넘게 필요하다. 후보가 많으면 더 필요하다.
+
+**(d)** 이 보정은 "진짜 정확도가 같고, 측정값이 독립 정규분포"라는 가정에서만 맞다. 실제로는 후보들의 진짜 정확도가 다르고, 같은 validation set을 공유해서 측정값이 상관돼 있고, 선택 과정(손으로 몇 번 고쳤는지)을 정확히 모델링할 수 없다. test set을 따로 두면 이런 가정 없이 선택과 독립인 추정을 얻는다. 단 그 test로 다시 고르지 않는다는 조건에서만.
+
+</details>
+
+## 더 읽을거리
+
+- [The Elements of Statistical Learning, 7.10: Cross-Validation (the wrong and right way)](https://hastie.su.domains/ElemStatLearn/): 코드의 leakage 예제가 이 절의 예제다.
+- [Do ImageNet Classifiers Generalize to ImageNet? (Recht et al., 2019)](https://arxiv.org/abs/1902.10811): 새 test set에서 정확도가 떨어지는 현상
+- [MCUNet: Tiny Deep Learning on IoT Devices (Lin et al., 2020)](https://arxiv.org/abs/2007.10319)

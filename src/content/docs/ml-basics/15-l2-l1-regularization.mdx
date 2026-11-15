@@ -1,0 +1,326 @@
+---
+title: "L2와 L1 regularization"
+description: "Ridge가 eigen 방향마다 s/(s+λ)만큼 줄인다는 것을 유도하고, MAP 해석과 soft-thresholding으로 L1이 정확한 0(sparsity)을 만드는 이유 보기"
+track: ml-basics
+module: generalization
+est: 35min
+prereq: [ml-basics/13-overfitting-bias-variance, ml-basics/05-gradient-descent-learning-rate]
+sidebar:
+  order: 15
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+13번 레슨의 9차 다항식은 train MSE가 0이지만 variance가 폭발했다. 이때 계수를 보면 수만~수십만 단위의 거대한 양수와 음수가 서로 상쇄하며 점들을 억지로 지난다. 그리고 13번 레슨 서술형에서 추정량을 0 쪽으로 당기면(shrinkage) MSE가 준다는 것을 봤다. **regularization**은 loss에 "weight가 크면 벌점"을 더해서 이 당기기를 모든 파라미터에 자동으로 적용한다. 벌점을 제곱(L2)으로 주느냐 절댓값(L1)으로 주느냐에 따라 결과가 달라지고, L1은 weight를 **정확히 0**으로 만든다. 이게 pruning의 출발점이다.
+
+## 직관: 고무줄로 원점에 묶기
+
+```text
+ L2 (제곱 벌점):   원점에 고무줄. 멀리 갈수록 세게, 가까우면 약하게 당김
+                    → 전부 조금씩 작아지지만 0에 딱 붙지는 않음
+ L1 (절댓값 벌점): 원점 쪽으로 일정한 힘으로 당김 (거리와 무관)
+                    → 데이터가 당기는 힘이 그보다 약한 weight는 정확히 0에 붙음
+
+ 제약 영역으로 보면     L2:   ○  (원)          L1:   ◇  (마름모)
+ loss 등고선이 영역에 처음 닿는 점이 해다. 마름모는 꼭짓점이 축 위(다른 좌표 = 0)에
+ 있어서 꼭짓점에서 닿기 쉽다. 원에는 그런 뾰족한 점이 없다.
+```
+
+## 정식 설명
+
+### 용어
+
+**Regularization (정규화, 규제)**: training loss 외에 모델 복잡도에 대한 벌점을 더하거나, 학습 과정을 제한해서 variance를 줄이는 모든 방법.
+*Any modification that trades a bit of bias for lower variance.*
+
+**L2 regularization (ridge, Tikhonov)**: 벌점 $\frac{\lambda}{2}\lVert \mathbf{w} \rVert_2^2 = \frac{\lambda}{2}\sum_j w_j^2$.
+
+**L1 regularization (lasso)**: 벌점 $\lambda\lVert \mathbf{w} \rVert_1 = \lambda\sum_j \lvert w_j \rvert$.
+
+**Regularization strength** $\lambda$: 벌점의 세기. hyperparameter라서 validation으로 고른다(14번 레슨).
+
+**Weight decay (가중치 감쇠)**: 매 step $\mathbf{w} \leftarrow (1 - \eta\lambda)\mathbf{w} - \eta\nabla L$. SGD에서는 L2와 같다(Adam에서는 다르다, 08번 레슨).
+
+**Sparsity (희소성)**: 0인 원소가 많은 성질.
+*Having many exactly-zero entries.*
+
+**Prior (사전 분포) / MAP (maximum a posteriori)**: 데이터를 보기 전 파라미터에 대한 믿음 / 데이터를 본 뒤 가장 그럴듯한 파라미터.
+
+**Soft-thresholding (소프트 임계화)**: $S_\lambda(a) = \text{sign}(a)\max(\lvert a \rvert - \lambda, 0)$. L1 문제의 해.
+
+### Ridge의 해와 shrinkage
+
+loss를 $L(\mathbf{w}) = \frac{1}{2N}\lVert X\mathbf{w} - \mathbf{y}\rVert^2 + \frac{\lambda}{2}\lVert\mathbf{w}\rVert^2$로 두자. gradient를 0으로 놓으면 (02번 레슨과 같은 방법)
+
+$$
+\frac{1}{N}X^\top(X\mathbf{w} - \mathbf{y}) + \lambda\mathbf{w} = 0
+\;\Rightarrow\;
+(S + \lambda I)\mathbf{w}_\lambda = \frac{1}{N}X^\top\mathbf{y}, \qquad S = \frac{1}{N}X^\top X
+$$
+
+regularization이 없을 때의 해 $\hat{\mathbf{w}}$는 $S\hat{\mathbf{w}} = \frac{1}{N}X^\top \mathbf{y}$를 만족하므로
+
+$$
+(S + \lambda I)\mathbf{w}_\lambda = S\hat{\mathbf{w}}
+$$
+
+$S = Q\,\text{diag}(s_1, \dots, s_d)\,Q^\top$로 eigen 분해하고 eigen 좌표 $\mathbf{z} = Q^\top\mathbf{w}$로 보면 성분마다 따로 풀린다.
+
+$$
+\boxed{z_{\lambda, i} = \frac{s_i}{s_i + \lambda}\,\hat{z}_i}
+$$
+
+- 데이터가 많이 퍼진 방향($s_i \gg \lambda$): 배율 $\approx 1$, 거의 안 줄인다.
+- 데이터가 거의 없는 방향($s_i \ll \lambda$): 배율 $\approx s_i/\lambda \to 0$, 강하게 줄인다.
+
+05번 레슨의 언어로 $s_i$는 곡률이다. 곡률이 작은 방향은 데이터가 그 방향 weight를 잘 정해 주지 못해서 noise에 크게 흔들린다(variance가 큼). ridge는 정확히 그 방향을 골라서 0 쪽으로 누른다. 그리고 $S + \lambda I$의 가장 작은 eigenvalue가 $\lambda$ 이상이 되므로 condition number도 좋아진다(02번 레슨 끝의 ridge 미리보기).
+
+### Weight decay와의 관계
+
+$\frac{\lambda}{2}\lVert\mathbf{w}\rVert^2$의 gradient는 $\lambda\mathbf{w}$이므로 gradient descent는
+
+$$
+\mathbf{w} \leftarrow \mathbf{w} - \eta(\nabla L_{\text{data}} + \lambda\mathbf{w}) = (1 - \eta\lambda)\mathbf{w} - \eta\nabla L_{\text{data}}
+$$
+
+매 step weight를 $(1 - \eta\lambda)$배로 줄이고(decay) 그다음 데이터 gradient로 움직인다. 08번 레슨의 AdamW는 Adam에서도 이 형태가 되게 만든 것이다.
+
+### MAP 해석
+
+$y_i = \mathbf{w}^\top\mathbf{x}_i + \varepsilon_i$, $\varepsilon_i \sim \mathcal{N}(0, \sigma^2)$이고, 데이터를 보기 전 각 weight가 $w_j \sim \mathcal{N}(0, \tau^2)$라고 믿는다고 하자. Bayes 정리로 posterior $\propto$ likelihood × prior이고 negative log를 취하면
+
+$$
+-\log p(\mathbf{w} \mid D) = \frac{1}{2\sigma^2}\sum_i (y_i - \mathbf{w}^\top\mathbf{x}_i)^2 + \frac{1}{2\tau^2}\lVert\mathbf{w}\rVert^2 + \text{const}
+$$
+
+이것을 최소화하는 것이 MAP이고 ridge와 같은 모양이다. $\frac{\sigma^2}{N}$을 곱해 위의 loss 형태로 맞추면 $\lambda = \frac{\sigma^2}{N\tau^2}$. noise가 클수록, 데이터가 적을수록, prior가 좁을수록(weight가 작다고 강하게 믿을수록) $\lambda$가 크다. 13번 레슨 서술형의 $c^*$와 같은 방향이다.
+
+prior를 Laplace 분포 $p(w_j) \propto e^{-\lvert w_j \rvert / b}$로 바꾸면 $-\log$가 $\lvert w_j\rvert / b$라서 **L1 벌점**이 된다. Laplace 분포는 0에서 뾰족하므로 "대부분의 weight는 정확히 0일 것"이라는 믿음이다.
+
+### L1이 정확한 0을 만드는 이유: soft-thresholding
+
+1차원 문제 하나를 보자. regularization 없는 최적값이 $a$일 때
+
+$$
+\min_w\; \frac{1}{2}(w - a)^2 + \lambda\lvert w \rvert
+$$
+
+**$w > 0$이면** 미분 $w - a + \lambda = 0$, $w = a - \lambda$. 가정 $w > 0$과 맞으려면 $a > \lambda$.
+
+**$w < 0$이면** $w - a - \lambda = 0$, $w = a + \lambda$. $a < -\lambda$일 때만 가능.
+
+**그 외 ($\lvert a \rvert \le \lambda$)**: 어느 쪽도 성립하지 않으므로 꺾인 점 $w = 0$이 최솟값이다. ($\lvert w \rvert$의 0에서의 subgradient가 $[-1, 1]$ 구간이라 $0 \in -a + \lambda[-1, 1]$이 성립.)
+
+$$
+\boxed{w^* = S_\lambda(a) = \text{sign}(a)\max(\lvert a \rvert - \lambda,\; 0)}
+$$
+
+같은 문제를 L2 벌점 $\frac{\lambda}{2}w^2$로 풀면 $w^* = \frac{a}{1 + \lambda}$로, $a \ne 0$이면 절대 0이 아니다.
+
+| | L2 | L1 |
+|---|---|---|
+| 벌점의 gradient | $\lambda w$ (작은 $w$엔 약함) | $\lambda\,\text{sign}(w)$ (크기와 무관) |
+| 해 | 비율로 줄임 $\frac{a}{1+\lambda}$ | 일정량 빼고 0에서 자름 |
+| 결과 | 모두 작아짐, 0은 안 됨 | 작은 건 정확히 0 (sparse) |
+
+L1 loss는 0에서 미분이 안 되므로 그냥 gradient descent 대신 **proximal gradient (ISTA)** 를 쓴다. 데이터 gradient로 한 걸음 가고, 그 결과에 soft-thresholding을 적용한다. 코드에서 구현한다.
+
+## Worked example
+
+### 예제 1. 1차원 비교
+
+regularization 없는 최적값이 $a = (3, 0.5, -1.2)$인 세 weight, $\lambda = 1$.
+
+| $a$ | L2: $a/(1 + \lambda)$ | L1: $S_1(a)$ |
+|---|---|---|
+| 3 | 1.5 | 2 |
+| 0.5 | 0.25 | **0** |
+| −1.2 | −0.6 | −0.2 |
+
+L2는 모두 절반으로 줄인다. 큰 weight도 1.5만큼 깎인다. L1은 모두 1씩 빼고, 1보다 작은 0.5는 0으로 자른다. 큰 weight는 상대적으로 덜 깎인다(3 → 2).
+
+### 예제 2. Ridge의 방향별 shrinkage
+
+$S$의 eigenvalue가 $s_1 = 10$, $s_2 = 0.1$이고 $\lambda = 0.1$이면
+
+- 방향 1: $\frac{10}{10.1} = 0.990$ → 1% 줄임
+- 방향 2: $\frac{0.1}{0.2} = 0.5$ → 절반으로 줄임
+
+condition number는 $10 / 0.1 = 100$에서 $10.1 / 0.2 = 50.5$로 준다.
+
+### 예제 3. Weight decay 한 step
+
+$w = 2$, data gradient $1$, $\eta = 0.1$, $\lambda = 0.5$: $w \leftarrow (1 - 0.05) \times 2 - 0.1 \times 1 = 1.9 - 0.1 = 1.8$.
+
+## 코드
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+
+# 1) 13번 레슨의 9차 다항식에 ridge(L2)를 건다
+f = lambda x: np.sin(2 * np.pi * x)
+x = np.linspace(0, 1, 10); y = f(x) + rng.normal(0, 0.3, 10)
+x_te = rng.uniform(0, 1, 5000); y_te = f(x_te) + rng.normal(0, 0.3, 5000)
+A, A_te = np.vander(x, 10), np.vander(x_te, 10)
+
+print("   lambda | train MSE | test MSE | ||w||")
+for lam in [0, 1e-6, 1e-4, 1e-2, 1]:
+    N = len(y)
+    w = np.linalg.solve(A.T @ A + N * lam * np.eye(10), A.T @ y)   # (XᵀX + Nλ I) w = Xᵀy
+    tr, te = np.mean((A @ w - y) ** 2), np.mean((A_te @ w - y_te) ** 2)
+    print(f" {lam:8.0e} | {tr:9.4f} | {te:8.4f} | {np.linalg.norm(w):8.1f}")
+
+# 2) L1 vs L2: 진짜 weight 중 5개만 0이 아닌 선형 회귀
+N, D = 100, 50
+X = rng.normal(size=(N, D))
+w_true = np.zeros(D); w_true[:5] = [3, -2, 1.5, 1, -1]
+y = X @ w_true + rng.normal(0, 0.5, N)
+X_te = rng.normal(size=(5000, D)); y_te = X_te @ w_true + rng.normal(0, 0.5, 5000)
+
+def soft(a, t):                          # soft-thresholding: L1의 proximal 연산
+    return np.sign(a) * np.maximum(np.abs(a) - t, 0)
+
+def lasso_ista(X, y, lam, steps=3000):
+    N = len(y); L = np.linalg.eigvalsh(X.T @ X / N).max()
+    w = np.zeros(X.shape[1])
+    for _ in range(steps):
+        g = X.T @ (X @ w - y) / N        # loss = (1/2N)||Xw - y||^2 + lam ||w||_1
+        w = soft(w - g / L, lam / L)     # gradient step 후 soft-threshold
+    return w
+
+def ridge(X, y, lam):                    # loss = (1/2N)||Xw - y||^2 + (lam/2)||w||^2
+    N = len(y)
+    return np.linalg.solve(X.T @ X / N + lam * np.eye(X.shape[1]), X.T @ y / N)
+
+for name, w in [("OLS         ", ridge(X, y, 0.0)),
+                ("ridge l=0.01", ridge(X, y, 0.01)),
+                ("ridge l=0.1 ", ridge(X, y, 0.1)),
+                ("lasso l=0.1 ", lasso_ista(X, y, 0.1))]:
+    zeros = np.sum(np.abs(w) < 1e-8)
+    te = np.mean((X_te @ w - y_te) ** 2)
+    print(f"{name}: exact zeros = {zeros:2d}/50, test MSE = {te:.3f}, w[:6] = {np.round(w[:6], 2)}")
+```
+
+```text
+   lambda | train MSE | test MSE | ||w||
+    0e+00 |    0.0000 |   0.1499 | 128430.4
+    1e-06 |    0.0102 |   0.1281 |     50.4
+    1e-04 |    0.0300 |   0.1342 |     12.8
+    1e-02 |    0.1161 |   0.2366 |      1.8
+    1e+00 |    0.3227 |   0.4990 |      0.2
+OLS         : exact zeros =  0/50, test MSE = 0.556, w[:6] = [ 3.15 -2.01  1.59  0.93 -0.87  0.09]
+ridge l=0.01: exact zeros =  0/50, test MSE = 0.497, w[:6] = [ 3.07 -1.98  1.55  0.93 -0.87  0.07]
+ridge l=0.1 : exact zeros =  0/50, test MSE = 0.888, w[:6] = [ 2.62 -1.79  1.31  0.87 -0.87 -0.04]
+lasso l=0.1 : exact zeros = 43/50, test MSE = 0.313, w[:6] = [ 2.96 -1.95  1.39  0.86 -0.84  0.  ]
+```
+
+볼 포인트:
+- **다항식**: $\lambda = 0$이면 weight norm이 약 13만이다. 아주 작은 $\lambda = 10^{-6}$만 줘도 norm이 50으로 줄고 test MSE가 0.150에서 0.128로 좋아진다. $\lambda$가 너무 크면(1) 직선에 가까워져서 underfitting이다. 13번 레슨의 U자 곡선을 $\lambda$ 축으로 다시 본 것이다.
+- **L1 vs L2**: 진짜 weight가 5개뿐인 문제에서 lasso는 50개 중 43개를 정확히 0으로 만들고 test MSE가 가장 좋다(noise 바닥이 0.25). ridge는 0을 하나도 못 만들고, $\lambda = 0.1$에서는 큰 진짜 weight(3 → 2.62)까지 깎아서 오히려 OLS보다 나쁘다.
+- 어느 쪽이 좋은지는 데이터에 달렸다. 진짜 구조가 sparse면 L1, 작은 효과가 많이 퍼져 있으면 L2가 유리하다. 그래서 둘 다 validation으로 고른다.
+
+## 흔한 오해
+
+<Aside type="caution" title="Regularization은 training loss를 줄여 준다?">
+반대다. 벌점을 더하므로 training loss(data 항)는 항상 같거나 커진다. 목적은 test loss를 줄이는 것이다. 코드의 표에서 $\lambda$를 키우면 train MSE가 계속 오른다.
+</Aside>
+
+<Aside type="caution" title="L2로도 충분히 학습하면 작은 weight는 0이 된다?">
+L2의 해는 $a/(1 + \lambda)$ 꼴이라 0에 가까워질 뿐 정확히 0이 되지 않는다. 그래서 L2로 학습한 뒤 pruning을 하려면 크기가 작은 weight를 따로 잘라야 한다(magnitude pruning). 정확한 0을 학습 과정에서 얻으려면 L1(또는 그 변형)이 필요하다.
+</Aside>
+
+<Aside type="caution" title="Bias에도 똑같이 weight decay를 건다?">
+02번 레슨 서술형에서 봤듯 bias는 데이터 전체를 평행이동하는 값이라 벌점을 줄 이유가 없다. 실전에서는 bias와 normalization layer의 scale/shift 파라미터를 weight decay에서 빼는 경우가 많다.
+</Aside>
+
+## Efficient ML 연결
+
+**L1 → pruning.** L1 regularization이나 그 변형은 weight를 0으로 만들어서 pruning할 대상을 학습 중에 만든다. 개별 weight 대신 channel이나 filter 단위 묶음에 벌점을 주면(group lasso) 통째로 지울 수 있는 구조가 생긴다. Network Slimming(Liu et al., 2017)은 BatchNorm의 scale $\gamma$에 L1을 걸어서 0이 된 channel을 지운다. MIT 6.5940의 pruning 강의에서 structured pruning의 기본 기법이다.
+
+**Weight decay → quantization 친화성.** weight decay는 weight 분포를 좁게 유지하고 큰 outlier를 억제한다. quantization은 weight 범위를 $2^b$개 구간으로 나누므로 범위가 좁고 outlier가 없을수록 오차가 작다. 반대로 LLM은 일부 channel에 큰 outlier가 생겨서 quantization이 어려운데, 이를 다루는 기법들(SmoothQuant, AWQ 등)이 따로 있다.
+
+**Magnitude pruning의 근거.** Han et al.(2015)의 Deep Compression은 L2로 학습한 뒤 크기가 작은 weight를 자르고 다시 fine-tuning한다. 크기가 작은 weight가 loss에 덜 중요하다는 가정이다. 05번 레슨의 Hessian 관점에서는 "크기 × 곡률"이 중요도라는 OBS 계열 방법(02번 레슨)이 더 정확한 기준이다.
+
+## 체크 퀴즈
+
+<Quiz
+  q="1차원 문제 min 0.5(w - a)² + λ|w|에서 a = -2.5, λ = 0.8일 때 해 w*는?"
+  options={['-3.3', '0', '약 -1.39', '-1.7']}
+  answer={3}
+  explain="|a| > λ이므로 sign(a)(|a| - λ) = -(2.5 - 0.8) = -1.7. 약 -1.39는 L2 벌점의 해 a / (1 + λ), -3.3은 λ를 반대 방향으로 더한 값, 0은 |a| ≤ λ일 때만 나온다."
+/>
+
+<Quiz
+  q="S = XᵀX / N의 eigenvalue가 4.5인 방향에서 ridge(λ = 0.5)는 regularization 없는 해를 몇 배로 줄이나?"
+  options={['0.1배', '0.5배', '0.9배', '약 1.11배']}
+  answer={2}
+  explain="s / (s + λ) = 4.5 / 5.0 = 0.9. 0.1배는 λ / (s + λ)로 줄어드는 양을 배율로 착각한 값, 약 1.11배는 (s + λ) / s로 뒤집은 값이다. eigenvalue가 0.5인 방향이었다면 0.5배로 훨씬 많이 줄인다."
+/>
+
+<Quiz
+  q="SGD + weight decay에서 w = 2, data gradient = 1, learning rate 0.1, weight decay 0.5일 때 한 step 후 w는? 업데이트는 w ← w - η(∇L + λw)."
+  options={['1.8', '1.9', '1.85', '1.7']}
+  answer={0}
+  explain="2 - 0.1 × (1 + 0.5 × 2) = 2 - 0.2 = 1.8. 1.9는 weight decay를 빼먹은 값, 1.85는 decay 항에 w를 곱하지 않고 λ만 더한 값, 1.7은 decay를 두 번 적용한 값이다."
+/>
+
+<Quiz
+  q="L1 regularization은 weight를 정확히 0으로 만들고 L2는 그렇지 않은 이유로 가장 정확한 것은?"
+  options={['L1이 L2보다 항상 벌점이 크기 때문에', 'L1 벌점의 gradient 크기가 w와 무관하게 λ라서, 작은 weight에서도 0 쪽으로 당기는 힘이 줄지 않기 때문에', 'L1은 Adam에서만 동작하기 때문에', 'L2는 bias에만 적용되기 때문에']}
+  answer={1}
+  explain="L2 벌점의 gradient λw는 w가 작아질수록 약해져서 0에 가까워질 뿐 도착하지 않는다. L1은 0이 아닌 한 λ sign(w)로 일정하게 당기고, 데이터 gradient가 λ보다 작으면 0에서 멈춘다(soft-thresholding). |w| < 1에서는 L1 벌점이 오히려 L2보다 크지만 크기 자체가 이유는 아니다."
+/>
+
+## 서술형
+
+### 문제. Orthonormal design에서 lasso와 ridge
+
+feature가 orthonormal($S = \frac{1}{N}X^\top X = I$)이면 loss가 성분마다 분리되어 $\frac{1}{2}\lVert\mathbf{w} - \hat{\mathbf{w}}\rVert^2 + \text{const}$ 꼴이 된다. regularization 없는 해가 $\hat{\mathbf{w}} = (2.0,\; 0.3,\; -0.05,\; 1.1)$이다.
+
+(a) $\frac{1}{2N}\lVert X\mathbf{w} - \mathbf{y}\rVert^2 = \frac{1}{2}\lVert\mathbf{w} - \hat{\mathbf{w}}\rVert^2 + \text{const}$임을 보여라.
+
+(b) $\lambda = 0.4$일 때 lasso 해와 ridge 해($\frac{\lambda}{2}\lVert\mathbf{w}\rVert^2$, 해는 $\hat{\mathbf{w}}/(1 + \lambda)$)를 구하라.
+
+(c) 두 해를 저장할 때, 0이 아닌 값만 (index, value)로 저장하는 sparse 형식이면 각각 몇 개의 값을 저장하나? ridge 해를 같은 수만큼 줄이려면 어떻게 해야 하고, 그러면 lasso와 무엇이 다른가?
+
+(d) MAP 해석에서 lasso의 $\lambda$는 Laplace prior의 scale $b$, noise 분산 $\sigma^2$, 데이터 수 $N$과 어떤 관계인가?
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** $\hat{\mathbf{w}} = S^{-1}\frac{1}{N}X^\top\mathbf{y} = \frac{1}{N}X^\top\mathbf{y}$. 전개하면
+
+$$
+\frac{1}{2N}\lVert X\mathbf{w} - \mathbf{y}\rVert^2 = \frac{1}{2}\mathbf{w}^\top S\mathbf{w} - \mathbf{w}^\top\frac{X^\top\mathbf{y}}{N} + \frac{\lVert\mathbf{y}\rVert^2}{2N}
+= \frac{1}{2}\lVert\mathbf{w}\rVert^2 - \mathbf{w}^\top\hat{\mathbf{w}} + \text{const}
+= \frac{1}{2}\lVert\mathbf{w} - \hat{\mathbf{w}}\rVert^2 + \text{const}'
+$$
+
+**(b)** lasso: 성분마다 soft-thresholding $S_{0.4}$.
+
+$(2.0 - 0.4,\; 0,\; 0,\; 1.1 - 0.4) = (1.6,\; 0,\; 0,\; 0.7)$. $\lvert 0.3 \rvert$와 $\lvert -0.05 \rvert$가 0.4보다 작아서 0.
+
+ridge: $\hat{\mathbf{w}} / 1.4 = (1.429,\; 0.214,\; -0.036,\; 0.786)$.
+
+**(c)** lasso는 0이 아닌 값 2개, ridge는 4개. ridge를 2개로 줄이려면 학습 후 크기가 작은 두 개를 잘라야 한다(magnitude pruning) → $(1.429, 0, 0, 0.786)$. 같은 성분이 남지만 값이 다르다. lasso는 학습 목표 자체에 sparsity가 들어 있어서 남은 weight가 "나머지가 0이라는 조건에서" 최적이지만, ridge를 자른 해는 자르기 전 기준의 최적값이라 자른 뒤 다시 맞추지 않으면 최적이 아니다. 그래서 magnitude pruning 뒤에는 fine-tuning을 한다.
+
+**(d)** posterior의 $-\log$는 $\frac{1}{2\sigma^2}\sum_i (y_i - \mathbf{w}^\top\mathbf{x}_i)^2 + \frac{1}{b}\lVert\mathbf{w}\rVert_1$. $\frac{\sigma^2}{N}$을 곱해 $\frac{1}{2N}\lVert X\mathbf{w} - \mathbf{y}\rVert^2 + \lambda\lVert\mathbf{w}\rVert_1$ 꼴로 맞추면
+
+$$
+\lambda = \frac{\sigma^2}{N b}
+$$
+
+noise가 크거나 데이터가 적거나 prior가 0 근처에 몰려 있을수록($b$가 작을수록) 더 강하게 자른다.
+
+</details>
+
+## 더 읽을거리
+
+- [The Elements of Statistical Learning, 3.4: Shrinkage Methods](https://hastie.su.domains/ElemStatLearn/): ridge의 eigen 분석과 lasso
+- [Regression Shrinkage and Selection via the Lasso (Tibshirani, 1996)](https://www.jstor.org/stable/2346178)
+- [Learning Efficient Convolutional Networks through Network Slimming (Liu et al., 2017)](https://arxiv.org/abs/1708.06519)
+- [Learning both Weights and Connections for Efficient Neural Networks (Han et al., 2015)](https://arxiv.org/abs/1506.02626)
