@@ -1,0 +1,217 @@
+---
+title: "ML Basics 종합 문제"
+description: "회귀와 loss부터 최적화, backprop, 일반화까지 시험 스타일 객관식 10문제와 서술형 3문제"
+track: ml-basics
+module: review
+est: 45min
+sidebar:
+  order: 17
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+01~16번 레슨의 내용은 실제로는 한꺼번에 쓰인다. 모델 하나를 학습하려면 loss를 정하고(01~04), gradient를 구하고(09~12), optimizer와 learning rate를 고르고(05~08), overfitting을 막고 validation으로 설정을 골라야 한다(13~16). 이 레슨은 계산 문제 위주로 트랙 전체를 점검한다. 계산기와 종이를 준비하자.
+
+<Aside type="tip" title="푸는 순서">
+객관식은 먼저 손으로 계산하고 보기를 고르자. 서술형은 풀이를 펼치기 전에 끝까지 직접 풀어보는 게 핵심이다. 틀린 문제는 문제 앞에 적힌 레슨 번호로 돌아가 복습하자.
+</Aside>
+
+## 객관식
+
+<Quiz
+  q="[01–02] 데이터 (0, 2), (1, 3), (2, 7)에 y = wx + b를 least squares로 맞추면?"
+  options={['w = 2.5, b = 1.5', 'w = 1.5, b = 2.5', 'w = 2.5, b = 0.5', 'w = 3, b = 1']}
+  answer={0}
+  explain="XᵀX = [[5, 3], [3, 3]], Xᵀy = [17, 12], det = 6. w = (3 × 17 - 3 × 12) / 6 = 2.5, b = (-3 × 17 + 5 × 12) / 6 = 1.5. 검산: 잔차 0.5, -1, 0.5의 합이 0이다. w와 b를 바꿔 쓴 실수가 흔하다."
+/>
+
+<Quiz
+  q="[04] logit (2, 1, 0), 정답이 두 번째 class일 때 cross-entropy의 logit gradient는? (소수 셋째 자리)"
+  options={['(0.665, 0.245, 0.090)', '(-0.335, 0.245, -0.910)', '(0.665, -0.755, 0.090)', '(0, -4.08, 0)']}
+  answer={2}
+  explain="softmax = (e², e, 1) / 11.107 = (0.665, 0.245, 0.090), gradient = p - y = (0.665, -0.755, 0.090). (0.665, 0.245, 0.090)은 y를 빼먹은 softmax 자체, (0, -4.08, 0)은 dL/dp = -1/p만 계산한 값이다."
+/>
+
+<Quiz
+  q="[05] L(w1, w2) = 0.5 × (4·w1² + w2²)에 learning rate 0.45로 gradient descent를 한다. 오차는 매 step 최대 몇 배가 되나?"
+  options={['0.55', '0.8', '0.6', '1.8']}
+  answer={1}
+  explain="방향별 배율 |1 - ηλ|: w1은 |1 - 0.45 × 4| = 0.8, w2는 |1 - 0.45| = 0.55. 최대는 0.8로 w1이 진동하며 수렴한다. 0.6은 최적 learning rate 2 / (4 + 1) = 0.4일 때의 배율, 1.8은 절댓값을 잊은 1 + 0.8이다."
+/>
+
+<Quiz
+  q="[06] 샘플 하나의 gradient 분산이 12다. mini-batch gradient의 표준편차를 0.5 이하로 만들려면 batch size가 최소 얼마여야 하나?"
+  options={['24', '7', '48', '12']}
+  answer={2}
+  explain="분산 12 / B ≤ 0.5² = 0.25 → B ≥ 48. 24는 표준편차를 분산처럼 다뤄 12 / 0.5로 계산한 값, 7은 √12 / 0.5 ≈ 6.9로 B 대신 √B를 구한 값이다."
+/>
+
+<Quiz
+  q="[08] 3B 파라미터 모델을 mixed precision Adam으로 학습하면 16 B/param이 든다. m과 s를 8-bit(각 1 B)로 저장하면 weight + gradient + optimizer state 메모리는? activation 제외."
+  options={['24 GB', '48 GB', '36 GB', '30 GB']}
+  answer={3}
+  explain="2 (FP16 weight) + 2 (gradient) + 4 (FP32 master) + 1 + 1 = 10 B/param, 3 × 10^9 × 10 = 30 GB. 48 GB는 압축 전, 36 GB는 m이나 s 하나만 압축한 12 B/param, 24 GB는 master weight까지 뺀 8 B/param이다."
+/>
+
+<Quiz
+  q="[05, 07] condition number κ = 400인 2차식에서, 최적으로 튜닝한 heavy ball momentum은 최적 GD보다 같은 정확도까지 몇 배 적은 step이 드나?"
+  options={['약 20배', '약 400배', '약 2배', '약 200배']}
+  answer={0}
+  explain="GD 배율 (κ - 1) / (κ + 1) = 399/401, momentum 배율 (√κ - 1) / (√κ + 1) = 19/21. step 수는 1 / ln(1/배율)에 비례하므로 ln(21/19) / ln(401/399) ≈ 0.100 / 0.005 ≈ 20배. step 수가 κ에서 √κ에 비례하게 바뀐 결과다."
+/>
+
+<Quiz
+  q="[09] 입력 3072(32×32×3 이미지), hidden 512, 512, 출력 10인 MLP(모든 층에 bias)의 파라미터 수는?"
+  options={['1,840,128', '8,053,063,680', '1,573,376', '1,841,162']}
+  answer={3}
+  explain="3073 × 512 + 513 × 512 + 513 × 10 = 1,573,376 + 262,656 + 5,130 = 1,841,162. 1,840,128은 bias를 뺀 값, 1,573,376은 첫 층만 센 값, 80억은 층 크기를 모두 곱한 값이다. 첫 층이 85%를 차지한다."
+/>
+
+<Quiz
+  q="[11] nn.Linear(3, 2), batch 2. 입력 X = [[1, 2, 0], [0, 1, 1]], upstream G = dL/dZ = [[1, 0], [-1, 2]]일 때 dL/dW (shape 2 × 3)는?"
+  options={['[[1, 0], [1, 2], [-1, 2]]', '[[1, 1, -1], [0, 2, 2]]', '[[1, 2, 0], [0, 1, 1]]', '[[1, 2, 0], [-2, 0, 2]]']}
+  answer={1}
+  explain="dW = Gᵀ X. 첫 행 = 1 × (1, 2, 0) + (-1) × (0, 1, 1) = (1, 1, -1), 둘째 행 = 0 × (1, 2, 0) + 2 × (0, 1, 1) = (0, 2, 2). [[1, 0], [1, 2], [-1, 2]]는 Xᵀ G로 shape가 3 × 2라 W와 맞지 않는다. db = G의 열 합 = (0, 2)."
+/>
+
+<Quiz
+  q="[14] 같은 validation set 2,000개에서 모델 A가 90.0%, 모델 B가 90.8%다. 이 차이를 어떻게 봐야 하나?"
+  options={['B가 확실히 좋다', '0.8%p는 무조건 의미 있는 차이다', 'validation이 2,000개면 오차가 0.01%p 수준이다', '측정 오차(표준오차 약 0.67%p) 범위라 이것만으로는 판단하기 어렵다']}
+  answer={3}
+  explain="SE = √(0.9 × 0.1 / 2000) ≈ 0.0067, 두 측정값 차이의 SE는 독립 근사로 약 √2 × 0.67 ≈ 0.95%p. 0.8%p 차이는 그보다 작다. 더 큰 validation이나 여러 seed, 같은 샘플에서의 paired 비교가 필요하다."
+/>
+
+<Quiz
+  q="[05, 16] 0에서 시작해 learning rate 0.005로 2000 step 학습하고 early stopping했다. Hessian eigenvalue 0.1인 방향은 최적해의 몇 %까지 왔나? (GD 형식 w ← w - η(Sw - b))"
+  options={['50%', '100%', '약 63%', '10%']}
+  answer={2}
+  explain="1 - (1 - ηs)^t = 1 - (1 - 0.0005)^2000 ≈ 1 - e^(-1) ≈ 0.632. 대응하는 ridge λ ≈ 1 / (ηt) = 0.1이면 s / (s + λ) = 0.5라서 50%가 나오는데, 이건 근사식이다. 10%는 eigenvalue 0.1을 그대로 비율로 쓴 값이다."
+/>
+
+## 서술형
+
+### 문제 1. 학습 한 step 손으로 따라가기
+
+관련 레슨: 09, 10, 11, 05, 08, 12번 레슨
+
+hidden unit 1개짜리 네트워크: $z = w_1 x + b_1$, $h = \text{ReLU}(z)$, $\hat{y} = w_2 h + b_2$, loss $L = \frac{1}{2}(\hat{y} - y)^2$.
+
+$x = 1.5$, $y = 1$, 초기값 $w_1 = 0.4$, $b_1 = -0.1$, $w_2 = -0.5$, $b_2 = 0.2$.
+
+(a) forward로 $z, h, \hat{y}, L$을 구하라.
+
+(b) backward로 네 파라미터의 gradient를 구하라.
+
+(c) SGD($\eta = 0.1$)로 한 step 업데이트하고 새 loss를 구하라.
+
+(d) 같은 초기값에서 Adam($\eta = 0.1$, 기본 $\beta$, $\epsilon$ 무시)으로 첫 step을 하면 각 파라미터가 얼마나 움직이나? 새 loss는?
+
+(e) $w_1$에 대해 central difference($h = 10^{-5}$) gradient check를 하면 (b)의 값과 얼마나 맞을까? 이 함수에서 central difference가 특히 정확한 이유는?
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** $z = 0.4 \times 1.5 - 0.1 = 0.5$, $h = 0.5$, $\hat{y} = -0.5 \times 0.5 + 0.2 = -0.05$, $L = \frac{1}{2}(-1.05)^2 = 0.55125$.
+
+**(b)** $\bar{\hat{y}} = \hat{y} - y = -1.05$.
+
+- $\bar{w}_2 = \bar{\hat{y}} \cdot h = -0.525$, $\bar{b}_2 = -1.05$
+- $\bar{h} = \bar{\hat{y}} \cdot w_2 = 0.525$
+- ReLU: $z = 0.5 > 0$이므로 통과, $\bar{z} = 0.525$
+- $\bar{w}_1 = \bar{z} \cdot x = 0.7875$, $\bar{b}_1 = 0.525$
+
+**(c)** $w_1 = 0.4 - 0.07875 = 0.32125$, $b_1 = -0.1 - 0.0525 = -0.1525$, $w_2 = -0.5 + 0.0525 = -0.4475$, $b_2 = 0.2 + 0.105 = 0.305$.
+
+새 forward: $z = 0.32125 \times 1.5 - 0.1525 = 0.329375$, $\hat{y} = -0.4475 \times 0.329375 + 0.305 = 0.1576$, $L = \frac{1}{2}(0.8424)^2 = 0.3548$. 0.551에서 0.355로 줄었다.
+
+**(d)** Adam 첫 step은 bias correction 후 $\hat{m} = g$, $\sqrt{\hat{s}} = \lvert g \rvert$라서 각 파라미터가 $\eta \cdot \text{sign}(g)$의 반대 방향으로 **정확히 0.1씩** 움직인다(08번 레슨).
+
+$w_1 = 0.3$, $b_1 = -0.2$, $w_2 = -0.4$, $b_2 = 0.3$. 새 forward: $z = 0.45 - 0.2 = 0.25$, $\hat{y} = -0.4 \times 0.25 + 0.3 = 0.2$, $L = \frac{1}{2}(0.8)^2 = 0.32$.
+
+이 step에서는 Adam이 더 많이 줄였지만 일반적인 결론은 아니다. gradient가 작았던 $b_1$($0.525$)도 gradient가 큰 $b_2$($1.05$)와 똑같이 움직였다는 점이 Adam의 특징이다.
+
+**(e)** central difference 값은 약 $0.7875$로 상대 오차 $10^{-11}$ 수준까지 맞는다. $z = 0.5$가 ReLU의 꺾인 점에서 멀어서 $w_1 \pm 10^{-5}$에서도 같은 선형 구간이고, 그 구간에서 $\hat{y}$는 $w_1$에 대해 1차, $L$은 2차 함수다. central difference의 truncation 오차는 $\frac{h^2}{6}f'''$인데 2차 함수는 $f''' = 0$이라 truncation 오차가 0이다. 남는 것은 round-off뿐이다(12번 레슨).
+
+</details>
+
+### 문제 2. Ridge 강도를 bias-variance로 고르기
+
+관련 레슨: 13, 15, 16번 레슨
+
+feature 하나짜리 linear regression $y = w^* x + \varepsilon$에서 $S = \frac{1}{N}\sum x_i^2 = s$, noise 분산 $\sigma^2$이다. regularization 없는 해 $\hat{w}$는 평균 $w^*$, 분산 $\frac{\sigma^2}{Ns}$이다. ridge 해는 $w_\lambda = \frac{s}{s + \lambda}\hat{w}$다.
+
+(a) $w_\lambda$의 bias²와 variance를 $c = \frac{s}{s + \lambda}$로 쓰고, MSE $\mathbb{E}[(w_\lambda - w^*)^2]$를 최소화하는 $c^*$와 $\lambda^*$를 구하라.
+
+(b) $w^* = 1$, $\sigma^2 = 1$, $N = 20$, $s = 0.5$일 때 $\lambda^*$, $c^*$, 최소 MSE를 구하고, $\lambda = 0$의 MSE와 비교하라.
+
+(c) 이 $\lambda^*$와 비슷한 효과를 early stopping으로 얻으려면 learning rate 0.1에서 대략 몇 step에 멈춰야 하나?
+
+(d) 실제로는 $w^*$를 모른다. $\lambda$를 고르는 절차를 쓰고, 고른 뒤 최종 성능을 무엇으로 보고하는지 설명하라.
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** $\mathbb{E}[w_\lambda] = cw^*$이므로 bias² $= (1 - c)^2 w^{*2}$, variance $= c^2\frac{\sigma^2}{Ns}$.
+
+$$
+\text{MSE}(c) = (1 - c)^2 w^{*2} + c^2 v, \quad v = \frac{\sigma^2}{Ns}
+$$
+
+13번 레슨 서술형과 같은 꼴이므로 $c^* = \frac{w^{*2}}{w^{*2} + v}$. $c = \frac{s}{s + \lambda}$에서 $\lambda = s\frac{1 - c}{c}$이고 $\frac{1 - c^*}{c^*} = \frac{v}{w^{*2}}$이므로
+
+$$
+\lambda^* = s \cdot \frac{v}{w^{*2}} = \frac{\sigma^2}{N w^{*2}}
+$$
+
+15번 레슨의 MAP 해석($\lambda = \sigma^2 / (N\tau^2)$)과 같은 모양이다. prior의 분산 $\tau^2$ 자리에 $w^{*2}$가 들어갔다.
+
+**(b)** $v = 1/(20 \times 0.5) = 0.1$. $\lambda^* = 1/20 = 0.05$, $c^* = 1/1.1 = 0.909$. 최소 MSE $= \frac{w^{*2} v}{w^{*2} + v} = 0.1/1.1 = 0.0909$. $\lambda = 0$이면 MSE $= v = 0.1$이므로 약 9% 줄었다. 검산: bias² $= 0.0909^2 = 0.00826$, variance $= 0.826 \times 0.1 = 0.0826$, 합 0.0909.
+
+**(c)** $\lambda \approx \frac{1}{\eta t}$이므로 $t \approx \frac{1}{0.1 \times 0.05} = 200$ step. (이 방향의 정확한 early stopping 배율은 $1 - (1 - 0.1 \times 0.5)^{200} \approx 1.0$이라, 곡률 0.5는 "작은 곡률" 근사가 맞지 않는다. 근사가 맞는 건 $\eta s t$가 작은 방향이다. 16번 레슨 예제 3처럼 곡률이 큰 방향에서는 early stopping이 ridge보다 덜 줄인다.)
+
+**(d)** 데이터를 train / validation / test로 나눈다. $\lambda$ 후보(예: $10^{-4}$부터 10배씩)마다 train으로 학습하고 validation MSE를 잰다. 가장 낮은 $\lambda$를 고른다(데이터가 적으면 k-fold CV). 고른 $\lambda$로 train(+ validation)에 다시 학습하고, **선택에 한 번도 쓰지 않은 test set**에서 한 번만 평가해 보고한다. validation 점수는 selection bias 때문에 낙관적이다(14번 레슨).
+
+</details>
+
+### 문제 3. 1.3B 모델 fine-tuning 계획
+
+관련 레슨: 06, 08, 11, 15번 레슨
+
+1.3B 파라미터 모델을 GPU 한 장(메모리 24 GB, 실효 40 TFLOP/s)에서 1억($10^8$) token으로 fine-tuning한다.
+
+(a) full fine-tuning을 mixed precision Adam(16 B/param)으로 하면 weight + gradient + optimizer state 메모리는? 24 GB에 들어가나? activation까지 생각하면?
+
+(b) (i) 8-bit Adam, (ii) LoRA(파라미터의 0.5%만 학습, 나머지는 FP16 고정)의 메모리를 같은 기준으로 구하라. LoRA 파라미터는 16 B/param으로 센다.
+
+(c) full fine-tuning의 학습 시간을 token당 $6N$ FLOPs로 어림하라. LoRA는 frozen weight의 $\partial W$를 건너뛴다. adapter 연산을 무시하면 token당 FLOPs와 시간은?
+
+(d) 메모리 때문에 micro-batch는 4로 하고 global batch 64로 학습하려 한다. 몇 번 accumulation하나? 나중에 GPU를 늘려 global batch를 256으로 키우면 learning rate는 어떻게 바꾸는 게 출발점인가?
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** $1.3 \times 10^9 \times 16 = 20.8$ GB. 24 GB에 숫자상으로는 들어가지만 남는 3.2 GB로 activation(batch × sequence × hidden × layer에 비례)과 CUDA 작업 공간을 감당하기는 거의 불가능하다. 사실상 안 된다.
+
+**(b)** (i) $2 + 2 + 4 + 1 + 1 = 10$ B/param → $13$ GB. 11 GB가 남아 activation에 쓸 수 있다.
+
+(ii) 고정 weight $1.3 \times 10^9 \times 2 = 2.6$ GB, 학습 파라미터 $6.5 \times 10^6 \times 16 = 0.104$ GB, 합 약 $2.7$ GB. 나머지 대부분을 activation에 쓸 수 있다.
+
+**(c)** full: token당 $6 \times 1.3 \times 10^9 = 7.8$ GFLOPs, 전체 $7.8 \times 10^{17}$ FLOPs. $7.8 \times 10^{17} / (40 \times 10^{12}) = 19{,}500$ s ≈ **5.4시간**.
+
+LoRA: forward $2N$ + backward의 $\partial X = GW$ 부분 $2N$ = $4N$ (11번 레슨). token당 5.2 GFLOPs, 전체 $5.2 \times 10^{17}$ FLOPs → 13,000 s ≈ **3.6시간**. 계산은 1/3만 줄지만 메모리는 약 8배 줄어든다. LoRA의 주된 이득은 메모리다.
+
+**(d)** $64 / 4 = 16$번 accumulation. micro-batch gradient의 평균이 global batch gradient와 같다(06번 레슨). global batch를 4배로 키우면 linear scaling rule로 learning rate도 4배가 출발점이다. noise floor가 $\eta / B$에 비례하기 때문이다. Adam에서는 4배가 너무 커서 $\sqrt{4} = 2$배로 시작하기도 하고, 어느 쪽이든 warmup을 같이 쓰고 validation loss로 확인한다.
+
+</details>
+
+## 다음 단계
+
+ML Basics 트랙은 여기까지다. 다음은 deep-learning 트랙으로 CNN(conv 연산, stride/padding, MAC·파라미터 수), normalization과 residual connection, attention과 Transformer를 배우고, 마지막에 그 모델들의 연산량과 메모리를 arch-foundations 트랙의 roofline으로 분석한다.
+
+## 더 읽을거리
+
+- [Deep Learning (Goodfellow, Bengio, Courville), Ch. 5–8](https://www.deeplearningbook.org/): 이 트랙 범위의 교과서
+- [Stanford CS229 Lecture Notes](https://cs229.stanford.edu/main_notes.pdf)
+- [MIT 6.5940 TinyML and Efficient Deep Learning Computing](https://efficientml.ai)
