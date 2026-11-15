@@ -1,0 +1,286 @@
+---
+title: "MLP와 activation function"
+description: "Linear layer를 쌓기만 하면 왜 소용없는지 보이고, activation을 넣은 MLP의 forward pass, 파라미터 수, FLOP 수를 계산하기"
+track: ml-basics
+module: backprop
+est: 30min
+prereq: [ml-basics/03-logistic-regression-sigmoid]
+sidebar:
+  order: 9
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+03, 04번 레슨의 logistic regression과 softmax는 입력에 대해 **선형**인 점수 $\mathbf{w}^\top \mathbf{x} + b$를 쓴다. 그래서 결정 경계(decision boundary)가 직선(평면)이다. XOR처럼 직선 하나로 나눌 수 없는 데이터는 아무리 학습해도 못 맞춘다. 해결책은 입력을 먼저 **새로운 feature로 바꾼 뒤** 그 위에서 선형 모델을 쓰는 것인데, 그 feature 변환까지 데이터에서 학습하는 모델이 MLP(multi-layer perceptron)다. 이 레슨에서 MLP의 forward pass를 정의하고, 이어지는 10~12번 레슨에서 그 gradient를 구하는 backpropagation을 유도한다.
+
+## 직관: 공간을 접어서 펴기
+
+XOR은 대각선 두 점이 같은 class다.
+
+```text
+  x2                         hidden 공간 (h1, h2)
+  1 │ ●(1)      ○(0)            h2
+    │                         1 │            ○ (1,1)→(2,1)
+    │                           │
+  0 │ ○(0)      ●(1)          0 │ ○(0,0)   ●(0,1),(1,0) → (1,0)
+    └──────────────── x1        └──────┬──────┬──── h1
+      0          1                     1      2
+  직선 하나로 ●와 ○를 못 나눔       이제 직선 하나로 나눠짐
+```
+
+hidden layer가 ReLU로 공간을 **접어서** (1,0)과 (0,1)을 같은 점으로 보내고, (1,1)을 따로 떨어뜨린다. 접힌 공간에서는 직선 하나면 충분하다. 접는 동작이 비선형(activation)이다. 접지 않고 늘이고 돌리기만 하면(선형 변환) 직선은 직선으로 남는다.
+
+## 정식 설명
+
+### 용어
+
+**Neuron (뉴런, unit)**: 입력의 가중합에 bias를 더하고 activation을 통과시킨 값 하나. $h = \phi(\mathbf{w}^\top \mathbf{x} + b)$.
+*A unit that applies a nonlinearity to an affine function of its inputs.*
+
+**Layer (층)**: 같은 입력을 받는 neuron들의 묶음. 행렬로 $\mathbf{h} = \phi(W\mathbf{x} + \mathbf{b})$.
+
+**Hidden layer (은닉층)**: 입력도 출력도 아닌 중간 층. 그 값이 hidden representation (feature)이다.
+
+**Activation function (활성화 함수)** $\phi$: 원소별로 적용하는 비선형 함수.
+*An elementwise nonlinearity applied after an affine transform.*
+
+**Pre-activation** $\mathbf{z}$: activation 전 값 $W\mathbf{x} + \mathbf{b}$. backprop에서 자주 쓴다.
+
+**MLP (Multi-Layer Perceptron, 다층 퍼셉트론)**: affine 변환과 activation을 번갈아 쌓은 네트워크. fully-connected network, feedforward network라고도 한다.
+*A stack of affine layers separated by elementwise nonlinearities.*
+
+**Width / depth (너비 / 깊이)**: 한 층의 neuron 수 / 층 수.
+
+### Forward pass
+
+입력 $\mathbf{x} \in \mathbb{R}^{d}$, hidden $h$개, 출력 $k$개인 2층 MLP:
+
+$$
+\mathbf{z}^{(1)} = W^{(1)}\mathbf{x} + \mathbf{b}^{(1)}, \quad
+\mathbf{h} = \phi(\mathbf{z}^{(1)}), \quad
+\mathbf{z}^{(2)} = W^{(2)}\mathbf{h} + \mathbf{b}^{(2)}
+$$
+
+shape: $W^{(1)} \in \mathbb{R}^{h \times d}$, $\mathbf{b}^{(1)} \in \mathbb{R}^{h}$, $W^{(2)} \in \mathbb{R}^{k \times h}$, $\mathbf{b}^{(2)} \in \mathbb{R}^{k}$. weight 행렬은 (출력, 입력) 순서이고, PyTorch `nn.Linear(in, out).weight`도 같은 (out, in) shape이다.
+
+출력 $\mathbf{z}^{(2)}$는 그대로 regression 예측이 되거나, softmax와 cross-entropy(04번 레슨)에 들어가 logit이 된다.
+
+**Batch 형태.** 샘플 $B$개를 행으로 쌓은 $X \in \mathbb{R}^{B \times d}$에 대해
+
+$$
+Z^{(1)} = X W^{(1)\top} + \mathbf{1}\mathbf{b}^{(1)\top}, \quad H = \phi(Z^{(1)}), \quad Z^{(2)} = H W^{(2)\top} + \mathbf{1}\mathbf{b}^{(2)\top}
+$$
+
+코드에서는 `X @ W1.T + b1`로 쓰고 bias는 broadcasting으로 더한다.
+
+### Activation이 없으면 한 층과 같다
+
+$\phi$를 항등함수로 두면
+
+$$
+W^{(2)}(W^{(1)}\mathbf{x} + \mathbf{b}^{(1)}) + \mathbf{b}^{(2)} = \underbrace{(W^{(2)}W^{(1)})}_{W}\mathbf{x} + \underbrace{(W^{(2)}\mathbf{b}^{(1)} + \mathbf{b}^{(2)})}_{\mathbf{b}}
+$$
+
+affine 함수의 합성은 affine이다. 몇 층을 쌓아도 한 층짜리 선형 모델과 표현력이 같다. 그래서 층 사이에 반드시 비선형 $\phi$가 있어야 한다.
+
+### 대표 activation
+
+| 이름 | 식 | 미분 | 특징 |
+|---|---|---|---|
+| Sigmoid | $\sigma(z) = 1/(1 + e^{-z})$ | $\sigma(1 - \sigma)$, 최대 0.25 | 양 끝에서 미분이 0(saturation) |
+| Tanh | $\tanh z$ | $1 - \tanh^2 z$, 최대 1 | 출력 평균이 0 근처 |
+| ReLU | $\max(0, z)$ | $z > 0$이면 1, 아니면 0 | 계산이 싸고 양수 쪽 saturation 없음 |
+| GELU | $z\,\Phi(z)$ ($\Phi$는 표준정규 CDF) | 매끄러움 | Transformer(BERT, GPT)의 기본 |
+
+sigmoid는 미분이 최대 0.25라서 층을 지날 때마다 gradient가 최소 4배씩 줄어든다(10번 레슨에서 chain rule로 확인). ReLU가 깊은 네트워크의 기본이 된 이유다. ReLU는 입력이 음수인 neuron의 gradient가 0이라, 어떤 neuron이 모든 입력에서 음수가 되면 다시 살아나지 못한다(dead ReLU).
+
+**Universal approximation theorem.** hidden layer 하나에 neuron이 충분히 많으면 구간 위의 연속함수를 원하는 정확도로 근사할 수 있다. 다만 필요한 neuron 수가 매우 클 수 있고, 깊게 쌓으면 같은 함수를 훨씬 적은 파라미터로 표현하는 경우가 많다.
+
+### 파라미터 수와 FLOPs
+
+층 크기가 $n_0 \to n_1 \to \cdots \to n_L$인 MLP:
+
+$$
+\text{params} = \sum_{\ell=1}^{L} (n_{\ell-1} + 1)\, n_\ell, \qquad
+\text{MACs per sample} = \sum_{\ell=1}^{L} n_{\ell-1}\, n_\ell
+$$
+
+FLOPs는 MAC(곱하고 더하기) 하나를 2 FLOPs로 세서 MACs의 2배다. bias 덧셈과 activation은 $n_\ell$ 차수라 무시한다. 샘플당 MACs가 파라미터 수와 거의 같다는 게 MLP(fully-connected layer)의 특징이다. weight 하나를 메모리에서 읽어서 샘플당 한 번만 쓴다는 뜻이고, 이게 arithmetic intensity가 낮은 이유다.
+
+## Worked example
+
+### 예제 1. XOR을 hidden 2개로 풀기
+
+$$
+W^{(1)} = \begin{bmatrix} 1 & 1 \\ 1 & 1 \end{bmatrix}, \;
+\mathbf{b}^{(1)} = \begin{bmatrix} 0 \\ -1 \end{bmatrix}, \;
+W^{(2)} = \begin{bmatrix} 1 & -2 \end{bmatrix}, \;
+b^{(2)} = 0, \; \phi = \text{ReLU}
+$$
+
+두 hidden neuron은 $h_1 = \text{ReLU}(x_1 + x_2)$, $h_2 = \text{ReLU}(x_1 + x_2 - 1)$, 출력은 $h_1 - 2h_2$다.
+
+| $(x_1, x_2)$ | $z^{(1)}$ | $\mathbf{h}$ | 출력 | 정답 |
+|---|---|---|---|---|
+| (0, 0) | (0, −1) | (0, 0) | 0 | 0 |
+| (0, 1) | (1, 0) | (1, 0) | 1 | 1 |
+| (1, 0) | (1, 0) | (1, 0) | 1 | 1 |
+| (1, 1) | (2, 1) | (2, 1) | 2 − 2 = 0 | 0 |
+
+$h_2$는 두 입력이 모두 1일 때만 켜져서 $h_1$이 과하게 센 것을 빼 준다.
+
+**ReLU를 빼면**: $\mathbf{h} = \mathbf{z}^{(1)}$이고 (1, 1)의 출력이 $2 - 2 \times 1 = 0$, (0, 0)의 출력이 $0 - 2 \times (-1) = 2$가 된다. 한 층 $W = W^{(2)}W^{(1)} = [-1, -1]$, $b = W^{(2)}\mathbf{b}^{(1)} = 2$와 같아서 출력이 $2 - x_1 - x_2$, 즉 2, 1, 1, 0이다. 직선 함수라 XOR이 아니다.
+
+### 예제 2. MNIST용 MLP 784 → 256 → 128 → 10
+
+| 층 | 파라미터 $(n_{\ell-1} + 1) n_\ell$ | MACs $n_{\ell-1} n_\ell$ |
+|---|---|---|
+| 784 → 256 | $785 \times 256 = 200{,}960$ | $200{,}704$ |
+| 256 → 128 | $257 \times 128 = 32{,}896$ | $32{,}768$ |
+| 128 → 10 | $129 \times 10 = 1{,}290$ | $1{,}280$ |
+| 합 | **235,146** | **234,752** |
+
+샘플당 약 0.47 MFLOPs. FP32로 저장하면 $235{,}146 \times 4 \text{ B} \approx 918.5$ KiB, INT8이면 약 229.6 KiB다. 첫 층이 파라미터의 85%를 차지한다. 입력 차원이 큰 층이 비싸다.
+
+## 코드
+
+```python
+import numpy as np
+
+relu = lambda z: np.maximum(z, 0)
+
+# XOR 데이터
+X = np.array([[0, 0], [0, 1], [1, 0], [1, 1]], dtype=float)
+y = np.array([0, 1, 1, 0], dtype=float)
+
+# 1) 선형 모델(least squares)로는 XOR을 못 맞춘다
+A = np.c_[X, np.ones(4)]
+w_lin = np.linalg.lstsq(A, y, rcond=None)[0]
+print("linear fit  :", (A @ w_lin).round(3), " weights", w_lin.round(3) + 0.0)
+
+# 2) hidden 2개짜리 MLP, 손으로 고른 weight
+W1 = np.array([[1, 1], [1, 1]], dtype=float)    # (hidden, in)
+b1 = np.array([0, -1], dtype=float)
+W2 = np.array([[1, -2]], dtype=float)           # (out, hidden)
+b2 = np.array([0.0])
+
+H = relu(X @ W1.T + b1)          # (4, 2)
+out = H @ W2.T + b2              # (4, 1)
+print("hidden H    :", H.tolist())
+print("MLP output  :", out.ravel())
+
+# 3) activation을 빼면 한 층으로 합쳐진다
+W, b = W2 @ W1, W2 @ b1 + b2
+print("no-ReLU MLP :", ((X @ W1.T + b1) @ W2.T + b2).ravel(), "== one layer", (X @ W.T + b).ravel())
+
+# 4) 파라미터 수와 FLOPs
+def mlp_cost(sizes):
+    params = sum((i + 1) * o for i, o in zip(sizes[:-1], sizes[1:]))
+    macs = sum(i * o for i, o in zip(sizes[:-1], sizes[1:]))
+    return params, macs
+
+p, m = mlp_cost([784, 256, 128, 10])
+print(f"784-256-128-10: params={p:,}  MACs/sample={m:,}  FP32={p*4/1024:.1f} KiB  INT8={p/1024:.1f} KiB")
+```
+
+```text
+linear fit  : [0.5 0.5 0.5 0.5]  weights [0.  0.  0.5]
+hidden H    : [[0.0, 0.0], [1.0, 0.0], [1.0, 0.0], [2.0, 1.0]]
+MLP output  : [0. 1. 1. 0.]
+no-ReLU MLP : [2. 1. 1. 0.] == one layer [2. 1. 1. 0.]
+784-256-128-10: params=235,146  MACs/sample=234,752  FP32=918.5 KiB  INT8=229.6 KiB
+```
+
+볼 포인트:
+- least squares 선형 모델은 XOR에서 모든 점을 0.5로 예측한다. weight가 0이고 bias만 0.5인, 평균을 찍는 해다.
+- 손으로 고른 hidden 2개짜리 MLP는 정확히 0, 1, 1, 0을 낸다.
+- ReLU를 빼면 두 층 출력과 합친 한 층 출력이 똑같다.
+
+## 흔한 오해
+
+<Aside type="caution" title="층을 많이 쌓으면 activation 없이도 표현력이 늘어난다?">
+affine 함수의 합성은 affine이므로 몇 층이든 한 층과 같다. 표현력이 아니라 계산량만 늘어난다. 깊이가 의미를 가지려면 층마다 비선형이 있어야 한다.
+</Aside>
+
+<Aside type="caution" title="ReLU는 z = 0에서 미분이 안 되니 학습에 쓸 수 없다?">
+정확히 0이 나오는 경우는 드물고, 구현에서는 $z = 0$일 때 미분을 0(또는 1)으로 정해 둔다(subgradient). gradient descent는 거의 모든 점에서 미분 가능하면 문제없이 돈다.
+</Aside>
+
+<Aside type="caution" title="Universal approximation이 있으니 hidden layer 하나면 충분하다?">
+"존재한다"는 정리일 뿐 필요한 width가 얼마인지, 학습으로 그 weight를 찾을 수 있는지는 말하지 않는다. 실전에서는 깊은 네트워크가 같은 정확도를 훨씬 적은 파라미터로 낸다.
+</Aside>
+
+## Efficient ML 연결
+
+**Linear layer = GEMM.** batch $B$에 대한 한 층은 $(B \times n_{\ell-1}) \cdot (n_{\ell-1} \times n_\ell)$ 행렬곱이다. weight를 한 번 읽어 $B$번 쓰므로 arithmetic intensity가 $B$에 비례한다 ([Arithmetic intensity](/learning-website/arch-foundations/20-arithmetic-intensity/), [Roofline for DL](/learning-website/arch-foundations/22-roofline-for-dl/)). LLM decoding처럼 $B = 1$이면 weight를 읽는 메모리 대역폭이 속도를 정한다.
+
+**Transformer의 FFN은 MLP다.** 각 Transformer block의 feed-forward 부분이 $d \to 4d \to d$ MLP이고 파라미터의 약 2/3를 차지한다. 서술형에서 계산한다. quantization과 pruning이 가장 먼저 노리는 곳이다.
+
+**Activation 선택과 엣지.** MCU에서는 ReLU가 비교 한 번이라 싸고, INT8 quantization과도 잘 맞는다(출력 범위가 0 이상). GELU, SiLU는 exp나 erf가 필요해서 lookup table이나 다항식 근사를 쓴다. 또 ReLU 출력에는 0이 많아서(activation sparsity) 0인 neuron에 대한 다음 층 계산을 건너뛰는 기법이 있다.
+
+## 체크 퀴즈
+
+<Quiz
+  q="입력 100, hidden 64, 출력 3인 MLP(모든 층에 bias 있음)의 파라미터 수는?"
+  options={['6,592', '19,200', '6,659', '6,464']}
+  answer={2}
+  explain="(100 + 1) × 64 + (64 + 1) × 3 = 6,464 + 195 = 6,659. 6,592는 bias를 빼고 100 × 64 + 64 × 3으로 센 값, 6,464는 첫 층만 센 값, 19,200은 크기를 모두 곱한 값이다."
+/>
+
+<Quiz
+  q="nn.Linear(10, 50) 다음에 activation 없이 nn.Linear(50, 2)를 붙였다. 이 모델이 표현할 수 있는 함수의 집합은?"
+  options={['hidden 50개 MLP와 같다', '10차원 입력의 모든 연속함수', '50차원으로 늘어난 2차 함수', '10 → 2 affine 함수 하나와 같다']}
+  answer={3}
+  explain="두 affine 함수의 합성은 W = W2 W1 (2 × 10), b = W2 b1 + b2인 affine 함수다. 중간이 50차원이어도 표현력은 늘지 않는다. hidden 50개 MLP가 되려면 사이에 비선형 activation이 있어야 한다."
+/>
+
+<Quiz
+  q="ReLU MLP에서 x = (2, -1), W1 = [[2, 1], [-1, 1]], b1 = (0, 1), W2 = [1, -3], b2 = 0.5일 때 출력은?"
+  options={['3.5', '9.5', '-2.5', '0.5']}
+  answer={0}
+  explain="z1 = (2·2 + 1·(-1) + 0, -1·2 + 1·(-1) + 1) = (3, -2), ReLU 후 h = (3, 0), 출력 = 1·3 - 3·0 + 0.5 = 3.5. 9.5는 ReLU를 빼먹고 -2를 그대로 쓴 값, 0.5는 두 neuron을 모두 0으로 만든 값이다."
+/>
+
+<Quiz
+  q="sigmoid activation을 10층 쌓았다. 각 층의 activation 미분만 곱한다고 할 때 gradient는 최대 몇 배로 전달되나?"
+  options={['1', '0.25', '2.5', '약 10^-6']}
+  answer={3}
+  explain="sigmoid 미분의 최댓값이 0.25이므로 0.25^10 ≈ 9.5 × 10^-7. 0.25는 한 층만 본 값, 2.5는 곱 대신 더한 값이다. 이 vanishing gradient가 ReLU를 쓰게 된 주된 이유다."
+/>
+
+## 서술형
+
+### 문제. Transformer FFN의 비용
+
+hidden 차원 $d = 4096$, layer 32개인 Transformer가 있다. 각 layer의 FFN은 $d \to 4d \to d$ MLP이고, attention은 $d \times d$ 행렬 4개($W_Q, W_K, W_V, W_O$)를 가진다. bias는 무시한다.
+
+(a) layer 하나에서 FFN과 attention의 파라미터 수를 구하고, layer 파라미터 중 FFN의 비율을 구하라.
+
+(b) 32 layer 전체의 FFN 파라미터와 layer 파라미터 합을 구하라 (embedding 제외).
+
+(c) token 하나를 처리할 때 FFN 하나의 FLOPs는? 32 layer 전체는?
+
+(d) FFN hidden($4d$개)의 ReLU 출력 중 90%가 0이고, 0인 neuron에 대한 **두 번째** 행렬곱 계산을 건너뛸 수 있다고 하자. 첫 번째 행렬곱은 그대로 계산한다. FFN FLOPs가 몇 % 줄어드나?
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** FFN: $d \cdot 4d + 4d \cdot d = 8d^2 = 8 \times 4096^2 = 134{,}217{,}728$ (약 134M). attention: $4d^2 = 67{,}108{,}864$ (약 67M). FFN 비율 $= 8d^2 / 12d^2 = 2/3 \approx 66.7\%$.
+
+**(b)** FFN: $32 \times 134.2\text{M} \approx 4.29\text{B}$. layer 합: $32 \times 12d^2 = 6{,}442{,}450{,}944 \approx 6.44\text{B}$. 여기에 embedding이 더해지면 대략 7B급 모델이 된다.
+
+**(c)** token 하나에 대해 MACs = 파라미터 수 $8d^2$, FLOPs $= 2 \times 8d^2 \approx 268\text{M}$. 32 layer면 약 $8.59$ GFLOPs. (attention의 projection까지 더하면 token당 약 $2 \times 12d^2 \times 32 \approx 12.9$ GFLOPs로, "token당 FLOPs ≈ 2 × 파라미터 수"라는 어림과 맞는다.)
+
+**(d)** 첫 행렬곱 $2 \cdot d \cdot 4d \approx 134.2$M FLOPs는 그대로, 두 번째도 원래 134.2M인데 10%만 계산하니 13.4M. 합 $147.6$M, 원래 $268.4$M 대비 $1 - 147.6/268.4 = 45\%$ 감소다.
+
+두 번째만 건너뛰면 최대 절반까지만 줄일 수 있다. 첫 번째 행렬곱까지 줄이려면 어느 neuron이 0이 될지 **미리 예측**해야 하는데, 이 예측기를 작은 모델로 두는 것이 contextual sparsity 계열 방법의 핵심이다.
+
+</details>
+
+## 더 읽을거리
+
+- [Neural Networks and Deep Learning, Chapter 4: A visual proof that neural nets can compute any function (Nielsen)](http://neuralnetworksanddeeplearning.com/chap4.html)
+- [Gaussian Error Linear Units (GELUs) (Hendrycks & Gimpel, 2016)](https://arxiv.org/abs/1606.08415)
+- [Deja Vu: Contextual Sparsity for Efficient LLMs at Inference Time (Liu et al., 2023)](https://arxiv.org/abs/2310.17157)

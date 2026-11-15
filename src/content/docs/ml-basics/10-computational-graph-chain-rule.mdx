@@ -1,0 +1,338 @@
+---
+title: "Computational graph와 chain rule"
+description: "계산을 그래프로 쪼개고, upstream gradient × local gradient 규칙 하나로 모든 파라미터의 gradient를 한 번에 구하는 reverse-mode 미분 익히기"
+track: ml-basics
+module: backprop
+est: 35min
+prereq: [ml-basics/09-mlp-activation]
+sidebar:
+  order: 10
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+05~08번 레슨의 optimizer는 전부 gradient $\nabla L$을 받아서 움직인다. 01, 03번 레슨처럼 모델이 단순하면 손으로 미분식을 썼지만, 09번 레슨의 MLP만 돼도 식이 길어지고 LLM은 파라미터가 수십억 개다. 파라미터 하나씩 조금 바꿔서 loss 변화를 재면(finite difference) forward pass를 파라미터 수만큼 돌려야 한다. **Backpropagation**은 계산을 작은 연산들의 그래프로 쪼개고 chain rule을 출력에서 입력 방향으로 한 번 적용해서, forward pass 몇 번 분량의 비용으로 **모든** 파라미터의 gradient를 동시에 구한다. PyTorch의 `loss.backward()`가 하는 일이 이것이다.
+
+## 직관: 톱니바퀴 사슬
+
+```text
+ x ──┐
+     (×)── z1 ──(+)── z ──(σ)── a ──(−y)²── L
+ w ──┘          │
+          b ────┘
+
+ forward  →   값을 계산하며 오른쪽으로
+ backward ←   "L이 이 값에 얼마나 민감한가"를 왼쪽으로
+```
+
+각 노드는 자기 연산의 **국소적인 기울기**(local gradient)만 안다. 곱셈 노드는 "입력 하나를 조금 바꾸면 출력이 상대편 값만큼 변한다"는 것만 안다. 오른쪽에서 "출력이 1 변하면 L이 얼마나 변하는지"(upstream gradient)를 받아서, 자기 local gradient를 곱해 왼쪽으로 넘긴다. 톱니바퀴 비율을 곱해 나가는 것과 같다. 어떤 노드도 전체 식을 알 필요가 없다.
+
+## 정식 설명
+
+### 용어
+
+**Computational graph (계산 그래프)**: 노드가 연산(또는 값), 간선이 데이터 흐름인 방향성 비순환 그래프(DAG).
+*A directed acyclic graph whose nodes are operations and whose edges carry intermediate values.*
+
+**Forward pass (순전파)**: 입력에서 출력 방향으로 값을 계산하는 것. backward에 필요한 중간값을 저장한다.
+
+**Backward pass (역전파)**: 출력에서 입력 방향으로 gradient를 계산하는 것.
+
+**Local gradient (국소 기울기)**: 노드 하나의 출력을 그 노드의 입력으로 미분한 값. 노드 혼자 계산할 수 있다.
+*The derivative of a node's output with respect to its own inputs.*
+
+**Upstream gradient (상류 기울기)**: 최종 출력 $L$을 그 노드의 출력으로 미분한 값 $\partial L / \partial(\text{out})$. 뒤쪽 노드들로부터 받는다.
+
+**Reverse-mode automatic differentiation (역방향 자동 미분)**: 이 레슨의 방법을 일반화한 이름. backprop은 신경망에 적용한 reverse-mode AD다.
+
+### Chain rule
+
+스칼라 합성 $L = f(g(x))$에서
+
+$$
+\frac{dL}{dx} = \frac{dL}{dg} \cdot \frac{dg}{dx}
+$$
+
+그래프로 읽으면 **(x에 대한 gradient) = (upstream gradient) × (local gradient)** 다. 노드 $u = g(x)$에서 upstream $\bar{u} = \partial L / \partial u$를 받으면
+
+$$
+\bar{x} = \bar{u} \cdot \frac{\partial u}{\partial x}
+$$
+
+($\bar{v}$는 $\partial L / \partial v$의 약자로 쓴다. adjoint라고도 부른다.)
+
+### 경로가 여러 개면 더한다
+
+$x$가 두 노드 $u_1 = g_1(x)$, $u_2 = g_2(x)$에 쓰이고 $L$이 둘 다에 의존하면, 다변수 chain rule로
+
+$$
+\frac{\partial L}{\partial x} = \frac{\partial L}{\partial u_1}\frac{\partial u_1}{\partial x} + \frac{\partial L}{\partial u_2}\frac{\partial u_2}{\partial x}
+$$
+
+값이 여러 곳으로 갈라지면(fan-out) 돌아오는 gradient는 **더한다.** 구현에서 `grad = ...`가 아니라 `grad += ...`를 쓰는 이유다.
+
+### 자주 나오는 노드의 패턴
+
+upstream을 $\bar{u}$라 하면
+
+| 노드 | forward | backward | 기억법 |
+|---|---|---|---|
+| 덧셈 | $u = x + y$ | $\bar{x} = \bar{u}$, $\bar{y} = \bar{u}$ | 그대로 **나눠 준다** |
+| 곱셈 | $u = xy$ | $\bar{x} = \bar{u}\,y$, $\bar{y} = \bar{u}\,x$ | 상대편 값으로 **바꿔 곱한다** |
+| max | $u = \max(x, y)$ | 큰 쪽에 $\bar{u}$, 작은 쪽에 0 | 이긴 쪽으로 **보낸다** |
+| ReLU | $u = \max(0, x)$ | $x > 0$이면 $\bar{u}$, 아니면 0 | max와 같음 |
+| sigmoid | $u = \sigma(x)$ | $\bar{x} = \bar{u}\,u(1 - u)$ | **출력값**으로 계산 |
+| 거듭제곱 | $u = x^k$ | $\bar{x} = \bar{u}\,k x^{k-1}$ | |
+| 분기 | $x$가 여러 곳에 쓰임 | 돌아온 gradient의 **합** | |
+
+곱셈 노드의 backward에 **상대편의 forward 값**이 필요하다는 점이 중요하다. 그래서 forward 때 중간값을 저장해 둬야 한다.
+
+### 왜 reverse 방향인가
+
+$n$개 입력, 출력 1개(loss)인 함수의 gradient를 구한다고 하자.
+
+- **Forward mode**: 입력 하나에 대해 "이 입력이 변하면 각 중간값이 얼마나 변하나"를 앞으로 전파한다. 입력마다 한 번씩, $n$번 돌아야 한다.
+- **Reverse mode**: 출력 하나에 대해 "각 중간값이 변하면 출력이 얼마나 변하나"를 뒤로 전파한다. **한 번**이면 모든 입력의 gradient가 나온다.
+
+신경망은 입력(파라미터)이 수십억 개, 출력(loss)이 1개라서 reverse mode가 압도적으로 유리하다. backward 한 번의 비용은 forward의 약 2배다(곱셈 노드마다 gradient를 두 방향으로 계산). 그래서 학습 한 step은 forward의 약 3배 FLOPs가 든다.
+
+## Worked example
+
+### 예제 1. Neuron 하나
+
+$x = 2$, $w = -1$, $b = 3$, 정답 $y = 1$. 모델 $a = \sigma(xw + b)$, loss $L = (a - y)^2$.
+
+**Forward** (중간값 저장)
+
+| 노드 | 값 |
+|---|---|
+| $z_1 = x \cdot w$ | $-2$ |
+| $z = z_1 + b$ | $1$ |
+| $a = \sigma(z)$ | $0.7311$ |
+| $d = a - y$ | $-0.2689$ |
+| $L = d^2$ | $0.0723$ |
+
+**Backward** (출력부터, $\bar{L} = 1$)
+
+| 노드 | upstream × local | 결과 |
+|---|---|---|
+| $\bar{d}$ | $1 \times 2d$ | $-0.5379$ |
+| $\bar{a}$ | $\bar{d} \times 1$ | $-0.5379$ |
+| $\bar{z}$ | $\bar{a} \times a(1 - a) = -0.5379 \times 0.1966$ | $-0.1058$ |
+| $\bar{b}$ | $\bar{z} \times 1$ (덧셈) | $-0.1058$ |
+| $\bar{z}_1$ | $\bar{z} \times 1$ (덧셈) | $-0.1058$ |
+| $\bar{w}$ | $\bar{z}_1 \times x$ (곱셈: 상대편 $x = 2$) | $-0.2115$ |
+| $\bar{x}$ | $\bar{z}_1 \times w$ (곱셈: 상대편 $w = -1$) | $+0.1058$ |
+
+$\bar{w} < 0$이므로 $w$를 키우면 loss가 준다. 실제로 $w$가 커지면 $z$가 커지고 $a$가 1에 가까워진다. 검산: 미분식을 직접 쓰면 $\partial L / \partial w = 2(a - y)\,a(1 - a)\,x$이고 같은 값이다. 그래프 방식은 이 식을 **쓰지 않고** 같은 결과를 낸다.
+
+### 예제 2. Fan-out
+
+$f = (x + y) \cdot x$, $x = 3$, $y = -1$.
+
+forward: $u = x + y = 2$, $f = u \cdot x = 6$.
+
+backward ($\bar{f} = 1$):
+- 곱셈 노드: $\bar{u} = \bar{f} \cdot x = 3$, $x$로 직접 가는 몫 $= \bar{f} \cdot u = 2$
+- 덧셈 노드: $\bar{y} = \bar{u} = 3$, $x$로 가는 몫 $= \bar{u} = 3$
+- $x$는 두 곳에 쓰였으므로 $\bar{x} = 2 + 3 = 5$
+
+검산: $f = x^2 + xy$, $\partial f/\partial x = 2x + y = 5$, $\partial f / \partial y = x = 3$. 경로 하나만 세면 2나 3이 나와서 틀린다.
+
+## 코드
+
+계산 그래프와 backward를 직접 만든다. PyTorch autograd를 아주 작게 줄인 것이다.
+
+```python
+import math
+
+class Value:
+    """스칼라 하나와 그 gradient를 들고 있는 계산 그래프 노드"""
+    def __init__(self, data, parents=(), op=""):
+        self.data, self.grad = data, 0.0
+        self.parents, self.op = parents, op
+        self._backward = lambda: None          # upstream grad를 parent에 뿌리는 함수
+
+    def __add__(self, other):
+        other = other if isinstance(other, Value) else Value(other)
+        out = Value(self.data + other.data, (self, other), "+")
+        def _backward():                       # 덧셈: upstream을 그대로 나눠 줌
+            self.grad += out.grad
+            other.grad += out.grad
+        out._backward = _backward
+        return out
+
+    def __mul__(self, other):
+        other = other if isinstance(other, Value) else Value(other)
+        out = Value(self.data * other.data, (self, other), "*")
+        def _backward():                       # 곱셈: 상대편 값을 곱해서 줌
+            self.grad += other.data * out.grad
+            other.grad += self.data * out.grad
+        out._backward = _backward
+        return out
+
+    def __sub__(self, other):
+        return self + (other * -1)
+
+    def __pow__(self, k):                      # k는 상수
+        out = Value(self.data ** k, (self,), f"**{k}")
+        def _backward():
+            self.grad += k * self.data ** (k - 1) * out.grad
+        out._backward = _backward
+        return out
+
+    def sigmoid(self):
+        s = 1 / (1 + math.exp(-self.data))
+        out = Value(s, (self,), "sigmoid")
+        def _backward():
+            self.grad += s * (1 - s) * out.grad
+        out._backward = _backward
+        return out
+
+    def backward(self):
+        order, seen = [], set()
+        def visit(v):                          # topological sort: parent가 먼저
+            if v not in seen:
+                seen.add(v)
+                for p in v.parents:
+                    visit(p)
+                order.append(v)
+        visit(self)
+        self.grad = 1.0                        # dL/dL = 1
+        for v in reversed(order):              # 출력에서 입력 방향으로
+            v._backward()
+
+# worked example 1: neuron 하나
+x, w, b, y = Value(2.0), Value(-1.0), Value(3.0), 1.0
+z = x * w + b
+a = z.sigmoid()
+L = (a - y) ** 2
+L.backward()
+print(f"z={z.data:.4f} a={a.data:.4f} L={L.data:.4f}")
+print(f"dL/dw={w.grad:.4f} dL/dx={x.grad:.4f} dL/db={b.grad:.4f}")
+
+# finite difference로 확인
+def loss_fn(xv, wv, bv):
+    s = 1 / (1 + math.exp(-(xv * wv + bv)))
+    return (s - y) ** 2
+h = 1e-6
+print(f"numeric dL/dw={(loss_fn(2, -1 + h, 3) - loss_fn(2, -1 - h, 3)) / (2 * h):.4f}")
+
+# worked example 2: fan-out. f = (x + y) * x
+x, y2 = Value(3.0), Value(-1.0)
+f = (x + y2) * x
+f.backward()
+print(f"f={f.data}  df/dx={x.grad}  df/dy={y2.grad}")
+```
+
+```text
+z=1.0000 a=0.7311 L=0.0723
+dL/dw=-0.2115 dL/dx=0.1058 dL/db=-0.1058
+numeric dL/dw=-0.2115
+f=6.0  df/dx=5.0  df/dy=3.0
+```
+
+볼 포인트:
+- 각 연산은 `_backward`에 **자기 local gradient 규칙만** 정의한다. 전체 미분식은 어디에도 없다.
+- `backward()`는 topological order의 역순으로 노드를 돌면서 upstream을 받은 노드부터 처리한다. 그래서 어떤 노드든 처리될 때 자기 `grad`가 이미 다 모여 있다.
+- fan-out 예제에서 `+=`를 `=`로 바꾸면 `df/dx`가 5가 아니라 한쪽 경로 값만 남는다. 직접 바꿔 보면 된다.
+
+## 흔한 오해
+
+<Aside type="caution" title="Backprop은 미분식을 기호로 전개하는 것이다?">
+아니다. 기호 미분(symbolic differentiation)은 식을 전개하다 보면 같은 부분식이 반복돼서 식이 폭발한다. backprop은 **숫자**로 중간값을 저장하고 재사용한다. 예제 1에서 $\bar{z}$를 한 번 계산하고 $\bar{w}, \bar{x}, \bar{b}$ 모두에 썼다.
+</Aside>
+
+<Aside type="caution" title="Gradient는 parameter에 대해서만 계산하면 된다?">
+중간 노드(activation)의 gradient를 거쳐야 parameter의 gradient에 도달한다. $\bar{x}$처럼 입력에 대한 gradient도 계산되는데, 앞 층이 있다면 그게 앞 층의 upstream이 된다. 입력 이미지에 대한 gradient는 adversarial example이나 saliency map에 쓰인다.
+</Aside>
+
+<Aside type="caution" title="Backward는 forward와 비용이 같다?">
+대략 2배다. 곱셈마다 두 입력 방향 gradient를 각각 계산하기 때문이다. 행렬로 보면 forward 행렬곱 1번에 backward 행렬곱 2번이다(11번 레슨). 게다가 forward 중간값을 저장할 메모리가 든다.
+</Aside>
+
+## Efficient ML 연결
+
+**Training memory = 저장된 activation.** 곱셈 노드 $u = wx$의 backward $\bar{w} = \bar{u}\,x$에는 forward 때의 $x$가 필요하다. 그래서 학습 중에는 모든 층의 입력 activation을 backward 때까지 들고 있어야 한다. 이게 추론보다 학습 메모리가 훨씬 큰 이유이고, activation checkpointing(일부만 저장하고 나머지는 backward 때 다시 계산)은 이 저장을 계산으로 바꾸는 기법이다.
+
+**TinyTL: bias만 학습하면 activation을 안 저장해도 된다.** 덧셈 노드 $z = z_1 + b$의 backward는 $\bar{b} = \bar{z}$로, forward 값이 필요 없다. weight gradient는 입력 activation이 필요하지만 bias gradient는 필요 없다. MIT 6.5940의 TinyTL(Cai et al., 2020)은 이 점을 이용해 weight를 얼리고 bias(와 작은 residual 모듈)만 학습해서 on-device training 메모리를 크게 줄였다. 단 upstream을 앞 층으로 넘기려면 ReLU 같은 activation의 mask(1 bit)는 필요하다.
+
+**Sparse backprop.** 어떤 층의 gradient가 필요 없으면 그 층의 backward를 아예 건너뛸 수 있다. 앞쪽 층들을 얼리면 그 층들 이전으로는 upstream을 보낼 필요가 없어서 계산과 메모리가 같이 준다.
+
+## 체크 퀴즈
+
+<Quiz
+  q="곱셈 노드 f = x · y에서 x = 4, y = -3이고 upstream gradient ∂L/∂f = 2일 때 ∂L/∂x는?"
+  options={['8', '-6', '-24', '2']}
+  answer={1}
+  explain="곱셈 노드는 상대편 값을 곱한다: ∂L/∂x = 2 × y = 2 × (-3) = -6. 8은 x를 곱한 값으로 ∂L/∂y다. 2는 덧셈 노드처럼 upstream을 그대로 넘긴 값, -24는 x와 y를 둘 다 곱한 값이다."
+/>
+
+<Quiz
+  q="a = x², f = a + 3x로 계산할 때 x = 2에서 df/dx는? x가 두 노드에 쓰인다는 점에 주의."
+  options={['4', '3', '7', '12']}
+  answer={2}
+  explain="경로 1: f → a → x로 1 × 2x = 4, 경로 2: f → 3x → x로 3. fan-out이므로 더해서 7. 4나 3은 경로 하나만 센 값이다. 직접 미분하면 2x + 3 = 7로 같다."
+/>
+
+<Quiz
+  q="f = max(x, y), x = 5, y = 2이고 upstream ∂L/∂f = 3일 때 (∂L/∂x, ∂L/∂y)는?"
+  options={['(3, 0)', '(1.5, 1.5)', '(0, 3)', '(3, 3)']}
+  answer={0}
+  explain="max는 이긴 쪽(x = 5)에만 upstream을 보낸다. y를 조금 바꿔도 출력이 변하지 않으므로 y의 gradient는 0이다. (3, 3)은 덧셈 노드처럼 나눠 준 경우, (1.5, 1.5)는 반씩 나눈 경우다. ReLU와 max pooling의 backward가 이 규칙이다."
+/>
+
+<Quiz
+  q="a = σ(z)이고 z = 0, upstream ∂L/∂a = -2일 때 ∂L/∂z는?"
+  options={['-2', '0.5', '-1', '-0.5']}
+  answer={3}
+  explain="σ(0) = 0.5, local gradient σ(1 - σ) = 0.25, 따라서 -2 × 0.25 = -0.5. -1은 local gradient 대신 출력값 σ(0) = 0.5를 곱한 실수다. 0.5는 부호를 잃은 값이다."
+/>
+
+## 서술형
+
+### 문제. Logistic regression을 그래프로 미분하기
+
+샘플 하나 $\mathbf{x} = (1, 2)$, $y = 1$, 파라미터 $\mathbf{w} = (0.5, -0.5)$, $b = 0$. 모델과 loss는 03번 레슨과 같다.
+
+$$
+z = w_1 x_1 + w_2 x_2 + b, \quad p = \sigma(z), \quad L = -y \ln p - (1 - y)\ln(1 - p)
+$$
+
+(a) 계산 그래프를 그리고 forward 값 $z, p, L$을 구하라.
+
+(b) backward로 $\bar{p}$, $\bar{z}$, $\bar{w}_1$, $\bar{w}_2$, $\bar{b}$를 구하라. $\bar{z} = p - y$가 됨을 그래프 계산 결과로 확인하라.
+
+(c) 이 그래프에서 $\bar{\mathbf{w}}$를 계산하려면 forward 때 어떤 값을 저장해 둬야 하나? $\bar{b}$만 필요하다면 무엇이 필요 없어지나?
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** 그래프: $x_1, w_1 \to (\times) \to m_1$, $x_2, w_2 \to (\times) \to m_2$, $m_1, m_2, b \to (+) \to z \to (\sigma) \to p \to (\text{CE}) \to L$.
+
+$z = 0.5 \times 1 + (-0.5) \times 2 + 0 = -0.5$, $p = \sigma(-0.5) = 0.3775$, $L = -\ln 0.3775 = 0.9741$ ($y = 1$이라 두 번째 항은 0).
+
+**(b)** $\bar{L} = 1$.
+
+- CE 노드 ($y = 1$): $\partial L / \partial p = -1/p = -2.6487$ → $\bar{p} = -2.6487$
+- sigmoid 노드: local $= p(1 - p) = 0.3775 \times 0.6225 = 0.2350$ → $\bar{z} = -2.6487 \times 0.2350 = -0.6225$
+- 확인: $p - y = 0.3775 - 1 = -0.6225$. 같다. ($-\frac{1}{p} \cdot p(1 - p) = -(1 - p) = p - 1$이 정확히 약분된다.)
+- 덧셈 노드: $\bar{m}_1 = \bar{m}_2 = \bar{b} = -0.6225$
+- 곱셈 노드: $\bar{w}_1 = \bar{m}_1 \cdot x_1 = -0.6225$, $\bar{w}_2 = \bar{m}_2 \cdot x_2 = -1.2449$
+
+03번 레슨의 $\nabla_\mathbf{w} L = (p - y)\mathbf{x}$와 같다.
+
+**(c)** $\bar{\mathbf{w}}$에는 곱셈 노드의 상대편 값 $\mathbf{x}$와, $\bar{z}$를 만들기 위한 $p$가 필요하다. (sigmoid의 local gradient가 출력 $p$로 계산되므로 $z$ 대신 $p$만 저장해도 된다.)
+
+$\bar{b}$만 필요하면 $\bar{b} = \bar{z} = p - y$이므로 $p$만 있으면 되고 **입력 $\mathbf{x}$는 저장할 필요가 없다.** 층이 많은 네트워크에서는 각 층 입력 activation이 학습 메모리의 대부분이라서, 이 차이가 TinyTL의 메모리 절감으로 이어진다.
+
+</details>
+
+## 더 읽을거리
+
+- [CS231n: Backpropagation, Intuitions](https://cs231n.github.io/optimization-2/): 덧셈, 곱셈, max 노드 패턴
+- [micrograd (Karpathy)](https://github.com/karpathy/micrograd): 이 레슨의 코드와 같은 구조의 작은 autograd
+- [Calculus on Computational Graphs: Backpropagation (Olah)](https://colah.github.io/posts/2015-08-Backprop/): forward mode와 reverse mode 비교
+- [TinyTL: Reduce Memory, Not Parameters for Efficient On-Device Learning (Cai et al., 2020)](https://arxiv.org/abs/2007.11622)

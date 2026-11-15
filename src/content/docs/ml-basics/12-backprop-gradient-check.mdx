@@ -1,0 +1,338 @@
+---
+title: "Backprop 구현과 gradient check"
+description: "임의 깊이 MLP의 backward를 numpy로 구현하고, central difference로 검증한 뒤, 선형 모델로는 못 푸는 spiral 데이터를 학습시키기"
+track: ml-basics
+module: backprop
+est: 35min
+prereq: [ml-basics/11-mlp-backprop-matrix]
+sidebar:
+  order: 12
+---
+import Quiz from '../../../components/Quiz.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## 왜 필요한가
+
+backward 구현의 버그는 조용하다. mask 하나를 빼먹거나 transpose를 잘못해도 에러가 나지 않고, loss가 **그럭저럭 줄어들기도** 한다. 그래서 "학습이 잘 안 되는데 모델 탓인지 버그 탓인지" 구분할 수가 없다. 해결책은 미분의 정의로 돌아가 loss를 직접 조금씩 흔들어 보고 backprop 결과와 비교하는 **gradient check**다. 이 레슨에서 11번 레슨의 식으로 임의 깊이 MLP를 구현하고, gradient check로 검증하고, 실제로 학습시켜서 선형 모델과의 차이를 본다. 새 layer나 custom op을 만들 때 지금도 똑같이 하는 절차다.
+
+## 직관: 저울로 확인하기
+
+```text
+backprop:    "w를 0.001 늘리면 loss가 0.0034 늘어난다"고 계산으로 주장
+gradient check:  w를 진짜 0.001 늘려서 loss를 재 본다
+
+   loss
+    │        ╱ ← 접선의 기울기 = 진짜 gradient
+    │   ●──╱──●     양쪽 두 점을 이은 기울기 ≈ 접선 기울기
+    │    ╱  │
+    └──────┼──────── w
+        w-h  w  w+h
+```
+
+양쪽으로 $h$만큼 흔든 두 점의 기울기는 $h$가 작을수록 접선 기울기에 가깝다. 다만 컴퓨터는 숫자를 유한한 자릿수로 저장하므로 $h$를 너무 작게 잡으면 오히려 틀린다.
+
+## 정식 설명
+
+### 용어
+
+**Finite difference (유한 차분)**: 함수값의 차이를 변수 차이로 나눠 미분을 근사하는 것.
+*Approximating a derivative by a difference quotient.*
+
+**Central difference (중앙 차분)**: $\dfrac{f(x + h) - f(x - h)}{2h}$. 양쪽을 쓴다.
+
+**Gradient check (그래디언트 검사)**: backprop으로 구한 gradient를 finite difference와 비교해서 구현을 검증하는 것.
+*Verifying an analytic gradient against a numerical one.*
+
+**Relative error (상대 오차)**: $\dfrac{\lvert a - b \rvert}{\max(\lvert a \rvert, \lvert b \rvert)}$. gradient 크기와 상관없이 비교하기 위해 쓴다.
+
+**Truncation error (절단 오차) / round-off error (반올림 오차)**: Taylor 전개의 높은 차수 항을 버려서 생기는 오차 / 부동소수점 표현의 유한한 정밀도 때문에 생기는 오차.
+
+**Symmetry breaking (대칭 깨기)**: hidden neuron들의 초기 weight를 서로 다르게 해서 서로 다른 feature를 학습하게 하는 것.
+
+### Forward difference vs central difference
+
+Taylor 전개:
+
+$$
+f(x + h) = f(x) + hf'(x) + \frac{h^2}{2}f''(x) + \frac{h^3}{6}f'''(x) + O(h^4)
+$$
+
+**Forward difference**:
+
+$$
+\frac{f(x + h) - f(x)}{h} = f'(x) + \frac{h}{2}f''(x) + O(h^2)
+$$
+
+오차가 $O(h)$.
+
+**Central difference**: $f(x - h)$ 전개를 빼면 짝수 차수 항이 상쇄된다.
+
+$$
+f(x + h) - f(x - h) = 2hf'(x) + \frac{h^3}{3}f'''(x) + O(h^5)
+\;\Rightarrow\;
+\frac{f(x + h) - f(x - h)}{2h} = f'(x) + \frac{h^2}{6}f'''(x) + O(h^4)
+$$
+
+오차가 $O(h^2)$. $h = 10^{-5}$이면 forward는 $10^{-5}$, central은 $10^{-10}$ 수준이다. gradient check에는 central을 쓴다.
+
+### h를 너무 작게 하면 안 되는 이유
+
+$f(x \pm h)$는 상대 정밀도 $\varepsilon$(machine epsilon: float64 약 $1.1 \times 10^{-16}$, float32 약 $6 \times 10^{-8}$)로 계산된다. 두 값을 빼면 절대 오차 약 $\varepsilon \lvert f \rvert$가 남고 이걸 $2h$로 나누므로, 전체 오차는 대략
+
+$$
+\text{err}(h) \approx \frac{\varepsilon \lvert f \rvert}{h} + \frac{h^2}{6}\lvert f''' \rvert
+$$
+
+$h$를 줄이면 둘째 항(truncation)은 줄지만 첫째 항(round-off)이 커진다. 그래서 **float64에서 $h \approx 10^{-5}$**, 그리고 gradient check는 반드시 **float64**로 한다.
+
+### Gradient check 절차
+
+1. 작은 데이터(샘플 몇 개)와 작은 모델로 backprop gradient $g_{\text{bp}}$를 구한다.
+2. 파라미터 하나씩 $\theta_i \pm h$로 바꿔 loss를 계산하고 $g_{\text{num},i} = \frac{L(\theta_i + h) - L(\theta_i - h)}{2h}$. 끝나면 원래 값으로 되돌린다.
+3. 상대 오차를 본다.
+
+| 상대 오차 | 판단 |
+|---|---|
+| $< 10^{-7}$ | 맞다 |
+| $10^{-7} \sim 10^{-4}$ | ReLU 같은 꺾인 점(kink) 근처면 괜찮을 수 있다. 의심 |
+| $> 10^{-2}$ | 거의 확실히 버그 |
+
+비용: 파라미터 $P$개에 forward $2P$번. 그래서 작은 모델에서만 하고, 검증이 끝나면 끈다.
+
+주의할 점:
+- **Kink**: ReLU에서 $z$가 0 근처면 $z \pm h$가 꺾인 점을 넘어가서 차이가 난다. 그런 원소가 없도록 입력을 고르거나 오차를 감안한다.
+- **무작위성**: dropout이나 data augmentation이 있으면 두 번의 forward가 다른 함수다. 끄고 한다.
+- **Regularization**: loss에 L2 항을 넣었다면 gradient에도 넣었는지 같이 확인된다. 오히려 좋다.
+
+### 초기화: 대칭을 깨야 한다
+
+모든 weight를 같은 값(예: 0)으로 두면, 한 층의 hidden neuron들이 같은 입력에 같은 weight라서 같은 출력을 내고, backward에서도 같은 gradient를 받는다. 업데이트 후에도 계속 같다. 64개를 둬도 사실상 neuron 1개다. 그래서 무작위로 초기화한다. ReLU MLP에서는 **He initialization** $W_{ij} \sim \mathcal{N}(0, 2/n_{\text{in}})$을 쓴다. 층을 지나도 activation의 분산이 유지되도록 고른 값이다(ReLU가 절반을 0으로 만들어서 분산이 반으로 줄어드는 것을 2로 보정).
+
+## Worked example
+
+### 예제 1. Truncation 오차
+
+$f(x) = x^3$, $x = 1$, 정답 $f'(1) = 3$. $f'' = 6$, $f''' = 6$.
+
+| $h$ | forward diff | 오차 (예측 $\frac{h}{2} \cdot 6$) | central diff | 오차 (예측 $\frac{h^2}{6} \cdot 6$) |
+|---|---|---|---|---|
+| 0.1 | $(1.331 - 1)/0.1 = 3.31$ | 0.31 (0.3) | $(1.331 - 0.729)/0.2 = 3.01$ | 0.01 (0.01) |
+| 0.01 | $(1.030301 - 1)/0.01 = 3.0301$ | 0.0301 (0.03) | $(1.030301 - 0.970299)/0.02 = 3.0001$ | 0.0001 (0.0001) |
+
+$h$를 10배 줄이면 forward 오차는 10배, central 오차는 100배 줄어든다. 유도한 오차식이 맞는다.
+
+### 예제 2. Round-off 오차: float64 vs float32
+
+같은 central difference를 정밀도별로 계산하면
+
+| $h$ | float64 오차 | float32 오차 |
+|---|---|---|
+| $10^{-1}$ | $1.0 \times 10^{-2}$ | $1.0 \times 10^{-2}$ |
+| $10^{-3}$ | $1.0 \times 10^{-6}$ | $2.1 \times 10^{-5}$ |
+| $10^{-5}$ | $9.7 \times 10^{-11}$ | $4.1 \times 10^{-3}$ |
+| $10^{-7}$ | $8.6 \times 10^{-11}$ | $0.58$ |
+| $10^{-9}$ | $8.2 \times 10^{-8}$ | $3.0$ (차이가 0이 됨) |
+
+float32는 $h = 10^{-5}$에서 이미 오차가 $10^{-3}$이다. float32로 gradient check를 하면 맞는 구현도 틀린 것처럼 보인다.
+
+## 코드
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+
+# ---------- 모델: 임의 깊이 ReLU MLP + softmax cross-entropy ----------
+def init_params(sizes, rng):
+    params = []
+    for n_in, n_out in zip(sizes[:-1], sizes[1:]):
+        W = rng.normal(0, np.sqrt(2 / n_in), size=(n_out, n_in))   # He init
+        params.append([W, np.zeros(n_out)])
+    return params
+
+def loss_and_grads(params, X, y):
+    B = X.shape[0]
+    acts, masks = [X], []                       # backward에 필요한 값 저장
+    A = X
+    for i, (W, b) in enumerate(params):
+        Z = A @ W.T + b
+        if i < len(params) - 1:
+            masks.append(Z > 0)
+            A = np.maximum(Z, 0)
+            acts.append(A)
+    Z = Z - Z.max(axis=1, keepdims=True)
+    P = np.exp(Z) / np.exp(Z).sum(axis=1, keepdims=True)
+    loss = -np.log(P[np.arange(B), y]).mean()
+
+    G = P.copy()
+    G[np.arange(B), y] -= 1
+    G /= B                                       # dL/dZ (마지막 층)
+    grads = [None] * len(params)
+    for i in reversed(range(len(params))):
+        W, _ = params[i]
+        grads[i] = [G.T @ acts[i], G.sum(axis=0)]   # dW, db
+        if i > 0:
+            G = (G @ W) * masks[i - 1]              # 앞 층으로
+    return loss, grads, P
+
+# ---------- 1) gradient check ----------
+def rel_err(a, b):
+    return np.abs(a - b).max() / max(np.abs(a).max(), np.abs(b).max(), 1e-12)
+
+Xc = rng.normal(size=(8, 3)); yc = rng.integers(0, 4, 8)
+params = init_params([3, 5, 4], rng)
+_, grads, _ = loss_and_grads(params, Xc, yc)
+
+h = 1e-5
+for li, name in [(0, "W1"), (0, "b1"), (1, "W2"), (1, "b2")]:
+    k = 0 if name[0] == "W" else 1
+    p = params[li][k]
+    num = np.zeros_like(p)
+    for idx in np.ndindex(p.shape):
+        old = p[idx]
+        p[idx] = old + h; lp = loss_and_grads(params, Xc, yc)[0]
+        p[idx] = old - h; lm = loss_and_grads(params, Xc, yc)[0]
+        p[idx] = old
+        num[idx] = (lp - lm) / (2 * h)
+    print(f"grad check {name}: rel error = {rel_err(grads[li][k], num):.2e}")
+
+# 일부러 버그: ReLU mask를 빼먹으면?
+def buggy(params, X, y):
+    W1, b1 = params[0]; W2, b2 = params[1]
+    Z1 = X @ W1.T + b1; H = np.maximum(Z1, 0); Z2 = H @ W2.T + b2
+    P = np.exp(Z2 - Z2.max(1, keepdims=True)); P /= P.sum(1, keepdims=True)
+    G = P.copy(); G[np.arange(len(y)), y] -= 1; G /= len(y)
+    return (G @ W2).T @ X                      # mask 없음
+print(f"buggy W1 (no ReLU mask): rel error = {rel_err(buggy(params, Xc, yc), grads[0][0]):.2e}")
+
+# ---------- 2) 학습: 3-class spiral ----------
+def spiral(n_per_class, rng):
+    X, y = [], []
+    for c in range(3):
+        r = np.linspace(0.05, 1, n_per_class)
+        t = np.linspace(c * 4, (c + 1) * 4, n_per_class) + rng.normal(0, 0.2, n_per_class)
+        X.append(np.c_[r * np.sin(t), r * np.cos(t)]); y.append(np.full(n_per_class, c))
+    return np.vstack(X), np.concatenate(y)
+
+X, y = spiral(100, rng)
+for sizes in [[2, 3], [2, 64, 64, 3]]:          # softmax regression vs MLP
+    params = init_params(sizes, np.random.default_rng(1))
+    vel = [[np.zeros_like(W), np.zeros_like(b)] for W, b in params]
+    for step in range(3001):
+        loss, grads, P = loss_and_grads(params, X, y)
+        for (pW, pb), (gW, gb), v in zip(params, grads, vel):   # momentum SGD (07번 레슨)
+            v[0] = 0.9 * v[0] + gW; v[1] = 0.9 * v[1] + gb
+            pW -= 0.05 * v[0]; pb -= 0.05 * v[1]
+    acc = (P.argmax(1) == y).mean()
+    print(f"sizes={sizes}: final loss={loss:.3f}, train acc={acc:.2%}")
+```
+
+```text
+grad check W1: rel error = 4.30e-11
+grad check b1: rel error = 5.03e-11
+grad check W2: rel error = 1.07e-10
+grad check b2: rel error = 3.58e-11
+buggy W1 (no ReLU mask): rel error = 4.50e-01
+sizes=[2, 3]: final loss=0.773, train acc=50.00%
+sizes=[2, 64, 64, 3]: final loss=0.001, train acc=100.00%
+```
+
+볼 포인트:
+- 올바른 backward는 상대 오차가 $10^{-10}$ 수준이다. float64 central difference의 한계 근처다.
+- ReLU mask 하나 빼먹은 버전은 오차 0.45. 이런 버그도 학습은 어느 정도 될 수 있어서 loss만 봐서는 못 잡는다.
+- 선형 모델(softmax regression, `[2, 3]`)은 spiral에서 50% 근처에 멈춘다. 결정 경계가 직선 3개라서다. hidden 64 × 2층 MLP는 학습 데이터를 100% 맞춘다. 09번 레슨의 "공간 접기"가 실제로 일어난 것이다. (학습 데이터 정확도라 일반화는 아직 모른다. 일반화 모듈에서 다룬다.)
+
+## 흔한 오해
+
+<Aside type="caution" title="Loss가 줄어들면 backward가 맞다?">
+아니다. 부호만 대체로 맞으면 loss는 줄어든다. 위 코드의 mask 누락 버그처럼 크기가 틀린 gradient로도 학습은 된다. 다만 느리거나 이상한 곳에서 멈춘다. 새 연산을 구현했으면 gradient check부터 한다.
+</Aside>
+
+<Aside type="caution" title="h는 작을수록 정확하다?">
+float64에서도 $10^{-7}$보다 작으면 round-off가 커지기 시작하고, float32는 $10^{-3}$ 근처가 최선이다. float64, $h \approx 10^{-5}$가 표준이다.
+</Aside>
+
+<Aside type="caution" title="Weight를 0으로 초기화하면 깔끔하게 시작한다?">
+hidden neuron 사이의 대칭이 깨지지 않아서 모든 neuron이 영원히 같다. ReLU MLP에서 모든 weight가 0이면 hidden 출력이 0이고 weight gradient도 0이라 bias만 학습된다. bias는 0으로 둬도 되지만 weight는 무작위로 초기화한다.
+</Aside>
+
+## Efficient ML 연결
+
+**Custom kernel을 만들면 gradient check부터.** quantization의 fake-quant 연산, fused kernel, 새 attention 변형처럼 backward를 직접 쓰는 순간 이 레슨의 절차가 필요하다. PyTorch에는 `torch.autograd.gradcheck`가 있고, 정확히 이 레슨의 central difference를 float64로 돌린다.
+
+**Quantization은 미분이 0이다.** round 함수는 거의 모든 점에서 기울기가 0이고 정수 경계에서 끊긴다. 그대로 backprop하면 gradient가 전부 0이다. QAT(quantization-aware training)는 backward에서 round를 항등함수처럼 취급하는 **straight-through estimator(STE)** 를 쓴다. 이건 일부러 "틀린" gradient를 쓰는 것이라 gradient check가 통과하지 않는다. 진짜 gradient와 STE gradient의 차이가 무엇인지 아는 것이 QAT를 이해하는 출발점이다.
+
+**학습 메모리 계산.** 위 코드에서 `acts`와 `masks`가 backward를 위해 저장하는 값이다. 이 리스트의 크기가 그대로 activation 메모리다. 서술형에서 직접 센다.
+
+## 체크 퀴즈
+
+<Quiz
+  q="f(x) = x³, x = 2에서 h = 0.1인 central difference로 구한 미분값은?"
+  options={['12.61', '12.01', '12', '11.41']}
+  answer={1}
+  explain="(2.1³ - 1.9³) / 0.2 = (9.261 - 6.859) / 0.2 = 12.01. 오차 0.01 = h² × f''' / 6 = 0.01 × 6 / 6. 12.61은 forward difference (9.261 - 8) / 0.1, 11.41은 backward difference, 12는 정확한 값이다."
+/>
+
+<Quiz
+  q="파라미터 10,000개인 모델을 central difference로 전부 gradient check하려면 forward pass가 몇 번 필요한가?"
+  options={['20,000', '10,000', '2', '3']}
+  answer={0}
+  explain="파라미터마다 +h, -h로 2번씩, 2 × 10,000 = 20,000번. backprop은 forward 1번 + backward 1번(약 forward 2번 비용)으로 전부 구한다. 3은 backprop 한 번의 forward 환산 비용이다."
+/>
+
+<Quiz
+  q="ReLU MLP의 hidden layer weight를 모두 같은 값 0.1로 초기화하고 학습하면?"
+  options={['학습이 정상적으로 된다', '첫 step에서 gradient가 폭발한다', 'hidden neuron들이 계속 서로 같은 값으로 업데이트된다', '첫 step에 모든 neuron이 dead ReLU가 된다']}
+  answer={2}
+  explain="같은 입력과 같은 weight라 hidden 출력이 같고, 다음 층 weight도 같으면 받는 gradient도 같아서 업데이트 후에도 같다. neuron 여러 개가 사실상 하나처럼 동작한다(대칭이 깨지지 않음). 무작위 초기화가 필요한 이유다."
+/>
+
+<Quiz
+  q="float64, h = 1e-5로 gradient check를 했더니 어떤 layer의 상대 오차가 3 × 10^-2였다. 가장 적절한 판단은?"
+  options={['float64 round-off 수준이라 정상이다', 'h를 1e-9로 줄이면 해결된다', 'ReLU kink 때문이니 무시한다', '구현 버그일 가능성이 매우 높다']}
+  answer={3}
+  explain="정상 구현은 10^-7 이하, kink가 몇 개 섞여도 보통 10^-4 수준이다. 10^-2는 버그(mask 누락, transpose, 1/B 누락 등)를 의심해야 한다. h를 1e-9로 줄이면 round-off가 커져서 오히려 나빠진다."
+/>
+
+## 서술형
+
+### 문제. 최적의 h와 activation 메모리
+
+(a) central difference의 오차를 $\text{err}(h) \approx \dfrac{\varepsilon\lvert f \rvert}{h} + \dfrac{h^2}{6}\lvert f''' \rvert$로 둘 때, 오차를 최소화하는 $h^*$를 구하라.
+
+(b) $f(x) = x^3$, $x = 1$에서 float64($\varepsilon = 1.11 \times 10^{-16}$)와 float32($\varepsilon = 5.96 \times 10^{-8}$)의 $h^*$를 구하고, 예제 2의 표와 비교하라.
+
+(c) 코드의 spiral MLP `[2, 64, 64, 3]`을 batch 300(전체 데이터)으로 학습할 때, backward를 위해 저장하는 `acts`(float64)와 `masks`(bool, 원소당 1 byte)의 메모리를 구하라. 같은 모델의 파라미터 메모리(float64)와 비교하라.
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** 미분해서 0으로 놓는다.
+
+$$
+-\frac{\varepsilon\lvert f\rvert}{h^2} + \frac{h}{3}\lvert f'''\rvert = 0 \;\Rightarrow\; h^3 = \frac{3\varepsilon\lvert f \rvert}{\lvert f''' \rvert} \;\Rightarrow\; h^* = \left(\frac{3\varepsilon\lvert f \rvert}{\lvert f''' \rvert}\right)^{1/3}
+$$
+
+$h^* \propto \varepsilon^{1/3}$이다.
+
+**(b)** $\lvert f \rvert = 1$, $\lvert f''' \rvert = 6$.
+
+- float64: $h^* = (3 \times 1.11 \times 10^{-16} / 6)^{1/3} = (5.55 \times 10^{-17})^{1/3} \approx 3.8 \times 10^{-6}$. 표에서 $10^{-5}$, $10^{-7}$ 근처가 가장 작았다($\sim 10^{-10}$). 맞는다.
+- float32: $h^* = (3 \times 5.96 \times 10^{-8} / 6)^{1/3} = (2.98 \times 10^{-8})^{1/3} \approx 3.1 \times 10^{-3}$. 표에서 $10^{-3}$일 때 $2 \times 10^{-5}$로 가장 작았다. 맞는다. 그리고 최선이어도 $10^{-5}$ 오차라 gradient check에 쓰기엔 부족하다.
+
+**(c)** `acts`: 입력 $300 \times 2$, hidden 두 층 $300 \times 64$씩. 원소 $300 \times (2 + 64 + 64) = 39{,}000$개 × 8 B $= 312{,}000$ B $\approx 305$ KiB.
+
+`masks`: $2 \times 300 \times 64 = 38{,}400$ B $\approx 37.5$ KiB.
+
+파라미터: $(2 + 1) \times 64 + (64 + 1) \times 64 + (64 + 1) \times 3 = 192 + 4{,}160 + 195 = 4{,}547$개 × 8 B $\approx 35.5$ KiB.
+
+저장된 activation이 파라미터의 약 10배다. 작은 모델에 큰 batch면 학습 메모리는 weight가 아니라 activation이 정한다. batch를 늘리면 activation만 비례해서 커진다.
+
+</details>
+
+## 더 읽을거리
+
+- [CS231n: Gradient checks](https://cs231n.github.io/neural-networks-3/#gradcheck)
+- [torch.autograd.gradcheck 문서](https://pytorch.org/docs/stable/generated/torch.autograd.gradcheck.gradcheck.html)
+- [Delving Deep into Rectifiers (He et al., 2015)](https://arxiv.org/abs/1502.01852): He initialization
+- [Estimating or Propagating Gradients Through Stochastic Neurons for Conditional Computation (Bengio et al., 2013)](https://arxiv.org/abs/1308.3432): straight-through estimator
