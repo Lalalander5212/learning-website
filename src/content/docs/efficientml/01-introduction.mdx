@@ -1,0 +1,281 @@
+---
+title: "Lec 1. Introduction: 왜 Efficient ML인가"
+description: "MIT 6.5940 Fall 2026 Lecture 1. 모델은 하드웨어보다 빨리 커지고, 에너지는 연산보다 데이터 이동에서 쓰인다. 코스 전체 지도와 이 사이트의 선수 레슨 연결"
+track: efficientml
+module: intro
+est: 35min
+prereq: [arch-foundations/22-roofline-for-dl]
+sidebar:
+  order: 1
+---
+import Quiz from '../../../components/Quiz.astro';
+import YouTube from '../../../components/YouTube.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+<YouTube id="tY75czj43_4" title="EfficientML.ai Lecture 1 - Introduction (MIT 6.5940 Fall 2026)" />
+
+<Aside type="note" title="이 레슨 쓰는 법">
+영상을 먼저 보고, 아래 노트로 핵심을 정리한 뒤 퀴즈와 서술형을 푼다. 영상 아래 **현재 시간 메모에 추가**를 누르면 `[12:34]` 형식의 시간이 페이지 맨 아래 "내 메모"에 붙는다. 다시 보고 싶은 장면을 표시해 두면 된다. 강의 슬라이드는 [코스 페이지](https://hanlab.mit.edu/courses/2026-fall-65940)에 있다. 아래 노트는 강의 내용을 옮겨 적은 것이 아니라, 강의가 다루는 주제를 이 사이트의 다른 레슨과 이어서 다시 설명한 것이다.
+</Aside>
+
+## 왜 필요한가
+
+딥러닝 모델의 크기와 연산량은 하드웨어의 메모리 용량과 대역폭보다 훨씬 빠르게 늘어 왔다. 그 결과 좋은 모델이 있어도 휴대폰, 노트북, 마이크로컨트롤러에는 **올라가지 않거나**, 올라가도 느리고 배터리를 많이 먹는다. 데이터센터에서도 같은 문제가 비용과 전력으로 나타난다. 이 코스의 질문은 하나다. **같은 정확도를 더 적은 메모리, 연산, 에너지로 낼 수 있는가.** 답은 모델만 줄이는 것이 아니라 모델, 소프트웨어(runtime, kernel), 하드웨어를 같이 설계하는 것(co-design)이다.
+
+## 직관: 계산보다 비싼 것은 옮기기
+
+```text
+ 에너지 (45 nm, 연산 하나 또는 32-bit 하나 읽기)
+ 
+ INT8 add      0.03 pJ  ▏
+ FP16 mul      1.1  pJ  ▎
+ FP32 mul      3.7  pJ  ▌
+ SRAM read     5    pJ  ▋            (칩 안, 작은 메모리)
+ DRAM read   640    pJ  ████████████████████████████████████████████████ … (칩 밖)
+```
+
+곱셈 한 번보다 그 숫자를 칩 밖 DRAM에서 가져오는 것이 수백 배 비싸다. 그래서 efficient ML 기법의 상당수는 **덜 옮기는 방법**이다. weight를 작게(quantization), 적게(pruning) 만들고, 한 번 가져온 데이터를 여러 번 쓰고([tiling, fusion](/learning-website/arch-foundations/12-tiling-and-fusion/)), 칩 안 메모리에 맞추는 것(MCUNet)이다.
+
+## 정식 설명
+
+### 용어
+
+**Model size (모델 크기)**: weight를 저장하는 데 드는 바이트. 파라미터 수 × bit 수 / 8.
+*Bytes needed to store the weights: #params × bit-width / 8.*
+
+**Peak memory / activation memory (최대 메모리 / activation 메모리)**: 추론 중 동시에 메모리에 있어야 하는 중간값(activation)의 최대량. MCU에서는 weight보다 이게 먼저 막힌다.
+*The largest amount of intermediate data that must be resident at once during inference.*
+
+**Latency (지연 시간) / throughput (처리량)**: 입력 하나를 처리하는 데 걸리는 시간 / 단위 시간당 처리하는 양 ([arch-foundations 01](/learning-website/arch-foundations/01-latency-throughput/)).
+
+**MAC (multiply-accumulate) / FLOPs**: 곱하고 더하기 한 번 / 부동소수점 연산 수. 1 MAC = 2 FLOPs ([ml-basics 09](/learning-website/ml-basics/09-mlp-activation/)).
+
+**Energy per inference (추론당 에너지)**: 입력 하나(LLM이면 token 하나)를 처리하는 데 쓰는 에너지. 배터리 기기에서는 latency만큼 중요하다.
+
+**Memory-bound / compute-bound**: 속도를 메모리 대역폭이 정하는지 연산 능력이 정하는지 ([roofline, arch-foundations 21](/learning-website/arch-foundations/21-roofline-model/)).
+
+**Hardware-software co-design (하드웨어-소프트웨어 공동 설계)**: 모델 구조, 압축 방법, 실행 엔진, 하드웨어를 서로에 맞춰 함께 설계하는 것.
+*Designing the model, its compression, the runtime and the hardware jointly.*
+
+### 에너지는 데이터 이동이 정한다
+
+Horowitz(ISSCC 2014)가 정리한 45 nm 공정의 값이다 (pJ).
+
+| 연산 | 에너지 | 연산 | 에너지 |
+|---|---|---|---|
+| 8-bit int add | 0.03 | 8-bit int mul | 0.2 |
+| 32-bit int add | 0.1 | 32-bit int mul | 3.1 |
+| 16-bit FP add | 0.4 | 16-bit FP mul | 1.1 |
+| 32-bit FP add | 0.9 | 32-bit FP mul | 3.7 |
+| 32-bit SRAM read (8 KB) | 5 | 32-bit DRAM read | 640 |
+
+읽을 거리 두 개:
+
+1. **정밀도를 낮추면 연산이 싸진다.** 곱셈기의 면적과 에너지는 bit 수의 대략 제곱으로 늘어서, FP32 곱셈(3.7)보다 INT8 곱셈(0.2)이 18배 싸다. quantization이 Lec 5, 6의 주제다.
+2. **DRAM 접근은 연산보다 두세 자릿수 비싸다.** DRAM read 한 번(640)은 FP32 곱셈의 약 173배, INT8 덧셈의 약 21,000배다. 최신 공정과 메모리에서는 절대값이 다르지만 이 순서는 그대로다.
+
+### LLM decoding이 memory-bound인 이유를 에너지로 보기
+
+batch 1로 token 하나를 만들 때, $N$개 weight를 전부 DRAM에서 한 번씩 읽고 weight당 MAC 한 번을 한다. weight 하나를 읽어 한 번만 쓰므로 arithmetic intensity가 1 MAC/weight로 매우 낮다 ([arch-foundations 22](/learning-website/arch-foundations/22-roofline-for-dl/)). 에너지로 쓰면
+
+$$
+E_{\text{token}} \approx \underbrace{\frac{N \cdot b / 8}{4} \cdot E_{\text{DRAM}}}_{\text{weight 읽기}} + \underbrace{N \cdot (E_{\text{mul}} + E_{\text{add}})}_{\text{MAC}}
+$$
+
+($b$는 weight bit 수, 32-bit 단위로 읽는다고 본다.) 첫 항은 $b$에 비례해서 줄고, 둘째 항은 계산 정밀도가 그대로면 안 준다. weight를 4-bit로 줄이는 것(Lec 13의 AWQ 같은 weight-only quantization)이 decoding에서 효과가 큰 이유다.
+
+### 코스 지도 (Fall 2026)
+
+코스 페이지의 일정 기준이다. 오른쪽은 이 사이트에서 먼저 보면 좋은 레슨이다.
+
+| 단원 | 강의 | 이 사이트의 선수 레슨 |
+|---|---|---|
+| 도입 | Lec 1 Introduction, Lec 2 Basics of Deep Learning | ml-basics 01~12 |
+| Efficient Inference | Lec 3, 4 Pruning and Sparsity | ml-basics 15 (L1, sparsity) |
+| | Lec 5, 6 Quantization | ml-basics 05 (Hessian), 08 (8-bit state), arch-foundations 16 (SIMD) |
+| | Lec 7, 8 Neural Architecture Search | ml-basics 14 (selection bias) |
+| | Lec 9 Knowledge Distillation | ml-basics 04 (temperature) |
+| | Lec 10 MCUNet, Lec 11 TinyEngine | arch-foundations 07~12 (memory hierarchy, tiling) |
+| Generative AI 최적화 | Lec 12 Transformer and LLM, Lec 13 LLM Quantization and Deployment | arch-foundations 22, ml-basics 11 (6N FLOPs) |
+| | Lec 14 LLM Post Training, Lec 15 Long Context LLM | ml-basics 08 (Adam 메모리) |
+| | Lec 16 Vision Transformer, Lec 17, 18 Diffusion Model | |
+| Efficient Training | Lec 19, 22 Distributed Training | ml-basics 06 (batch, linear scaling) |
+
+lab은 Lab 0(basics), Lab 1(GPU basics), Lab 2(pruning), Lab 3(NAS), Lab 4(quantization), Lab 5(노트북에서 LLM 돌리기)다.
+
+### Co-design의 예: 압축과 하드웨어
+
+pruning으로 weight의 90%를 0으로 만들어도, 하드웨어가 dense 행렬곱만 할 줄 알면 0도 곱하고 0도 읽는다. 저장 공간은 sparse 형식으로 줄일 수 있지만 속도와 에너지는 그대로다. Deep Compression(pruning + quantization + Huffman coding)은 모델을 작게 만들었고, EIE는 그 압축 형식을 **풀지 않고 바로** 계산하는 가속기였다. 압축 기법은 그것을 활용하는 runtime이나 하드웨어와 짝을 이뤄야 실제 이득이 된다. 이 코스의 lab이 kernel과 runtime까지 다루는 이유다.
+
+## Worked example
+
+### 예제 1. 7B 모델 token 하나의 에너지 (45 nm 값으로)
+
+$N = 7 \times 10^9$, FP16 weight, FP16 MAC.
+
+**Step 1. Weight 읽기**: $7 \times 10^9 \times 2\text{ B} = 14$ GB $= 3.5 \times 10^9$개 32-bit word. $3.5 \times 10^9 \times 640\text{ pJ} = 2.24$ J.
+
+**Step 2. MAC**: $7 \times 10^9 \times (1.1 + 0.4)\text{ pJ} = 10.5$ mJ.
+
+**Step 3. 비율**: $2.24 / 0.0105 \approx 213$배. 에너지의 99.5%가 weight를 옮기는 데 쓰인다.
+
+**Step 4. 4-bit weight**: 3.5 GB, 읽기 에너지 0.56 J로 4배 준다. MAC은 FP16으로 계산하면(weight를 읽은 뒤 FP16으로 되돌려서 곱함) 그대로 10.5 mJ다.
+
+초당 20 token이면 45 nm 값 기준으로 DRAM에만 약 45 W를 쓴다는 계산이다. 실제 최신 기기는 비트당 에너지가 훨씬 낮지만, "decoding 에너지는 weight 읽기가 지배한다"는 결론은 같다.
+
+### 예제 2. 어디에 들어가나
+
+weight만 세면
+
+| 모델 | FP32 | INT8 | INT4 |
+|---|---|---|---|
+| MobileNetV2 (3.4M) | 13.6 MB | 3.4 MB | 1.7 MB |
+| 7B LLM | 28 GB | 7 GB | 3.5 GB |
+| 70B LLM | 280 GB | 70 GB | 35 GB |
+
+- 1 MB flash인 MCU에는 모바일용으로 작게 만든 MobileNetV2도 INT8로 3.4 MB, INT4로도 1.7 MB라 안 들어간다. 그래서 MCU용 모델은 구조부터 새로 찾는다(Lec 10 MCUNet).
+- 7B는 INT4면 8 GB GPU나 휴대폰 메모리 근처에 들어간다. Lab 5의 노트북 LLM이 이 계산이다.
+
+## 코드
+
+```python
+# Horowitz (ISSCC 2014), 45 nm 기준 연산/접근 에너지 (pJ)
+E = {
+    "int8_add": 0.03, "int32_add": 0.1, "fp16_add": 0.4, "fp32_add": 0.9,
+    "int8_mul": 0.2, "int32_mul": 3.1, "fp16_mul": 1.1, "fp32_mul": 3.7,
+    "sram_32b": 5.0, "dram_32b": 640.0,
+}
+
+def decode_energy(params, w_bits, mac=("fp16_mul", "fp16_add")):
+    """LLM decoding 1 token: weight를 DRAM에서 한 번씩 다 읽고, weight당 MAC 1번 (batch 1)"""
+    weight_bytes = params * w_bits / 8
+    dram_j = weight_bytes / 4 * E["dram_32b"] * 1e-12     # 32-bit 단위로 읽는다고 봄
+    mac_j = params * (E[mac[0]] + E[mac[1]]) * 1e-12
+    return weight_bytes, dram_j, mac_j
+
+print("DRAM read / FP32 mul =", round(E["dram_32b"] / E["fp32_mul"]))
+print("DRAM read / INT8 add =", round(E["dram_32b"] / E["int8_add"]))
+print()
+print(" model | weight | memory   | DRAM energy | MAC energy | DRAM/MAC")
+for name, p, bits in [("7B", 7e9, 16), ("7B", 7e9, 4), ("1B", 1e9, 16), ("1B", 1e9, 4)]:
+    b, d, m = decode_energy(p, bits)
+    print(f" {name:>5} | {bits:2d}-bit | {b/1e9:5.2f} GB | {d:8.3f} J  | {m*1e3:7.2f} mJ | {d/m:6.0f}x")
+
+# weight가 들어가는 가장 작은 장치 (weight만 셈. activation, KV cache는 제외)
+devices = [("MCU(1MB flash)", 1e6), ("phone(~3GB)", 3e9), ("GPU 8GB", 8e9), ("GPU 80GB", 80e9)]
+print()
+for mname, p in [("MobileNetV2 3.4M", 3.4e6), ("LLM 7B", 7e9), ("LLM 70B", 70e9)]:
+    cells = []
+    for bits in (32, 8, 4):
+        size = p * bits / 8
+        fit = next((d for d, cap in devices if size <= cap), "none")
+        cells.append(f"{bits:2d}-bit {size/1e9:g} GB -> {fit}")
+    print(f"{mname:16s}  " + " | ".join(cells))
+```
+
+```text
+DRAM read / FP32 mul = 173
+DRAM read / INT8 add = 21333
+
+ model | weight | memory   | DRAM energy | MAC energy | DRAM/MAC
+    7B | 16-bit | 14.00 GB |    2.240 J  |   10.50 mJ |    213x
+    7B |  4-bit |  3.50 GB |    0.560 J  |   10.50 mJ |     53x
+    1B | 16-bit |  2.00 GB |    0.320 J  |    1.50 mJ |    213x
+    1B |  4-bit |  0.50 GB |    0.080 J  |    1.50 mJ |     53x
+
+MobileNetV2 3.4M  32-bit 0.0136 GB -> phone(~3GB) |  8-bit 0.0034 GB -> phone(~3GB) |  4-bit 0.0017 GB -> phone(~3GB)
+LLM 7B            32-bit 28 GB -> GPU 80GB |  8-bit 7 GB -> GPU 8GB |  4-bit 3.5 GB -> GPU 8GB
+LLM 70B           32-bit 280 GB -> none |  8-bit 70 GB -> GPU 80GB |  4-bit 35 GB -> GPU 80GB
+```
+
+볼 포인트:
+- 같은 모델이라도 bit 수만 바꾸면 들어가는 장치가 바뀐다. 70B는 FP32로는 GPU 한 장에 못 올리지만 INT4면 80 GB GPU 한 장에 들어간다.
+- 4-bit weight에서 DRAM/MAC 비율이 213배에서 53배로 준다. 여전히 weight 읽기가 지배적이라, 연산을 줄이는 것보다 weight를 줄이는 것이 decoding에서 먼저다.
+- 이 계산에는 activation과 KV cache가 빠져 있다. 긴 문맥에서는 KV cache가 weight만큼 커진다(Lec 15).
+
+## 흔한 오해
+
+<Aside type="caution" title="FLOPs를 반으로 줄이면 반만큼 빨라진다?">
+memory-bound 연산에서는 FLOPs가 아니라 옮기는 바이트가 시간을 정한다. LLM decoding처럼 weight를 한 번 읽어 한 번 쓰는 경우, 연산을 줄여도 weight를 그대로 읽으면 속도는 거의 그대로다. 먼저 roofline에서 어느 쪽인지 확인한다.
+</Aside>
+
+<Aside type="caution" title="압축하면 정확도를 반드시 잃는다?">
+적당한 pruning과 quantization은 정확도를 거의 잃지 않고, 경우에 따라 regularization처럼 오르기도 한다([ml-basics 13](/learning-website/ml-basics/13-overfitting-bias-variance/)). 어디까지 줄여도 괜찮은지, 줄인 뒤 어떻게 회복하는지(fine-tuning, QAT)가 코스의 기술적 내용이다.
+</Aside>
+
+<Aside type="caution" title="Edge에서는 모델 크기만 맞추면 된다?">
+MCU에서는 weight가 flash에 들어가도 실행 중 activation이 SRAM(수백 KB)에 안 들어가서 막히는 경우가 많다. 서술형에서 계산한다. 모델 크기와 peak activation memory를 둘 다 봐야 한다.
+</Aside>
+
+## Efficient ML 연결
+
+이 레슨이 곧 코스의 출발점이라, 여기서는 이 트랙을 공부하는 순서를 정리한다.
+
+- **영상 → 노트 → 문제** 순서로 한다. 영상에서 빨리 지나간 유도는 노트에서 이 사이트의 선수 레슨으로 연결한다.
+- 위 코스 지도 표의 오른쪽 열이 막히면 그 레슨부터 본다. 특히 Lec 5, 6(quantization) 전에 arch-foundations의 SIMD와 roofline, Lec 12 전에 deep-learning 트랙의 attention이 필요하다(deep-learning 트랙은 준비 중).
+- lab은 Colab 링크가 코스 페이지에 있다. lab 내용은 이 사이트에 옮기지 않고, 풀면서 막힌 개념을 레슨으로 만든다.
+
+## 체크 퀴즈
+
+<Quiz
+  q="Horowitz의 45 nm 값에서 32-bit DRAM read 한 번은 16-bit FP 곱셈 한 번의 대략 몇 배 에너지인가?"
+  options={['약 173배', '약 580배', '약 128배', '약 21,000배']}
+  answer={1}
+  explain="640 / 1.1 ≈ 582. 약 173배는 32-bit FP 곱셈(3.7 pJ)과 비교한 값, 약 21,000배는 8-bit int 덧셈(0.03 pJ)과 비교한 값, 약 128배는 SRAM read(5 pJ)와 DRAM read를 비교한 값이다."
+/>
+
+<Quiz
+  q="13B 파라미터 LLM의 weight를 INT4로 저장하면 크기는? (scale 같은 부가 정보는 무시)"
+  options={['26 GB', '52 GB', '13 GB', '6.5 GB']}
+  answer={3}
+  explain="13 × 10^9 × 4 bit / 8 = 6.5 × 10^9 B = 6.5 GB. 26 GB는 FP16, 52 GB는 FP32, 13 GB는 INT8이다. 실제 4-bit 형식은 group마다 scale을 두어서 조금 더 크다."
+/>
+
+<Quiz
+  q="3B 파라미터 모델을 INT8 weight로 batch 1 decoding할 때, token 하나당 weight를 DRAM에서 읽는 에너지는? (45 nm 값, 32-bit read = 640 pJ, weight는 token마다 한 번씩 전부 읽음)"
+  options={['약 1.92 J', '약 0.12 J', '약 0.48 J', '약 4.8 mJ']}
+  answer={2}
+  explain="3 × 10^9 B / 4 B = 7.5 × 10^8번 read, × 640 pJ = 0.48 J. 약 1.92 J는 바이트마다 640 pJ를 곱해 4로 나누는 것을 빼먹은 값, 약 0.12 J는 4로 한 번 더 나눈 값, 약 4.8 mJ는 단위를 100배 틀린 값이다."
+/>
+
+<Quiz
+  q="LLM decoding(batch 1)에서 FLOPs를 절반으로 줄이는 기법을 썼는데 token 속도가 거의 그대로였다. 가장 그럴듯한 이유는?"
+  options={['decoding이 memory-bound라서 weight를 읽는 시간이 속도를 정하기 때문', 'GPU가 FLOPs를 세지 못하기 때문', 'FLOPs가 줄면 정확도가 떨어져 다시 계산하기 때문', 'batch가 1이라 compute-bound이기 때문']}
+  answer={0}
+  explain="batch 1 decoding은 weight 하나를 읽어 MAC 한 번만 하므로 arithmetic intensity가 매우 낮아 memory-bound다. 연산을 줄여도 읽는 바이트가 같으면 시간이 같다. batch 1이라서 오히려 memory-bound가 된다."
+/>
+
+## 서술형
+
+### 문제. MobileNetV2를 MCU에 올리기
+
+MCU: flash 1 MB(weight 저장), SRAM 256 KB(실행 중 activation). MobileNetV2: 파라미터 3.4M, 입력 224 × 224 × 3, 첫 conv 출력 112 × 112 × 32. 모든 값은 INT8(1 B)로 저장한다고 하자.
+
+(a) weight 크기는 flash에 들어가나? INT8로 들어가려면 파라미터가 몇 배 줄어야 하나?
+
+(b) 첫 conv를 실행하는 동안 입력과 출력 activation을 동시에 SRAM에 들고 있어야 한다. 필요한 메모리는? 256 KB와 비교하라.
+
+(c) 입력 해상도를 96 × 96으로 줄이면(첫 conv 출력 48 × 48 × 32) (b)는 어떻게 되나? 해상도를 줄이는 것의 대가는?
+
+(d) 이 결과로 볼 때 MCU용 모델 설계에서 파라미터 수만 줄이는 것으로 부족한 이유를 설명하라.
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** $3.4 \times 10^6 \times 1\text{ B} = 3.4$ MB. 1 MB flash에 안 들어간다. 약 3.4배(파라미터 약 1M 이하로) 줄여야 한다. INT4로 해도 1.7 MB라 부족하다.
+
+**(b)** 입력 $224 \times 224 \times 3 = 150{,}528$ B, 출력 $112 \times 112 \times 32 = 401{,}408$ B, 합 $551{,}936$ B ≈ 539 KB. 256 KB($262{,}144$ B)의 2배가 넘는다. weight를 아무리 줄여도 첫 layer를 실행할 수 없다.
+
+**(c)** 입력 $96 \times 96 \times 3 = 27{,}648$ B, 출력 $48 \times 48 \times 32 = 73{,}728$ B, 합 $101{,}376$ B ≈ 99 KB. 256 KB에 들어간다. 대가는 정확도다. 이미지의 세부가 사라져서 작은 물체를 못 알아본다. 그래서 해상도와 구조를 함께 탐색해서 같은 메모리에서 정확도가 가장 높은 조합을 찾는다(Lec 7, 8 NAS와 Lec 10 MCUNet).
+
+**(d)** 제약이 두 개다. flash는 파라미터 수가, SRAM은 **가장 큰 activation 순간**이 정한다. MobileNetV2의 앞쪽 layer는 파라미터가 적지만 해상도가 높아서 activation이 크다. 파라미터만 줄이면 (a)는 해결되지만 (b)는 그대로다. 해상도, channel 수, layer별 실행 순서(activation을 조각내서 계산하는 patch-based inference 같은 방법)를 같이 바꿔야 한다.
+
+</details>
+
+## 더 읽을거리
+
+- [MIT 6.5940 Fall 2026 코스 페이지](https://hanlab.mit.edu/courses/2026-fall-65940): 일정, 슬라이드, lab
+- [Computing's energy problem (and what we can do about it) (Horowitz, ISSCC 2014)](https://doi.org/10.1109/ISSCC.2014.6757323)
+- [Deep Compression (Han et al., 2015)](https://arxiv.org/abs/1510.00149)
+- [EIE: Efficient Inference Engine on Compressed Deep Neural Network (Han et al., 2016)](https://arxiv.org/abs/1602.01528)
+- [MCUNet: Tiny Deep Learning on IoT Devices (Lin et al., 2020)](https://arxiv.org/abs/2007.10319)

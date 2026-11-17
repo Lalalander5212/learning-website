@@ -1,0 +1,30 @@
+---
+// <YouTube id="tY75czj43_4" title="Lecture 1 - Introduction" />
+// 썸네일을 먼저 보여주고, 누르면 youtube-nocookie 플레이어를 띄움. 본 위치는 저장돼서 이어보기 가능.
+// 레슨 하나에 하나만 쓴다 (<Ts>가 이 플레이어를 조작함).
+interface Props { id: string; title?: string }
+const { id, title = 'YouTube video' } = Astro.props;
+---
+<figure class="yt not-content" data-yt={id}>
+  <div class="yt-frame">
+    <button
+      class="yt-poster"
+      type="button"
+      aria-label={`${title} 재생`}
+      style={`background-image: url(https://i.ytimg.com/vi/${id}/hqdefault.jpg)`}
+    >
+      <span class="yt-play" aria-hidden="true"></span>
+    </button>
+    <div class="yt-mount"></div>
+  </div>
+  <figcaption class="yt-bar">
+    <span class="yt-title">{title}</span>
+    <button class="lw-link yt-resume" type="button" hidden></button>
+    <button class="lw-link yt-stamp" type="button">현재 시간 메모에 추가</button>
+    <a href={`https://www.youtube.com/watch?v=${id}`} target="_blank" rel="noopener">YouTube에서 열기</a>
+  </figcaption>
+</figure>
+<script>
+  import { initVideo } from '../lib/youtube';
+  initVideo();
+</script>
