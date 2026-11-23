@@ -7,12 +7,14 @@ export type DoneRec = { d: string | null; t: number };
 export type QuizRec = { a: boolean; first: boolean | null; t: number };
 export type ReviewRec = { stage: number; due: string; t: number };
 export type NoteRec = { text: string; t: number };
+export type VideoRec = { pos: number; dur: number; t: number }; // 초 단위. pos = 마지막으로 본 위치
 export type State = {
   v: 2;
   done: Record<string, DoneRec>;
   quiz: Record<string, QuizRec>; // key: `${lessonId}#${index}`
   review: Record<string, ReviewRec>; // key: `${lessonId}#${index}`
   notes: Record<string, NoteRec>;
+  video: Record<string, VideoRec>; // key: YouTube video id
   activity: Record<string, number>; // 날짜별 활동 수
   settings: { gate: boolean; t: number };
 };
@@ -30,7 +32,7 @@ export const qkey = (lesson: string, i: number) => `${lesson}#${i}`;
 export const lessonOf = (key: string) => key.slice(0, key.lastIndexOf('#'));
 
 export function empty(): State {
-  return { v: 2, done: {}, quiz: {}, review: {}, notes: {}, activity: {}, settings: { gate: true, t: 0 } };
+  return { v: 2, done: {}, quiz: {}, review: {}, notes: {}, video: {}, activity: {}, settings: { gate: true, t: 0 } };
 }
 
 export function normalize(p: any): State {
@@ -41,7 +43,7 @@ export function normalize(p: any): State {
     if (typeof v === 'string') s.done[k] = { d: v, t: Date.parse(v + 'T12:00:00') || 1 };
     else if (v && typeof v === 'object') s.done[k] = v as DoneRec;
   }
-  for (const f of ['quiz', 'review', 'notes'] as const) {
+  for (const f of ['quiz', 'review', 'notes', 'video'] as const) {
     for (const [k, v] of Object.entries(p[f] || {})) if (v && typeof v === 'object') (s[f] as any)[k] = v;
   }
   for (const [k, v] of Object.entries(p.activity || {})) if (typeof v === 'number') s.activity[k] = v;
@@ -80,7 +82,7 @@ const newer = <T extends { t: number }>(x?: T, y?: T) => (!x ? y! : !y ? x : y.t
 
 export function merge(a: State, b: State): State {
   const out = empty();
-  for (const f of ['done', 'quiz', 'review', 'notes'] as const) {
+  for (const f of ['done', 'quiz', 'review', 'notes', 'video'] as const) {
     const keys = new Set([...Object.keys(a[f]), ...Object.keys(b[f])]);
     for (const k of keys) (out[f] as any)[k] = newer((a[f] as any)[k], (b[f] as any)[k]);
   }

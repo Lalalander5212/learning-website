@@ -27,6 +27,17 @@ export const TRACKS = [
     ],
   },
   { id: 'deep-learning', title: 'Deep Learning' },
+  {
+    id: 'efficientml',
+    title: 'MIT 6.5940 EfficientML',
+    // Fall 2026 강의 영상 하나 = 레슨 하나. https://hanlab.mit.edu/courses/2026-fall-65940
+    modules: [
+      { id: 'intro', title: '도입' },
+      { id: 'inference', title: 'Efficient Inference' },
+      { id: 'genai', title: 'Generative AI 최적화' },
+      { id: 'training', title: 'Efficient Training' },
+    ],
+  },
   { id: 'llm-internals', title: 'LLM Internals' },
   { id: 'edge-llm', title: 'Edge LLM' },
   { id: 'llm-systems', title: 'LLM Systems' },

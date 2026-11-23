@@ -111,11 +111,25 @@ for (const track of TRACKS) {
     let quizzes = 0;
     let hasEssay = false;
     let importsQuiz = false;
+    const used = { YouTube: 0, Ts: 0 };
+    const imported = { YouTube: false, Ts: false };
 
     walk(tree, (n, inSkipped) => {
       const line = n.position?.start.line ?? 0;
 
       if (n.type === 'mdxjsEsm' && /components\/Quiz\.astro/.test(n.value)) importsQuiz = true;
+      if (n.type === 'mdxjsEsm') for (const c of Object.keys(imported)) if (new RegExp(`components/${c}\\.astro`).test(n.value)) imported[c] = true;
+      if ((n.type === 'mdxJsxFlowElement' || n.type === 'mdxJsxTextElement') && n.name in used) {
+        used[n.name]++;
+        if (n.name === 'Ts') {
+          const t = n.attributes?.find((a) => a.name === 't')?.value;
+          if (typeof t !== 'string' || !/^(\d+:)?\d{1,2}:\d{2}$/.test(t)) err(f, line, 'video', `<Ts t="${t}">: t는 "mm:ss" 또는 "h:mm:ss" 문자열`);
+        }
+        if (n.name === 'YouTube') {
+          const id = n.attributes?.find((a) => a.name === 'id')?.value;
+          if (typeof id !== 'string' || !/^[\w-]{11}$/.test(id)) err(f, line, 'video', `<YouTube id="${id}">: id는 11자리 YouTube video id (watch?v= 뒤의 값)`);
+        }
+      }
 
       if (n.type === 'math' || n.type === 'inlineMath') {
         try { katex.renderToString(n.value, { displayMode: n.type === 'math', throwOnError: true, strict: 'ignore' }); }
@@ -166,6 +180,9 @@ for (const track of TRACKS) {
       }
     });
 
+    for (const c of Object.keys(used)) if (used[c] && !imported[c]) err(f, 0, 'mdx', `${c}를 쓰는데 import가 없음: import ${c} from '../../../components/${c}.astro';`);
+    if (used.YouTube > 1) err(f, 0, 'video', `<YouTube>가 ${used.YouTube}개. 레슨 하나에 영상 하나 (Ts가 첫 번째 플레이어만 조작함)`);
+    if (used.Ts && !used.YouTube) err(f, 0, 'video', '<Ts>를 쓰는데 <YouTube>가 없음');
     if (quizzes && !importsQuiz) err(f, 0, 'mdx', "Quiz를 쓰는데 import가 없음: import Quiz from '../../../components/Quiz.astro';");
     if (isReview) { if (quizzes < 5) warn(f, 0, 'quiz-count', `종합 레슨인데 퀴즈 ${quizzes}개 (5개 이상)`); }
     else if (quizzes < 3 || quizzes > 5) warn(f, 0, 'quiz-count', `퀴즈 ${quizzes}개 (레슨당 3~5개)`);

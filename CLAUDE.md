@@ -24,6 +24,7 @@ npm run dev        # 로컬 미리보기. 레슨 파일을 추가/이동하면 �
 6. commit하고 push한다.
    - 레슨/콘텐츠만 바꿨으면 `main`에 바로 commit, push한다. 메시지 예: `Add lessons 24-26: linear regression, logistic regression, loss`
    - 사이트 코드(`src/components`, `src/lib`, `src/styles`, `astro.config.mjs`, `scripts`, 이 파일)를 바꿨으면 브랜치를 만들고 PR을 연다.
+   - commit author는 사용자로 한다: `git -c user.name="Vasco Park" -c user.email="130405143+Lalalander5212@users.noreply.github.com" commit ...`. Claude는 메시지 끝 `Co-Authored-By:`로 남긴다.
 7. 배포 확인: `gh api repos/Lalalander5212/learning-website/actions/runs?per_page=1 --jq '.workflow_runs[0] | "\(.status) \(.conclusion) \(.html_url)"'` 로 deploy 워크플로가 `completed success`인지 본다. 실패하면 로그를 보고 고친다.
 8. 사용자에게 올린 레슨 목록(트랙, 번호, 제목)과 사이트 URL을 알려준다.
 
@@ -50,7 +51,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 ### 트랙과 모듈
 
-원본은 `src/tracks.mjs`. 트랙: `arch-foundations`, `ml-basics`, `deep-learning`, `llm-internals`, `edge-llm`, `llm-systems`.
+원본은 `src/tracks.mjs`. 트랙: `arch-foundations`, `ml-basics`, `deep-learning`, `efficientml`, `llm-internals`, `edge-llm`, `llm-systems`.
 
 - 새 모듈이 필요하면 `src/tracks.mjs`의 해당 트랙 `modules`에 `{ id, title }`를 추가한다. 순서대로 사이드바와 로드맵에 보인다.
 - 모듈이 없던 트랙에 처음 레슨을 올릴 때는 레슨 3~6개 단위로 모듈을 먼저 정한다.
@@ -90,6 +91,24 @@ import { Aside } from '@astrojs/starlight/components';
 - 되는 형태: `16번 레슨`, `10~12번 레슨`, `08, 09번 레슨`
 - 안 되는 형태: `7번 레슨`(한 자리), `(08, 09)`(뒤에 "번 레슨" 없음), 제목·코드·퀴즈 문자열 안
 - 다른 트랙의 레슨은 일반 링크로: `[KV cache](/learning-website/llm-internals/03-kv-cache/)`
+
+## 영상 레슨
+
+강의 영상(예: `efficientml` 트랙의 MIT 6.5940)을 보면서 공부하는 레슨. 영상 하나 = 레슨 하나.
+
+```mdx
+import YouTube from '../../../components/YouTube.astro';
+import Ts from '../../../components/Ts.astro';   // 타임스탬프를 쓸 때만
+
+<YouTube id="tY75czj43_4" title="EfficientML.ai Lecture 1 - Introduction (MIT 6.5940 Fall 2026)" />
+```
+
+- `<YouTube>`는 frontmatter와 import 바로 다음, 본문 맨 위에 하나만 둔다. `id`는 `watch?v=` 뒤의 11자리.
+- 썸네일을 누르면 youtube-nocookie 플레이어가 뜨고, 본 위치가 저장돼서(`store.video`, Gist sync 포함) 다음에 이어볼 수 있다. 영상 아래 "현재 시간 메모에 추가"는 `[mm:ss]`를 레슨 메모에 붙인다.
+- `<Ts t="12:30" />`는 누르면 그 시점으로 이동하는 버튼이다. **영상을 직접 확인한 시간만 쓴다.** 확인할 수 없으면 타임스탬프를 넣지 않는다.
+- 영상 아래 노트는 위 "본문 구조" 그대로 쓴다. 자막이나 슬라이드를 옮겨 적지 말고, 강의가 다루는 주제를 이 사이트의 다른 레슨과 이어서 다시 설명한다. 슬라이드는 코스 페이지 링크만 건다.
+- `est`는 노트와 문제를 푸는 시간이다(영상 시간 제외).
+- 다른 트랙 레슨을 가리킬 때는 "NN번 레슨"을 쓰지 않는다(같은 트랙으로 해석됨). `[ml-basics 13](/learning-website/ml-basics/13-overfitting-bias-variance/)`처럼 링크로 쓴다.
 
 ## 체크 퀴즈
 
@@ -141,6 +160,7 @@ import { Aside } from '@astrojs/starlight/components';
 - `src/lib/remark-lesson-links.mjs`: `NN번 레슨` 자동 링크
 - `scripts/check-lessons.mjs`: 레슨 검증. CI에서 빌드 전에 돈다
 - `src/components/Quiz.astro`, `src/lib/quiz.ts`: 퀴즈 (보기 셔플, 채점)
+- `src/components/YouTube.astro`, `Ts.astro`, `src/lib/youtube.ts`: 영상 레슨 (지연 로딩, 이어보기, 타임스탬프)
 - `src/lib/store.ts`, `sync.ts`: 진행상황 저장(localStorage)과 Gist sync
 - `src/lib/lesson.ts`, `review.ts`: 레슨 페이지, 복습 페이지 동작
 - `src/components/overrides/`: Starlight 컴포넌트 override (레슨 헤더/하단, 사이드바 표시, 테마)
