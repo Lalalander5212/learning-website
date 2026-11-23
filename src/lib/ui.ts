@@ -29,6 +29,23 @@ export function isTyping(e: KeyboardEvent) {
   return !!t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
 }
 
+// 데스크톱(50rem 이상)에서 왼쪽 사이드바 접기/펴기. 모바일은 Starlight 메뉴 버튼을 그대로 씀.
+export function toggleSidebar() {
+  const root = document.documentElement;
+  const collapsed = !root.hasAttribute('data-sidebar-collapsed');
+  root.toggleAttribute('data-sidebar-collapsed', collapsed);
+  try { localStorage.setItem('lw-sidebar-collapsed', collapsed ? '1' : '0'); } catch {}
+  paintSidebarToggle();
+}
+
+export function paintSidebarToggle() {
+  const collapsed = document.documentElement.hasAttribute('data-sidebar-collapsed');
+  document.querySelectorAll<HTMLButtonElement>('.lw-sidebar-toggle').forEach((b) => {
+    b.setAttribute('aria-expanded', String(!collapsed));
+    b.setAttribute('aria-label', collapsed ? '사이드바 펴기' : '사이드바 접기');
+  });
+}
+
 export function toggleTheme() {
   const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
   document.documentElement.dataset.theme = next;

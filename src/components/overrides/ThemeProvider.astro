@@ -7,6 +7,9 @@
     let t = null;
     try { t = localStorage.getItem('starlight-theme'); } catch {}
     document.documentElement.dataset.theme = t === 'light' ? 'light' : 'dark';
+    let c = null;
+    try { c = localStorage.getItem('lw-sidebar-collapsed'); } catch {}
+    if (c === '1') document.documentElement.setAttribute('data-sidebar-collapsed', '');
     window.StarlightThemeProvider = { updatePickers() {} };
   })();
 </script>
