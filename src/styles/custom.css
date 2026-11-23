@@ -326,3 +326,22 @@ a.dash-title:hover { text-decoration: underline; text-decoration-thickness: 3px;
 .yt-bar a { color: var(--sl-color-gray-3); }
 .yt-ts { font: inherit; font-variant-numeric: tabular-nums; font-size: 0.9em; padding: 0.05rem 0.4rem; border: 1px solid var(--lw-line); border-radius: 0.3rem; background: var(--sl-color-gray-6); color: var(--sl-color-accent-high); cursor: pointer; }
 .yt-ts:hover { border-color: var(--sl-color-accent); }
+
+/* ── 왼쪽 사이드바 접기 (데스크톱) ─────────────────────── */
+.lw-title-row { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+.lw-sidebar-toggle {
+  display: none; flex: none; align-items: center; justify-content: center;
+  width: 2rem; height: 2rem; padding: 0; border: 0; border-radius: 0.4rem;
+  background: none; color: var(--sl-color-gray-2); cursor: pointer;
+}
+.lw-sidebar-toggle:hover { background: var(--sl-color-gray-6); color: var(--sl-color-white); }
+.lw-sidebar-toggle:focus-visible { outline: 2px solid var(--sl-color-accent-high); outline-offset: 2px; }
+.lw-sidebar-toggle .lw-st-closed { display: none; }
+:root[data-sidebar-collapsed] .lw-sidebar-toggle .lw-st-open { display: none; }
+:root[data-sidebar-collapsed] .lw-sidebar-toggle .lw-st-closed { display: inline; }
+@media (min-width: 50rem) {
+  :root[data-has-sidebar] .lw-sidebar-toggle { display: inline-flex; }
+  /* 본문 시작 위치만 0으로. --sl-sidebar-width는 오른쪽 TOC 폭에도 쓰여서 건드리지 않음 */
+  :root[data-has-sidebar][data-sidebar-collapsed] { --sl-content-inline-start: 0rem; }
+  :root[data-sidebar-collapsed] .sidebar-pane { display: none; }
+}

@@ -17,13 +17,14 @@ import { url } from '../../lib/lessons';
     <div><dt><kbd>H</kbd></dt><dd>대시보드</dd></div>
     <div><dt><kbd>R</kbd></dt><dd>복습</dd></div>
     <div><dt><kbd>T</kbd></dt><dd>라이트/다크 전환</dd></div>
+    <div><dt><kbd>B</kbd></dt><dd>왼쪽 사이드바 접기/펴기</dd></div>
     <div><dt><kbd>/</kbd></dt><dd>검색</dd></div>
   </dl>
   <form method="dialog"><button class="lw-btn">닫기</button></form>
 </dialog>
 <script>
   import { load, isDone, dueKeys } from '../../lib/store';
-  import { isTyping, toggleTheme } from '../../lib/ui';
+  import { isTyping, toggleTheme, toggleSidebar } from '../../lib/ui';
   import { initAutoSync } from '../../lib/sync';
 
   const base = import.meta.env.BASE_URL.replace(/\/$/, '');
@@ -68,6 +69,7 @@ import { url } from '../../lib/lessons';
     if (e.key === '?') { e.preventDefault(); help.open ? help.close() : help.showModal(); }
     else if (help.open) return;
     else if (k === 't') toggleTheme();
+    else if (k === 'b') toggleSidebar();
     else if (k === 'h') location.href = help.dataset.home!;
     else if (k === 'r') location.href = help.dataset.review!;
   });

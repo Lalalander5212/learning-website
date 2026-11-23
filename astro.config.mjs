@@ -33,6 +33,7 @@ export default defineConfig({
         Footer: './src/components/overrides/Footer.astro',
         ThemeProvider: './src/components/overrides/ThemeProvider.astro',
         ThemeSelect: './src/components/overrides/ThemeSelect.astro',
+        SiteTitle: './src/components/overrides/SiteTitle.astro',
       },
       sidebar: [
         { label: '대시보드', link: '/' },
