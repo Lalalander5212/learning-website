@@ -12,7 +12,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## 왜 필요한가
 
-01번 레슨에서는 gradient descent로 여러 걸음에 걸쳐 최적의 직선에 다가갔다. 그런데 MSE는 파라미터에 대한 2차식이라서 **gradient = 0을 방정식으로 바로 풀 수도 있다.** 그렇다면 왜 딥러닝은 이렇게 한 번에 푸는 방법을 안 쓸까? 답은 계산량과 메모리, 그리고 비선형성이다. 이 비교를 해두면 어떤 문제에 어떤 방법을 쓰는지 판단할 수 있다.
+01번 레슨(#gradient-descent-한-걸음)에서는 gradient descent로 여러 걸음에 걸쳐 최적의 직선에 다가갔다. 그런데 MSE는 파라미터에 대한 2차식이라서 **gradient = 0을 방정식으로 바로 풀 수도 있다.** 그렇다면 왜 딥러닝은 이렇게 한 번에 푸는 방법을 안 쓸까? 답은 계산량과 메모리, 그리고 비선형성이다. 이 비교를 해두면 어떤 문제에 어떤 방법을 쓰는지 판단할 수 있다.
 
 ## 직관: 그릇 바닥 찾기
 
@@ -68,7 +68,7 @@ $$
 \nabla_{\mathbf{w}} L = \frac{2}{N}\left(X^\top X \mathbf{w} - X^\top \mathbf{y}\right)
 $$
 
-01번 레슨에서 구한 $\frac{2}{N}X^\top(X\mathbf{w} - \mathbf{y})$와 같다. 이것을 0으로 놓으면
+01번 레슨(#gradient-유도)에서 구한 $\frac{2}{N}X^\top(X\mathbf{w} - \mathbf{y})$와 같다. 이것을 0으로 놓으면
 
 $$
 \boxed{X^\top X \, \mathbf{w}^* = X^\top \mathbf{y}}
@@ -107,7 +107,7 @@ $$
 
 ## Worked example
 
-01번 레슨의 데이터 $(1, 3), (2, 5), (3, 6), (4, 9)$를 closed-form으로 푼다.
+01번 레슨(#worked-example)의 데이터 $(1, 3), (2, 5), (3, 6), (4, 9)$를 closed-form으로 푼다.
 
 **Step 1. 행렬 만들기** (두 번째 열은 bias용 1)
 
@@ -138,7 +138,7 @@ $$
 
 **Step 5. 검산**: 예측 2.9, 4.8, 6.7, 8.6, 잔차 −0.1, −0.2, 0.7, −0.4 → MSE $= (0.01 + 0.04 + 0.49 + 0.16) / 4 = 0.175$. 잔차의 합은 0이다 (bias에 대한 gradient가 0이라는 뜻).
 
-01번 레슨의 코드에서 gradient descent는 learning rate 0.05로 이 값에 $10^{-3}$ 이내로 다가가는 데 **382 걸음**이 걸렸다. closed-form은 한 번에 끝난다.
+01번 레슨(#코드)의 코드에서 gradient descent는 learning rate 0.05로 이 값에 $10^{-3}$ 이내로 다가가는 데 **382 걸음**이 걸렸다. closed-form은 한 번에 끝난다.
 
 ### 큰 문제에서의 비용
 
@@ -193,7 +193,7 @@ print(f"cond(X^T X) scaled = {np.linalg.cond(Xn.T @ Xn):.3g}")
 
 볼 포인트:
 - $d = 1000$까지는 closed-form이 GD 100 걸음보다 빠르다 (클라우드 VM에서 200 ms vs 630 ms). 위 비용표대로 $d$가 더 커지면 $d^3$ 항 때문에 역전된다.
-- 무작위 Gaussian feature는 조건이 좋아서 gradient descent도 100 걸음이면 꽤 맞는다. 01번 레슨의 데이터처럼 조건이 나쁘면 몇 백 걸음이 필요하다.
+- 무작위 Gaussian feature는 조건이 좋아서 gradient descent도 100 걸음이면 꽤 맞는다. 01번 레슨(#worked-example)의 데이터처럼 조건이 나쁘면 몇 백 걸음이 필요하다.
 - 0~1000 범위 feature 하나만 있어도 condition number가 수십만 단위가 된다. 평균을 빼고 표준편차로 나누면(standardization) 1이 된다. 최적화 모듈에서 이게 gradient descent 속도를 결정한다는 걸 본다.
 
 ## 흔한 오해
@@ -250,7 +250,7 @@ $d$가 작을 때만 그렇다. 비용이 $d^2$, $d^3$로 늘고 $d \times d$ �
 
 ### 문제. Ridge regression을 closed-form으로 풀기
 
-01번 레슨의 데이터 $(1, 3), (2, 5), (3, 6), (4, 9)$에 기울기 $w$에만 L2 penalty를 준다.
+01번 레슨(#worked-example)의 데이터 $(1, 3), (2, 5), (3, 6), (4, 9)$에 기울기 $w$에만 L2 penalty를 준다.
 
 $$
 L(w, b) = \frac{1}{N}\sum_i (w x_i + b - y_i)^2 + \lambda w^2

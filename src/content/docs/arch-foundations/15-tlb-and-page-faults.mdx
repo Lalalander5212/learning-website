@@ -99,7 +99,7 @@ $$
 - column 방향 다음 원소는 16 KB 뒤 → **매 접근마다 다른 page**
 - column 하나를 도는 동안 4096개 page를 건드림 → 64-entry TLB로는 **miss rate ≈ 100%**
 
-2 MB huge page면 column 하나 = 4096 × 16 KB = 64 MB = huge page **32개** → 64 entry TLB에 다 들어가서 miss가 거의 없다. 10번 레슨의 column 순회가 느렸던 이유에는 cache miss와 함께 **TLB miss**도 섞여 있었다.
+2 MB huge page면 column 하나 = 4096 × 16 KB = 64 MB = huge page **32개** → 64 entry TLB에 다 들어가서 miss가 거의 없다. 10번 레슨(#stride와-miss-rate)의 column 순회가 느렸던 이유에는 cache miss와 함께 **TLB miss**도 섞여 있었다.
 
 ## Page fault
 

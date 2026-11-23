@@ -65,7 +65,7 @@ $$
 
 **Temperature**: $\text{softmax}(\mathbf{z}/T)$. $T > 1$이면 분포가 평평해지고, $T \to 0$이면 가장 큰 점수 하나에 몰린다(argmax).
 
-**클래스 2개면 sigmoid**: $\text{softmax}(0, z)_2 = \frac{e^z}{1 + e^z} = \sigma(z)$. 03번 레슨의 logistic regression은 softmax의 특수한 경우다.
+**클래스 2개면 sigmoid**: $\text{softmax}(0, z)_2 = \frac{e^z}{1 + e^z} = \sigma(z)$. 03번 레슨(#모델)의 logistic regression은 softmax의 특수한 경우다.
 
 ### Cross-entropy loss
 
@@ -91,7 +91,7 @@ $$
 \boxed{\nabla_{\mathbf{z}} \ell = \mathbf{q} - \mathbf{p}}
 $$
 
-03번 레슨의 $p - y$와 같은 꼴이다. 정답 클래스의 점수는 $1 - q_y$만큼 올리고, 나머지 클래스는 자기가 받은 확률만큼 내린다. gradient 원소의 합은 항상 0이다.
+03번 레슨(#gradient-유도)의 $p - y$와 같은 꼴이다. 정답 클래스의 점수는 $1 - q_y$만큼 올리고, 나머지 클래스는 자기가 받은 확률만큼 내린다. gradient 원소의 합은 항상 0이다.
 
 ### 수치 안정성: log-sum-exp
 

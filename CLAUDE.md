@@ -92,6 +92,15 @@ import { Aside } from '@astrojs/starlight/components';
 - 안 되는 형태: `7번 레슨`(한 자리), `(08, 09)`(뒤에 "번 레슨" 없음), 제목·코드·퀴즈 문자열 안
 - 다른 트랙의 레슨은 일반 링크로: `[KV cache](/learning-website/llm-internals/03-kv-cache/)`
 
+**특정 섹션으로 보내기.** 레슨의 특정 개념·예제·서술형을 가리키면 섹션 앵커를 붙인다. 레슨 전체를 가리킬 때("10번 레슨에서 깊게 다룬다")만 앵커 없이 쓴다.
+
+- 같은 트랙: `05번 레슨(#data-hazard)`. 화면에는 "05번 레슨"만 보이고 링크가 그 섹션으로 간다. 앵커는 번호가 하나일 때만(범위, 목록에는 안 됨).
+- 다른 트랙: `[ml-basics 13](/learning-website/ml-basics/13-overfitting-bias-variance/#예제-2-다항식-fitting)`
+- 앵커는 그 레슨의 `##`~`######` 제목을 github-slugger로 바꾼 것이다: 소문자, 공백은 `-`, 문장부호는 삭제, 한글은 그대로(`### 예제 2. 다항식 fitting` → `예제-2-다항식-fitting`). 같은 제목이 또 있으면 `-1`, `-2`가 붙는다.
+- `npm run check`가 앵커가 실제 제목과 맞는지 검사하고, 틀리면 그 레슨의 앵커 목록을 보여 준다. 기억으로 쓰지 말고 이 목록에서 고른다.
+- 제목, 코드블록, 퀴즈 문자열 안에는 쓰지 않는다(링크가 안 되고 `(#...)`가 그대로 보임).
+- 이미 올린 레슨의 제목을 바꾸면 그 제목을 가리키던 앵커가 깨진다. `npm run check`가 잡으니 같이 고친다.
+
 ## 영상 레슨
 
 강의 영상(예: `efficientml` 트랙의 MIT 6.5940)을 보면서 공부하는 레슨. 영상 하나 = 레슨 하나.
@@ -157,7 +166,8 @@ import Ts from '../../../components/Ts.astro';   // 타임스탬프를 쓸 때�
 
 - `src/tracks.mjs`: 트랙과 모듈 정의
 - `src/lib/lesson-files.mjs`: 레슨 파일 읽기, 사이드바 생성 (Node 전용. 빌드 설정과 검증 스크립트가 같이 씀)
-- `src/lib/remark-lesson-links.mjs`: `NN번 레슨` 자동 링크
+- `src/lib/remark-lesson-links.mjs`: `NN번 레슨`, `NN번 레슨(#앵커)` 자동 링크
+- `src/lib/lesson-files.mjs`의 `lessonHeadings`: 레슨 제목과 앵커 (Astro가 만드는 id와 같음. 링크 검사와 자동 링크가 같이 씀)
 - `scripts/check-lessons.mjs`: 레슨 검증. CI에서 빌드 전에 돈다
 - `src/components/Quiz.astro`, `src/lib/quiz.ts`: 퀴즈 (보기 셔플, 채점)
 - `src/components/YouTube.astro`, `Ts.astro`, `src/lib/youtube.ts`: 영상 레슨 (지연 로딩, 이어보기, 타임스탬프)

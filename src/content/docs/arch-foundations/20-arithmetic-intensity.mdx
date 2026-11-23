@@ -14,9 +14,9 @@ import { Aside } from '@astrojs/starlight/components';
 
 지금까지 이상한 현상을 여러 번 봤다.
 
-- 16번 레슨: 누적기 8개 dot product가 FMA 유닛 한계가 아니라 **load 속도**에 막혔다.
-- 02번 레슨: MACs를 줄인 depthwise conv가 생각만큼 안 빨라진다.
-- 07번 레슨: edge LLM의 tokens/s가 연산 능력이 아니라 **메모리 대역폭**으로 정해진다.
+- 16번 레슨(#worked-example-peak와-dot-product-실측): 누적기 8개 dot product가 FMA 유닛 한계가 아니라 **load 속도**에 막혔다.
+- 02번 레슨(#efficient-ml-연결): MACs를 줄인 depthwise conv가 생각만큼 안 빨라진다.
+- 07번 레슨(#efficient-ml-연결): edge LLM의 tokens/s가 연산 능력이 아니라 **메모리 대역폭**으로 정해진다.
 
 전부 같은 질문이다. "이 커널은 **연산**이 병목인가, **데이터 이동**이 병목인가?" 이걸 숫자 하나로 판단하는 지표가 **arithmetic intensity**다. 다음 레슨의 roofline model이 이 숫자 위에 세워진다.
 
@@ -158,7 +158,7 @@ $$
 
 ## Worked example 2: tiling이 AI를 바꾼다
 
-12번 레슨의 matmul miss 분석을 bytes로 바꿔보자. FP32, line 64 B ($K = 16$), $N^3$ MAC = $2N^3$ FLOPs.
+12번 레슨(#miss-수-유도)의 matmul miss 분석을 bytes로 바꿔보자. FP32, line 64 B ($K = 16$), $N^3$ MAC = $2N^3$ FLOPs.
 
 **Naive ijk**: miss 수 $\approx N^3(1 + 1/K)$, miss당 64 B
 

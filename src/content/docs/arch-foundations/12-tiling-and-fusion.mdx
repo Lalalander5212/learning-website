@@ -253,7 +253,7 @@ print(f"\nunfused (3 passes over DRAM)  : {t_u*1e3:7.1f} ms")
 print(f"chunked (temporaries in cache): {t_f*1e3:7.1f} ms   → {t_u/t_f:.2f}x")
 ```
 
-C로 tiled matmul을 직접 재보려면 11번 레슨의 `mm.c`에 아래 함수를 추가하고 `-DN=2048`로 컴파일하자.
+C로 tiled matmul을 직접 재보려면 11번 레슨(#실제-하드웨어에서-c-벤치마크)의 `mm.c`에 아래 함수를 추가하고 `-DN=2048`로 컴파일하자.
 
 ```c
 #define T 64

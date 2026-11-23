@@ -13,7 +13,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## 왜 필요한가
 
-01~12번 레슨에서 한 일은 전부 **학습 데이터의 loss를 줄이는 것**이었다. 12번 레슨의 MLP는 spiral 학습 데이터를 100% 맞췄다. 그런데 우리가 원하는 건 처음 보는 데이터에서 잘하는 모델이다. 학습 데이터를 외워서 loss를 0으로 만드는 건 쉽지만 그런 모델은 새 데이터에서 엉망일 수 있다. 이 레슨은 그 차이(generalization gap)가 어디서 오는지를 bias와 variance라는 두 원인으로 나눠서 정량적으로 본다. 14~16번 레슨의 validation, regularization, dropout은 전부 이 분해의 어느 한 항을 줄이는 도구다.
+01~12번 레슨에서 한 일은 전부 **학습 데이터의 loss를 줄이는 것**이었다. 12번 레슨(#코드)의 MLP는 spiral 학습 데이터를 100% 맞췄다. 그런데 우리가 원하는 건 처음 보는 데이터에서 잘하는 모델이다. 학습 데이터를 외워서 loss를 0으로 만드는 건 쉽지만 그런 모델은 새 데이터에서 엉망일 수 있다. 이 레슨은 그 차이(generalization gap)가 어디서 오는지를 bias와 variance라는 두 원인으로 나눠서 정량적으로 본다. 14~16번 레슨의 validation, regularization, dropout은 전부 이 분해의 어느 한 항을 줄이는 도구다.
 
 ## 직관: 과녁 맞히기
 
@@ -109,7 +109,7 @@ training error는 capacity를 키우면 계속 줄어든다. 그래서 training 
 
 ### 데이터 수의 효과
 
-데이터 $N$을 늘리면 variance가 준다(평균의 분산이 $\sigma^2 / N$이었던 것과 같은 이유, 06번 레슨). bias는 모델 구조가 정하므로 $N$으로 줄지 않는다. 그래서 **overfitting은 데이터를 늘리면 완화되고, underfitting은 데이터를 늘려도 안 낫는다.**
+데이터 $N$을 늘리면 variance가 준다(평균의 분산이 $\sigma^2 / N$이었던 것과 같은 이유, 06번 레슨(#분산은-1b로-줄어든다)). bias는 모델 구조가 정하므로 $N$으로 줄지 않는다. 그래서 **overfitting은 데이터를 늘리면 완화되고, underfitting은 데이터를 늘려도 안 낫는다.**
 
 ## Worked example
 
@@ -128,11 +128,11 @@ training error는 capacity를 키우면 계속 줄어든다. 그래서 training 
 | 0.25 | $0.5625$ | $0.0625$ | 0.625 |
 | 0 | 1 | 0 | 1 |
 
-unbiased인 표본평균보다 일부러 0 쪽으로 당긴(shrink) $0.5\bar{y}$가 MSE가 절반이다. bias를 조금 받아들이고 variance를 크게 줄였다. 이게 15번 레슨의 L2 regularization(weight를 0 쪽으로 당기기)이 하는 일이다. 최적 $c$는 서술형에서 유도한다.
+unbiased인 표본평균보다 일부러 0 쪽으로 당긴(shrink) $0.5\bar{y}$가 MSE가 절반이다. bias를 조금 받아들이고 variance를 크게 줄였다. 이게 15번 레슨(#ridge의-해와-shrinkage)의 L2 regularization(weight를 0 쪽으로 당기기)이 하는 일이다. 최적 $c$는 서술형에서 유도한다.
 
 ### 예제 2. 다항식 fitting
 
-$f(x) = \sin(2\pi x)$, noise $\sigma = 0.3$ ($\sigma^2 = 0.09$), $[0, 1]$에 고르게 놓인 10개 점. 차수를 바꿔 가며 least squares로 맞춘다(02번 레슨의 normal equation과 같은 문제, feature만 $1, x, x^2, \dots$). 아래 코드의 결과를 표로 옮기면
+$f(x) = \sin(2\pi x)$, noise $\sigma = 0.3$ ($\sigma^2 = 0.09$), $[0, 1]$에 고르게 놓인 10개 점. 차수를 바꿔 가며 least squares로 맞춘다(02번 레슨(#normal-equation-유도)의 normal equation과 같은 문제, feature만 $1, x, x^2, \dots$). 아래 코드의 결과를 표로 옮기면
 
 | 차수 | train MSE | bias² | variance | bias² + var + noise |
 |---|---|---|---|---|

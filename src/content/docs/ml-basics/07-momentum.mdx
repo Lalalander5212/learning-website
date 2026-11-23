@@ -13,7 +13,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## 왜 필요한가
 
-05번 레슨에서 gradient descent의 걸음 수는 condition number $\kappa$에 비례했다. 가파른 방향 때문에 learning rate를 크게 못 잡고, 그 작은 걸음으로 완만한 방향을 기어가야 했다. 그 과정을 보면 가파른 방향에서는 gradient 부호가 매번 바뀌며 **지그재그**로 왔다 갔다 하고, 완만한 방향에서는 매번 **같은 방향**의 작은 gradient가 나온다. 과거 gradient를 더해 두면 지그재그는 서로 상쇄되고 같은 방향은 쌓인다. 이것이 momentum이고, 걸음 수를 $\kappa$에서 $\sqrt{\kappa}$ 수준으로 줄인다. 오늘날 SGD를 쓴다면 거의 항상 momentum과 같이 쓴다.
+05번 레슨(#가장-좋은-learning-rate와-수렴-속도)에서 gradient descent의 걸음 수는 condition number $\kappa$에 비례했다. 가파른 방향 때문에 learning rate를 크게 못 잡고, 그 작은 걸음으로 완만한 방향을 기어가야 했다. 그 과정을 보면 가파른 방향에서는 gradient 부호가 매번 바뀌며 **지그재그**로 왔다 갔다 하고, 완만한 방향에서는 매번 **같은 방향**의 작은 gradient가 나온다. 과거 gradient를 더해 두면 지그재그는 서로 상쇄되고 같은 방향은 쌓인다. 이것이 momentum이고, 걸음 수를 $\kappa$에서 $\sqrt{\kappa}$ 수준으로 줄인다. 오늘날 SGD를 쓴다면 거의 항상 momentum과 같이 쓴다.
 
 ## 직관: 무거운 공
 
@@ -72,7 +72,7 @@ $k$ step 전 gradient는 $\beta^k$만큼 줄어서 들어간다. $\beta = 0.9$�
 
 ### 2차식에서의 분석
 
-05번 레슨처럼 eigen 방향 하나(곡률 $a$, 오차 $e$)만 보자. gradient가 $a e_t$이므로
+05번 레슨(#여러-차원-eigen-방향으로-쪼개기)처럼 eigen 방향 하나(곡률 $a$, 오차 $e$)만 보자. gradient가 $a e_t$이므로
 
 $$
 v_{t+1} = \beta v_t + a e_t, \qquad e_{t+1} = e_t - \eta v_{t+1} = (1 - \eta a)e_t - \eta\beta v_t
@@ -118,7 +118,7 @@ $$
 \boxed{\eta^* = \frac{4}{(\sqrt{L} + \sqrt{\mu})^2}, \qquad \sqrt{\beta^*} = \frac{\sqrt{\kappa} - 1}{\sqrt{\kappa} + 1}}
 $$
 
-배율이 $\dfrac{\sqrt{\kappa} - 1}{\sqrt{\kappa} + 1}$이다. 05번 레슨 GD의 $\dfrac{\kappa - 1}{\kappa + 1}$에서 $\kappa$가 $\sqrt{\kappa}$로 바뀌었다. 걸음 수가 $\kappa$ 대신 $\sqrt{\kappa}$에 비례한다. $\kappa = 100$이면 대략 10배 빠르다.
+배율이 $\dfrac{\sqrt{\kappa} - 1}{\sqrt{\kappa} + 1}$이다. 05번 레슨(#가장-좋은-learning-rate와-수렴-속도) GD의 $\dfrac{\kappa - 1}{\kappa + 1}$에서 $\kappa$가 $\sqrt{\kappa}$로 바뀌었다. 걸음 수가 $\kappa$ 대신 $\sqrt{\kappa}$에 비례한다. $\kappa = 100$이면 대략 10배 빠르다.
 
 **발산 경계도 넓어진다.** $\lvert\lambda\rvert < 1$일 조건($\beta < 1$일 때)은 $\lvert 1 + \beta - \eta a\rvert < 1 + \beta$, 즉 $0 < \eta a < 2(1 + \beta)$다. GD의 $\eta < 2/L$보다 $(1 + \beta)$배 큰 learning rate까지 쓸 수 있다.
 
@@ -228,16 +228,16 @@ $\beta$가 크면 복소근 구간이 넓어져 많은 방향을 덮지만, 그 
 </Aside>
 
 <Aside type="caution" title="Momentum은 SGD의 noise를 줄이려고 쓰는 것이다?">
-과거 gradient를 평균하니 noise가 다소 줄긴 하지만, 주된 효과는 이 레슨에서 본 ill-conditioning 해소다. noise floor는 결국 실질 learning rate $\eta / (1 - \beta)$와 $B$가 정한다 (06번 레슨).
+과거 gradient를 평균하니 noise가 다소 줄긴 하지만, 주된 효과는 이 레슨에서 본 ill-conditioning 해소다. noise floor는 결국 실질 learning rate $\eta / (1 - \beta)$와 $B$가 정한다 (06번 레슨(#noise-floor-learning-rate를-고정하면-끝까지-흔들린다)).
 </Aside>
 
 ## Efficient ML 연결
 
-**Optimizer state = 메모리.** momentum을 쓰면 파라미터마다 $\mathbf{v}$를 하나 더 저장해야 한다. 7B 모델을 FP32 momentum으로 학습하면 $\mathbf{v}$만 28 GB다. 08번 레슨의 Adam은 이런 state가 두 개다. MIT 6.5940의 on-device training이나 LLM fine-tuning에서 optimizer state가 weight보다 큰 메모리를 차지하는 이유다.
+**Optimizer state = 메모리.** momentum을 쓰면 파라미터마다 $\mathbf{v}$를 하나 더 저장해야 한다. 7B 모델을 FP32 momentum으로 학습하면 $\mathbf{v}$만 28 GB다. 08번 레슨(#optimizer-state-메모리)의 Adam은 이런 state가 두 개다. MIT 6.5940의 on-device training이나 LLM fine-tuning에서 optimizer state가 weight보다 큰 메모리를 차지하는 이유다.
 
 **EMA는 어디에나 있다.** 같은 식 $m \leftarrow \beta m + (1 - \beta)x$가 BatchNorm의 running mean/variance, quantization에서 activation 범위(min/max)를 추적하는 observer, 학습된 weight의 EMA(평가용 모델)에 그대로 쓰인다. 기억 길이 $1/(1-\beta)$라는 감각을 이 레슨에서 가져가면 된다.
 
-**지그재그와 normalization.** momentum은 찌그러진 골짜기를 알고리즘으로 버티는 방법이고, normalization layer는 골짜기 자체를 둥글게 만드는 방법이다 (05번 레슨의 standardize). 실전에서는 둘 다 쓴다.
+**지그재그와 normalization.** momentum은 찌그러진 골짜기를 알고리즘으로 버티는 방법이고, normalization layer는 골짜기 자체를 둥글게 만드는 방법이다 (05번 레슨(#문제-standardize하면-몇-걸음이면-되나)의 standardize). 실전에서는 둘 다 쓴다.
 
 ## 체크 퀴즈
 
@@ -273,7 +273,7 @@ $\beta$가 크면 복소근 구간이 넓어져 많은 방향을 덮지만, 그 
 
 ### 문제. 01번 레슨 데이터에 최적 momentum 걸기
 
-01번 레슨 데이터의 MSE Hessian eigenvalue는 $\mu \approx 0.299$, $L \approx 16.70$이다 (05번 레슨).
+01번 레슨(#worked-example) 데이터의 MSE Hessian eigenvalue는 $\mu \approx 0.299$, $L \approx 16.70$이다 (05번 레슨(#예제-2-01번-레슨이-왜-382-걸음이었나)).
 
 (a) 최적 $\eta^*$와 $\beta^*$를 구하라.
 

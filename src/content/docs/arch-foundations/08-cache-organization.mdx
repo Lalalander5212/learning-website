@@ -265,9 +265,9 @@ for w in [1, 2]:
 
 ## Efficient ML 연결
 
-**Power-of-2 간격과 conflict miss.** 0x1A2B와 0x1E2B처럼 정확히 cache 크기(또는 그 약수 간격)만큼 떨어진 주소들은 같은 set으로 몰린다. DL 텐서는 차원이 64, 128, 1024처럼 2의 거듭제곱인 경우가 많아서, 행렬의 행(row)들이 같은 set으로 몰리기 쉽다. 그래서 BLAS/GEMM 라이브러리가 **leading dimension에 padding**을 넣기도 한다. 이 현상은 12번 레슨(tiling)에서 시뮬레이터로 직접 확인한다.
+**Power-of-2 간격과 conflict miss.** 0x1A2B와 0x1E2B처럼 정확히 cache 크기(또는 그 약수 간격)만큼 떨어진 주소들은 같은 set으로 몰린다. DL 텐서는 차원이 64, 128, 1024처럼 2의 거듭제곱인 경우가 많아서, 행렬의 행(row)들이 같은 set으로 몰리기 쉽다. 그래서 BLAS/GEMM 라이브러리가 **leading dimension에 padding**을 넣기도 한다. 이 현상은 12번 레슨(#tiling--set-associative--conflict-함정)(tiling)에서 시뮬레이터로 직접 확인한다.
 
-**GPU shared memory bank.** GPU shared memory도 주소의 특정 비트로 bank를 고르는 구조라서 같은 원리의 충돌(bank conflict)이 생기고, 같은 방법(padding)으로 해결한다 (19번 레슨).
+**GPU shared memory bank.** GPU shared memory도 주소의 특정 비트로 bank를 고르는 구조라서 같은 원리의 충돌(bank conflict)이 생기고, 같은 방법(padding)으로 해결한다 (19번 레슨(#bank-conflict)).
 
 ## 체크 퀴즈
 

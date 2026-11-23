@@ -61,7 +61,7 @@ $H = W = 56$, $C = 64$, FP32, kernel 3×3.
 
 depthwise는 FLOPs가 dense의 1/64인데 bytes는 거의 그대로다. activation을 읽고 쓰는 양은 같고 weight만 작아졌기 때문이다. 그래서 **AI가 59배 떨어진다.**
 
-**21번 레슨의 노트북 CPU** ($P_{peak} = 768$ GF/s, $BW = 50$ GB/s, ridge 15.4)에 올려보면
+**21번 레슨(#worked-example-1-노트북-cpu에-커널-올리기)의 노트북 CPU** ($P_{peak} = 768$ GF/s, $BW = 50$ GB/s, ridge 15.4)에 올려보면
 
 | 레이어 | AI | 상한 성능 | 최소 시간 |
 |---|---|---|---|
@@ -73,7 +73,7 @@ depthwise는 FLOPs가 dense의 1/64인데 bytes는 거의 그대로다. activati
 - FLOPs 비: $231.2 / (3.6 + 25.7) \approx$ **7.9배** 감소
 - 시간 비: $0.301 / 0.066 \approx$ **4.6배** 감소
 
-depthwise가 memory-bound라서 FLOPs 감소가 시간 감소로 다 이어지지 않는다. 02번 레슨에서 말한 "MACs가 줄어도 안 빨라질 수 있다"의 정량적 설명이다.
+depthwise가 memory-bound라서 FLOPs 감소가 시간 감소로 다 이어지지 않는다. 02번 레슨(#efficient-ml-연결)에서 말한 "MACs가 줄어도 안 빨라질 수 있다"의 정량적 설명이다.
 
 <Aside type="tip" title="그래서 fusion이 중요하다">
 depthwise 결과를 DRAM에 쓰지 않고 바로 pointwise에 넘기면(fusion) depthwise의 출력 쓰기와 pointwise의 입력 읽기가 사라진다. AI가 올라가서 두 레이어가 함께 compute-bound 쪽으로 이동한다.
@@ -81,7 +81,7 @@ depthwise 결과를 DRAM에 쓰지 않고 바로 pointwise에 넘기면(fusion) 
 
 ## Linear layer와 batch
 
-20번 레슨에서 유도했듯이 FP16 linear layer $Y = XW$ ($W$: $M \times N$, batch $B$)는
+20번 레슨(#worked-example-1-batch가-gemv를-gemm으로-바꾼다)에서 유도했듯이 FP16 linear layer $Y = XW$ ($W$: $M \times N$, batch $B$)는
 
 $$
 AI \approx \frac{2BMN}{2\,(MN + BM + BN)} \approx B \quad (B \ll M, N)
@@ -92,7 +92,7 @@ ridge point가 156인 GPU라면
 - $B \lt 156$: memory-bound → 시간 ≈ weight 읽는 시간 (batch를 키워도 시간이 거의 안 늘어남)
 - $B \gt 156$: compute-bound → 시간이 batch에 비례
 
-그래서 **ridge 근처까지는 batch를 키울수록 throughput이 공짜로 늘어난다.** 01번 레슨의 batching 실험에서 throughput이 늘다가 포화된 지점이 바로 ridge point다.
+그래서 **ridge 근처까지는 batch를 키울수록 throughput이 공짜로 늘어난다.** 01번 레슨(#코드-batch-크기에-따른-latency--throughput-측정)의 batching 실험에서 throughput이 늘다가 포화된 지점이 바로 ridge point다.
 
 ## LLM: prefill vs decode
 
@@ -128,7 +128,7 @@ $$
 
 ### KV cache가 커지면?
 
-14번 레슨에서 Llama-2-7B의 KV cache가 FP16 기준 토큰당 0.5 MB라고 계산했다. decode step마다 지금까지의 KV cache를 전부 읽어야 하므로 context가 4096 토큰이면
+14번 레슨(#efficient-ml-연결-pagedattention-vllm)에서 Llama-2-7B의 KV cache가 FP16 기준 토큰당 0.5 MB라고 계산했다. decode step마다 지금까지의 KV cache를 전부 읽어야 하므로 context가 4096 토큰이면
 
 $$
 0.5 \text{ MB} \times 4096 = 2 \text{ GB / step}

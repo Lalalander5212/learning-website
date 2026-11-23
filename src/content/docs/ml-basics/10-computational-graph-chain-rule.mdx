@@ -250,7 +250,7 @@ f=6.0  df/dx=5.0  df/dy=3.0
 </Aside>
 
 <Aside type="caution" title="Backward는 forward와 비용이 같다?">
-대략 2배다. 곱셈마다 두 입력 방향 gradient를 각각 계산하기 때문이다. 행렬로 보면 forward 행렬곱 1번에 backward 행렬곱 2번이다(11번 레슨). 게다가 forward 중간값을 저장할 메모리가 든다.
+대략 2배다. 곱셈마다 두 입력 방향 gradient를 각각 계산하기 때문이다. 행렬로 보면 forward 행렬곱 1번에 backward 행렬곱 2번이다(11번 레슨(#flops-6--파라미터)). 게다가 forward 중간값을 저장할 메모리가 든다.
 </Aside>
 
 ## Efficient ML 연결
@@ -295,7 +295,7 @@ f=6.0  df/dx=5.0  df/dy=3.0
 
 ### 문제. Logistic regression을 그래프로 미분하기
 
-샘플 하나 $\mathbf{x} = (1, 2)$, $y = 1$, 파라미터 $\mathbf{w} = (0.5, -0.5)$, $b = 0$. 모델과 loss는 03번 레슨과 같다.
+샘플 하나 $\mathbf{x} = (1, 2)$, $y = 1$, 파라미터 $\mathbf{w} = (0.5, -0.5)$, $b = 0$. 모델과 loss는 03번 레슨(#모델)과 같다.
 
 $$
 z = w_1 x_1 + w_2 x_2 + b, \quad p = \sigma(z), \quad L = -y \ln p - (1 - y)\ln(1 - p)
@@ -322,7 +322,7 @@ $z = 0.5 \times 1 + (-0.5) \times 2 + 0 = -0.5$, $p = \sigma(-0.5) = 0.3775$, $L
 - 덧셈 노드: $\bar{m}_1 = \bar{m}_2 = \bar{b} = -0.6225$
 - 곱셈 노드: $\bar{w}_1 = \bar{m}_1 \cdot x_1 = -0.6225$, $\bar{w}_2 = \bar{m}_2 \cdot x_2 = -1.2449$
 
-03번 레슨의 $\nabla_\mathbf{w} L = (p - y)\mathbf{x}$와 같다.
+03번 레슨(#gradient-유도)의 $\nabla_\mathbf{w} L = (p - y)\mathbf{x}$와 같다.
 
 **(c)** $\bar{\mathbf{w}}$에는 곱셈 노드의 상대편 값 $\mathbf{x}$와, $\bar{z}$를 만들기 위한 $p$가 필요하다. (sigmoid의 local gradient가 출력 $p$로 계산되므로 $z$ 대신 $p$만 저장해도 된다.)
 

@@ -41,13 +41,13 @@ gradient는 원래 변수와 **shape가 같아야** 한다($\partial L/\partial 
 
 ### Linear layer의 backward
 
-batch 형태 (09번 레슨): $Z = XW^\top + \mathbf{1}\mathbf{b}^\top$, $X \in \mathbb{R}^{B \times n}$, $W \in \mathbb{R}^{m \times n}$, $Z \in \mathbb{R}^{B \times m}$. 원소로 쓰면
+batch 형태 (09번 레슨(#forward-pass)): $Z = XW^\top + \mathbf{1}\mathbf{b}^\top$, $X \in \mathbb{R}^{B \times n}$, $W \in \mathbb{R}^{m \times n}$, $Z \in \mathbb{R}^{B \times m}$. 원소로 쓰면
 
 $$
 Z_{ij} = \sum_{k=1}^{n} X_{ik} W_{jk} + b_j
 $$
 
-upstream $G = \partial L / \partial Z$ ($B \times m$)를 받았다고 하자. $L$은 모든 $Z_{ij}$를 통해 $W$에 의존하므로 (10번 레슨의 "경로가 여러 개면 더한다")
+upstream $G = \partial L / \partial Z$ ($B \times m$)를 받았다고 하자. $L$은 모든 $Z_{ij}$를 통해 $W$에 의존하므로 (10번 레슨(#경로가-여러-개면-더한다)의 "경로가 여러 개면 더한다")
 
 **$W$에 대해**: $\partial Z_{ij} / \partial W_{jk} = X_{ik}$이고, $W_{jk}$는 $j$번째 열의 $Z_{ij}$들($i = 1..B$)에만 영향을 준다.
 
@@ -73,7 +73,7 @@ $$
 \boxed{\frac{\partial L}{\partial X} = G W}
 $$
 
-$\partial L / \partial X$는 앞 층의 upstream이 된다. 10번 레슨의 곱셈 노드 규칙("상대편 값을 곱한다")이 행렬 버전으로 나온 것이다. $\partial W$에는 $X$를, $\partial X$에는 $W$를 곱한다.
+$\partial L / \partial X$는 앞 층의 upstream이 된다. 10번 레슨(#자주-나오는-노드의-패턴)의 곱셈 노드 규칙("상대편 값을 곱한다")이 행렬 버전으로 나온 것이다. $\partial W$에는 $X$를, $\partial X$에는 $W$를 곱한다.
 
 샘플 하나($B = 1$, 열벡터 표기)로 쓰면 $\partial L/\partial W = \boldsymbol{\delta}\,\mathbf{x}^\top$ (outer product), $\partial L / \partial \mathbf{x} = W^\top \boldsymbol{\delta}$다.
 
@@ -89,7 +89,7 @@ ReLU면 $\phi'(Z) = \mathbb{1}[Z > 0]$이라 **mask**다. upstream 중 $Z > 0$�
 
 ### Softmax + cross-entropy의 backward
 
-04번 레슨에서 샘플 하나의 logit gradient가 $\mathbf{p} - \mathbf{y}$였다. batch 평균 loss $L = \frac{1}{B}\sum_i \ell_i$이면
+04번 레슨(#gradient-유도)에서 샘플 하나의 logit gradient가 $\mathbf{p} - \mathbf{y}$였다. batch 평균 loss $L = \frac{1}{B}\sum_i \ell_i$이면
 
 $$
 G^{(\text{out})} = \frac{\partial L}{\partial Z^{(\text{out})}} = \frac{1}{B}(P - Y)
@@ -234,7 +234,7 @@ db1 =
 볼 포인트:
 - backward 부분이 위의 수식 다섯 줄과 한 줄씩 대응한다. `G2.T @ H`, `G2 @ W2`, `dH * (Z1 > 0)`.
 - batch 32에서도 gradient shape가 파라미터 shape와 같다. 이 확인(assert)이 구현 버그를 가장 빨리 잡는다.
-- 이 식이 맞는지 숫자로 검증하는 방법(gradient check)은 12번 레슨에서 한다.
+- 이 식이 맞는지 숫자로 검증하는 방법(gradient check)은 12번 레슨(#gradient-check-절차)에서 한다.
 
 ## 흔한 오해
 

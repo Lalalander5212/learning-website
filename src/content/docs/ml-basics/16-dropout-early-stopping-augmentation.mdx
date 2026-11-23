@@ -66,7 +66,7 @@ $$
 \text{Var}[\tilde{h}] = \frac{h^2}{1 - p} - h^2 = h^2\,\frac{p}{1 - p}
 $$
 
-기댓값이 그대로라서 추론 때는 dropout을 끄고 $h$를 그대로 쓰면 된다. (원 논문은 학습 때 키우지 않고 추론 때 $(1 - p)$를 곱했다. 결과는 같다.) backward에서는 forward에서 쓴 **같은 mask와 같은 배율**을 gradient에 곱한다. 10번 레슨의 곱셈 노드 규칙 그대로다.
+기댓값이 그대로라서 추론 때는 dropout을 끄고 $h$를 그대로 쓰면 된다. (원 논문은 학습 때 키우지 않고 추론 때 $(1 - p)$를 곱했다. 결과는 같다.) backward에서는 forward에서 쓴 **같은 mask와 같은 배율**을 gradient에 곱한다. 10번 레슨(#자주-나오는-노드의-패턴)의 곱셈 노드 규칙 그대로다.
 
 ### Dropout ≈ 데이터에 맞춘 L2
 
@@ -84,13 +84,13 @@ $$
 
 ### Early stopping ≈ ridge
 
-05번 레슨처럼 2차식 loss를 eigen 방향으로 쪼개자. $S = \frac{1}{N}X^\top X$의 eigenvalue $s_i$, regularization 없는 최적해 $\hat{z}_i$, 0에서 시작하는 GD $\mathbf{w} \leftarrow \mathbf{w} - \eta(S\mathbf{w} - \frac{1}{N}X^\top\mathbf{y})$를 $t$ step 하면 오차가 매번 $(1 - \eta s_i)$배이므로
+05번 레슨(#여러-차원-eigen-방향으로-쪼개기)처럼 2차식 loss를 eigen 방향으로 쪼개자. $S = \frac{1}{N}X^\top X$의 eigenvalue $s_i$, regularization 없는 최적해 $\hat{z}_i$, 0에서 시작하는 GD $\mathbf{w} \leftarrow \mathbf{w} - \eta(S\mathbf{w} - \frac{1}{N}X^\top\mathbf{y})$를 $t$ step 하면 오차가 매번 $(1 - \eta s_i)$배이므로
 
 $$
 z_i(t) = \left[1 - (1 - \eta s_i)^t\right]\hat{z}_i
 $$
 
-15번 레슨의 ridge는 $z_i = \frac{s_i}{s_i + \lambda}\hat{z}_i$였다. 두 배율을 비교하면
+15번 레슨(#ridge의-해와-shrinkage)의 ridge는 $z_i = \frac{s_i}{s_i + \lambda}\hat{z}_i$였다. 두 배율을 비교하면
 
 | | 곡률 큰 방향 ($s_i$ 큼) | 곡률 작은 방향 ($s_i$ 작음) |
 |---|---|---|
@@ -224,7 +224,7 @@ inverted dropout은 학습 때 이미 $1/(1-p)$로 키워서 기댓값을 맞춰
 
 **Dropout은 구조적 pruning을 위한 학습이 될 수 있다.** LayerDrop(Fan et al., 2019)은 학습 중 Transformer layer를 통째로 무작위로 건너뛴다. 그렇게 학습된 모델은 추론 때 layer 일부를 빼도 성능이 덜 떨어져서, 재학습 없이 깊이를 줄일 수 있다. 무작위로 끄는 것에 익숙해진 모델이 일부를 영구히 끄는 것(pruning)에도 강하다.
 
-**Distillation과 augmentation.** knowledge distillation은 teacher의 soft label(04번 레슨의 temperature)을 써서 작은 student를 학습한다. hard label보다 정보가 많아 regularization 효과가 있고, augmentation한 입력에도 teacher가 label을 줄 수 있어서 둘이 같이 쓰인다. 데이터가 적은 on-device 학습에서 augmentation은 가장 싼 regularization이다.
+**Distillation과 augmentation.** knowledge distillation은 teacher의 soft label(04번 레슨(#worked-example)의 temperature)을 써서 작은 student를 학습한다. hard label보다 정보가 많아 regularization 효과가 있고, augmentation한 입력에도 teacher가 label을 줄 수 있어서 둘이 같이 쓰인다. 데이터가 적은 on-device 학습에서 augmentation은 가장 싼 regularization이다.
 
 ## 체크 퀴즈
 

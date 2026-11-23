@@ -65,7 +65,7 @@ $$
 
 shape: $W^{(1)} \in \mathbb{R}^{h \times d}$, $\mathbf{b}^{(1)} \in \mathbb{R}^{h}$, $W^{(2)} \in \mathbb{R}^{k \times h}$, $\mathbf{b}^{(2)} \in \mathbb{R}^{k}$. weight 행렬은 (출력, 입력) 순서이고, PyTorch `nn.Linear(in, out).weight`도 같은 (out, in) shape이다.
 
-출력 $\mathbf{z}^{(2)}$는 그대로 regression 예측이 되거나, softmax와 cross-entropy(04번 레슨)에 들어가 logit이 된다.
+출력 $\mathbf{z}^{(2)}$는 그대로 regression 예측이 되거나, softmax와 cross-entropy(04번 레슨(#cross-entropy-loss))에 들어가 logit이 된다.
 
 **Batch 형태.** 샘플 $B$개를 행으로 쌓은 $X \in \mathbb{R}^{B \times d}$에 대해
 
@@ -94,7 +94,7 @@ affine 함수의 합성은 affine이다. 몇 층을 쌓아도 한 층짜리 선�
 | ReLU | $\max(0, z)$ | $z > 0$이면 1, 아니면 0 | 계산이 싸고 양수 쪽 saturation 없음 |
 | GELU | $z\,\Phi(z)$ ($\Phi$는 표준정규 CDF) | 매끄러움 | Transformer(BERT, GPT)의 기본 |
 
-sigmoid는 미분이 최대 0.25라서 층을 지날 때마다 gradient가 최소 4배씩 줄어든다(10번 레슨에서 chain rule로 확인). ReLU가 깊은 네트워크의 기본이 된 이유다. ReLU는 입력이 음수인 neuron의 gradient가 0이라, 어떤 neuron이 모든 입력에서 음수가 되면 다시 살아나지 못한다(dead ReLU).
+sigmoid는 미분이 최대 0.25라서 층을 지날 때마다 gradient가 최소 4배씩 줄어든다(10번 레슨(#chain-rule)에서 chain rule로 확인). ReLU가 깊은 네트워크의 기본이 된 이유다. ReLU는 입력이 음수인 neuron의 gradient가 0이라, 어떤 neuron이 모든 입력에서 음수가 되면 다시 살아나지 못한다(dead ReLU).
 
 **Universal approximation theorem.** hidden layer 하나에 neuron이 충분히 많으면 구간 위의 연속함수를 원하는 정확도로 근사할 수 있다. 다만 필요한 neuron 수가 매우 클 수 있고, 깊게 쌓으면 같은 함수를 훨씬 적은 파라미터로 표현하는 경우가 많다.
 
