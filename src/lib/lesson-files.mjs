@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
+import GithubSlugger from 'github-slugger';
 import { TRACKS } from '../tracks.mjs';
 
 export const DOCS_DIR = fileURLToPath(new URL('../content/docs/', import.meta.url));
@@ -14,6 +15,44 @@ export function splitFrontmatter(src) {
   const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(src);
   if (!m) return { data: null, body: src, bodyLine: 1 };
   return { data: YAML.parse(m[1]) ?? {}, body: src.slice(m[0].length), bodyLine: m[0].split('\n').length };
+}
+
+/** 제목 텍스트에서 마크다운 기호를 걷어냄 (Astro가 id를 만들 때 보는 글자와 맞추기 위함) */
+function headingText(raw) {
+  return raw
+    .replace(/\s+#+\s*$/, '')                 // 닫는 #
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')   // 링크, 이미지
+    .replace(/<[^>]+>/g, '')                    // HTML/JSX 태그
+    .replace(/\\([\\`*_{}\[\]()#+\-.!<>])/g, '$1') // 이스케이프
+    .replace(/`([^`]*)`/g, '$1')
+    .replace(/(\*\*|__|\*|_)(.+?)\1/g, '$2')
+    .trim();
+}
+
+const headingCache = new Map();
+/**
+ * 레슨 파일의 ##~###### 제목과 id(앵커). Astro처럼 github-slugger로 만들고, 같은 제목은 -1, -2가 붙음.
+ * 반환: [{ depth, text, slug }]
+ */
+export function lessonHeadings(file) {
+  const mtime = fs.statSync(file).mtimeMs;
+  const hit = headingCache.get(file);
+  if (hit && hit.mtime === mtime) return hit.headings;
+  const { body } = splitFrontmatter(fs.readFileSync(file, 'utf8'));
+  const slugger = new GithubSlugger();
+  const headings = [];
+  let fence = null;
+  for (const line of body.split('\n')) {
+    const f = /^\s*(```+|~~~+)/.exec(line);
+    if (f) { if (!fence) fence = f[1][0]; else if (f[1][0] === fence) fence = null; continue; }
+    if (fence) continue;
+    const m = /^(#{2,6})\s+(.+)$/.exec(line);
+    if (!m) continue;
+    const text = headingText(m[2]);
+    headings.push({ depth: m[1].length, text, slug: slugger.slug(text) });
+  }
+  headingCache.set(file, { mtime, headings });
+  return headings;
 }
 
 /** 트랙 폴더의 레슨들. sidebar.order → 파일명 순으로 정렬 */

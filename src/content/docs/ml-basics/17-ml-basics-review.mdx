@@ -126,13 +126,13 @@ $x = 1.5$, $y = 1$, 초기값 $w_1 = 0.4$, $b_1 = -0.1$, $w_2 = -0.5$, $b_2 = 0.
 
 새 forward: $z = 0.32125 \times 1.5 - 0.1525 = 0.329375$, $\hat{y} = -0.4475 \times 0.329375 + 0.305 = 0.1576$, $L = \frac{1}{2}(0.8424)^2 = 0.3548$. 0.551에서 0.355로 줄었다.
 
-**(d)** Adam 첫 step은 bias correction 후 $\hat{m} = g$, $\sqrt{\hat{s}} = \lvert g \rvert$라서 각 파라미터가 $\eta \cdot \text{sign}(g)$의 반대 방향으로 **정확히 0.1씩** 움직인다(08번 레슨).
+**(d)** Adam 첫 step은 bias correction 후 $\hat{m} = g$, $\sqrt{\hat{s}} = \lvert g \rvert$라서 각 파라미터가 $\eta \cdot \text{sign}(g)$의 반대 방향으로 **정확히 0.1씩** 움직인다(08번 레슨(#adam-step의-크기)).
 
 $w_1 = 0.3$, $b_1 = -0.2$, $w_2 = -0.4$, $b_2 = 0.3$. 새 forward: $z = 0.45 - 0.2 = 0.25$, $\hat{y} = -0.4 \times 0.25 + 0.3 = 0.2$, $L = \frac{1}{2}(0.8)^2 = 0.32$.
 
 이 step에서는 Adam이 더 많이 줄였지만 일반적인 결론은 아니다. gradient가 작았던 $b_1$($0.525$)도 gradient가 큰 $b_2$($1.05$)와 똑같이 움직였다는 점이 Adam의 특징이다.
 
-**(e)** central difference 값은 약 $0.7875$로 상대 오차 $10^{-11}$ 수준까지 맞는다. $z = 0.5$가 ReLU의 꺾인 점에서 멀어서 $w_1 \pm 10^{-5}$에서도 같은 선형 구간이고, 그 구간에서 $\hat{y}$는 $w_1$에 대해 1차, $L$은 2차 함수다. central difference의 truncation 오차는 $\frac{h^2}{6}f'''$인데 2차 함수는 $f''' = 0$이라 truncation 오차가 0이다. 남는 것은 round-off뿐이다(12번 레슨).
+**(e)** central difference 값은 약 $0.7875$로 상대 오차 $10^{-11}$ 수준까지 맞는다. $z = 0.5$가 ReLU의 꺾인 점에서 멀어서 $w_1 \pm 10^{-5}$에서도 같은 선형 구간이고, 그 구간에서 $\hat{y}$는 $w_1$에 대해 1차, $L$은 2차 함수다. central difference의 truncation 오차는 $\frac{h^2}{6}f'''$인데 2차 함수는 $f''' = 0$이라 truncation 오차가 0이다. 남는 것은 round-off뿐이다(12번 레슨(#forward-difference-vs-central-difference)).
 
 </details>
 
@@ -159,19 +159,19 @@ $$
 \text{MSE}(c) = (1 - c)^2 w^{*2} + c^2 v, \quad v = \frac{\sigma^2}{Ns}
 $$
 
-13번 레슨 서술형과 같은 꼴이므로 $c^* = \frac{w^{*2}}{w^{*2} + v}$. $c = \frac{s}{s + \lambda}$에서 $\lambda = s\frac{1 - c}{c}$이고 $\frac{1 - c^*}{c^*} = \frac{v}{w^{*2}}$이므로
+13번 레슨(#문제-최적의-shrinkage) 서술형과 같은 꼴이므로 $c^* = \frac{w^{*2}}{w^{*2} + v}$. $c = \frac{s}{s + \lambda}$에서 $\lambda = s\frac{1 - c}{c}$이고 $\frac{1 - c^*}{c^*} = \frac{v}{w^{*2}}$이므로
 
 $$
 \lambda^* = s \cdot \frac{v}{w^{*2}} = \frac{\sigma^2}{N w^{*2}}
 $$
 
-15번 레슨의 MAP 해석($\lambda = \sigma^2 / (N\tau^2)$)과 같은 모양이다. prior의 분산 $\tau^2$ 자리에 $w^{*2}$가 들어갔다.
+15번 레슨(#map-해석)의 MAP 해석($\lambda = \sigma^2 / (N\tau^2)$)과 같은 모양이다. prior의 분산 $\tau^2$ 자리에 $w^{*2}$가 들어갔다.
 
 **(b)** $v = 1/(20 \times 0.5) = 0.1$. $\lambda^* = 1/20 = 0.05$, $c^* = 1/1.1 = 0.909$. 최소 MSE $= \frac{w^{*2} v}{w^{*2} + v} = 0.1/1.1 = 0.0909$. $\lambda = 0$이면 MSE $= v = 0.1$이므로 약 9% 줄었다. 검산: bias² $= 0.0909^2 = 0.00826$, variance $= 0.826 \times 0.1 = 0.0826$, 합 0.0909.
 
-**(c)** $\lambda \approx \frac{1}{\eta t}$이므로 $t \approx \frac{1}{0.1 \times 0.05} = 200$ step. (이 방향의 정확한 early stopping 배율은 $1 - (1 - 0.1 \times 0.5)^{200} \approx 1.0$이라, 곡률 0.5는 "작은 곡률" 근사가 맞지 않는다. 근사가 맞는 건 $\eta s t$가 작은 방향이다. 16번 레슨 예제 3처럼 곡률이 큰 방향에서는 early stopping이 ridge보다 덜 줄인다.)
+**(c)** $\lambda \approx \frac{1}{\eta t}$이므로 $t \approx \frac{1}{0.1 \times 0.05} = 200$ step. (이 방향의 정확한 early stopping 배율은 $1 - (1 - 0.1 \times 0.5)^{200} \approx 1.0$이라, 곡률 0.5는 "작은 곡률" 근사가 맞지 않는다. 근사가 맞는 건 $\eta s t$가 작은 방향이다. 16번 레슨(#예제-3-early-stopping과-ridge-배율) 예제 3처럼 곡률이 큰 방향에서는 early stopping이 ridge보다 덜 줄인다.)
 
-**(d)** 데이터를 train / validation / test로 나눈다. $\lambda$ 후보(예: $10^{-4}$부터 10배씩)마다 train으로 학습하고 validation MSE를 잰다. 가장 낮은 $\lambda$를 고른다(데이터가 적으면 k-fold CV). 고른 $\lambda$로 train(+ validation)에 다시 학습하고, **선택에 한 번도 쓰지 않은 test set**에서 한 번만 평가해 보고한다. validation 점수는 selection bias 때문에 낙관적이다(14번 레슨).
+**(d)** 데이터를 train / validation / test로 나눈다. $\lambda$ 후보(예: $10^{-4}$부터 10배씩)마다 train으로 학습하고 validation MSE를 잰다. 가장 낮은 $\lambda$를 고른다(데이터가 적으면 k-fold CV). 고른 $\lambda$로 train(+ validation)에 다시 학습하고, **선택에 한 번도 쓰지 않은 test set**에서 한 번만 평가해 보고한다. validation 점수는 selection bias 때문에 낙관적이다(14번 레슨(#selection-bias)).
 
 </details>
 
@@ -200,9 +200,9 @@ $$
 
 **(c)** full: token당 $6 \times 1.3 \times 10^9 = 7.8$ GFLOPs, 전체 $7.8 \times 10^{17}$ FLOPs. $7.8 \times 10^{17} / (40 \times 10^{12}) = 19{,}500$ s ≈ **5.4시간**.
 
-LoRA: forward $2N$ + backward의 $\partial X = GW$ 부분 $2N$ = $4N$ (11번 레슨). token당 5.2 GFLOPs, 전체 $5.2 \times 10^{17}$ FLOPs → 13,000 s ≈ **3.6시간**. 계산은 1/3만 줄지만 메모리는 약 8배 줄어든다. LoRA의 주된 이득은 메모리다.
+LoRA: forward $2N$ + backward의 $\partial X = GW$ 부분 $2N$ = $4N$ (11번 레슨(#linear-layer의-backward)). token당 5.2 GFLOPs, 전체 $5.2 \times 10^{17}$ FLOPs → 13,000 s ≈ **3.6시간**. 계산은 1/3만 줄지만 메모리는 약 8배 줄어든다. LoRA의 주된 이득은 메모리다.
 
-**(d)** $64 / 4 = 16$번 accumulation. micro-batch gradient의 평균이 global batch gradient와 같다(06번 레슨). global batch를 4배로 키우면 linear scaling rule로 learning rate도 4배가 출발점이다. noise floor가 $\eta / B$에 비례하기 때문이다. Adam에서는 4배가 너무 커서 $\sqrt{4} = 2$배로 시작하기도 하고, 어느 쪽이든 warmup을 같이 쓰고 validation loss로 확인한다.
+**(d)** $64 / 4 = 16$번 accumulation. micro-batch gradient의 평균이 global batch gradient와 같다(06번 레슨(#코드)). global batch를 4배로 키우면 linear scaling rule로 learning rate도 4배가 출발점이다. noise floor가 $\eta / B$에 비례하기 때문이다. Adam에서는 4배가 너무 커서 $\sqrt{4} = 2$배로 시작하기도 하고, 어느 쪽이든 warmup을 같이 쓰고 validation loss로 확인한다.
 
 </details>
 

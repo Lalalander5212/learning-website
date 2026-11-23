@@ -8,7 +8,7 @@ import path from 'node:path';
 import { createProcessor } from '@mdx-js/mdx';
 import remarkMath from 'remark-math';
 import katex from 'katex';
-import { TRACKS, DOCS_DIR, LESSON_FILE, listLessons, splitFrontmatter } from '../src/lib/lesson-files.mjs';
+import { TRACKS, DOCS_DIR, LESSON_FILE, listLessons, splitFrontmatter, lessonHeadings } from '../src/lib/lesson-files.mjs';
 import { findLessonRefs } from '../src/lib/remark-lesson-links.mjs';
 
 const strict = process.argv.includes('--strict');
@@ -140,6 +140,18 @@ for (const track of TRACKS) {
         err(f, line, 'heading-math', '제목에 수식이 있으면 목차(TOC)에 KaTeX 텍스트가 깨져서 나옴. 수식은 제목 아래 본문으로');
       }
 
+      // 다른 레슨으로 가는 일반 링크: /learning-website/<track>/<slug>/#앵커
+      if (n.type === 'link') {
+        const m = /^\/learning-website\/([a-z0-9-]+)\/([a-z0-9-]+)\/(?:#(.+))?$/.exec(n.url);
+        if (m && TRACKS.some((t) => t.id === m[1])) {
+          const target = listLessons(m[1]).find((x) => x.slug === m[2]);
+          if (!target) err(f, line, 'link', `${n.url}: 그런 레슨이 없음`);
+          else if (m[3] && !lessonHeadings(target.file).some((h) => h.slug === decodeURIComponent(m[3]))) {
+            err(f, line, 'link', `${n.url}: ${target.id}에 이 앵커의 제목이 없음. 있는 앵커: ${lessonHeadings(target.file).map((h) => h.slug).join(', ')}`);
+          }
+        }
+      }
+
       if (n.type === 'code' && n.lang && !CODE_LANGS.has(n.lang)) warn(f, line, 'code-lang', `코드블록 언어 "${n.lang}"는 목록에 없음 (${[...CODE_LANGS].join(', ')})`);
 
       if (n.type === 'text' && !inSkipped) {
@@ -148,6 +160,13 @@ for (const track of TRACKS) {
             if (!lessons.some((x) => x.num === r.num)) err(f, line, 'lesson-ref', `"${r.num}번 레슨": ${track.id}에 ${r.num}번 레슨이 없음`);
           }
           if (ref.nums.length === 1 && ref.nums[0].num === l.num) warn(f, line, 'lesson-ref', `"${l.num}번 레슨"이 자기 자신을 가리킴. "위 Worked example"처럼 섹션으로 가리킬 것`);
+          if (ref.anchor) {
+            if (ref.nums.length > 1) err(f, line, 'lesson-ref', `"(#${ref.anchor})": 섹션 앵커는 레슨 하나에만 붙일 수 있음`);
+            const target = lessons.find((x) => x.num === ref.nums[0].num);
+            if (target && !lessonHeadings(target.file).some((h) => h.slug === ref.anchor)) {
+              err(f, line, 'lesson-ref', `"${ref.nums[0].num}번 레슨(#${ref.anchor})": 그 레슨에 이 앵커의 제목이 없음. 있는 앵커: ${lessonHeadings(target.file).map((h) => h.slug).join(', ')}`);
+            }
+          }
         }
         if (/(?<!\d)\d번 레슨/.test(n.value)) warn(f, line, 'lesson-ref', '레슨 참조는 두 자리로 ("7번 레슨" → "07번 레슨"). 한 자리는 링크가 안 걸림');
       }

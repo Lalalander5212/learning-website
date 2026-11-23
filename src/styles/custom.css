@@ -349,3 +349,17 @@ a.dash-title:hover { text-decoration: underline; text-decoration-thickness: 3px;
 @media (min-width: 50rem) and (max-width: 71.99rem) {
   :root[data-sidebar-collapsed] .main-frame .sl-container { margin-inline: auto; }
 }
+
+/* ── 섹션 링크로 도착했을 때 그 제목을 잠깐 표시 ─────────── */
+@keyframes lw-target-flash {
+  0%, 30% { background: color-mix(in srgb, var(--sl-color-accent) 30%, transparent); }
+  100% { background: transparent; }
+}
+.sl-markdown-content :is(h2, h3, h4, h5, h6):target {
+  animation: lw-target-flash 2.2s ease-out;
+  border-radius: 0.3rem;
+  box-shadow: -0.5rem 0 0 0 transparent;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sl-markdown-content :is(h2, h3, h4, h5, h6):target { animation: none; text-decoration: underline; text-decoration-color: var(--sl-color-accent); }
+}

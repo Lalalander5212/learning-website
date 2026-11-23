@@ -105,7 +105,7 @@ PA = \text{PPN} \times 2^p + \text{offset}
 $$
 
 <Aside type="note" title="cache 주소 분할과 같은 구조">
-하위 비트는 블록 안의 위치, 상위 비트는 어느 블록인지. 08번 레슨의 tag / index / offset 분할과 똑같은 아이디어다.
+하위 비트는 블록 안의 위치, 상위 비트는 어느 블록인지. 08번 레슨(#주소-분할-공식)의 tag / index / offset 분할과 똑같은 아이디어다.
 </Aside>
 
 ## Page Table Entry (PTE)
@@ -227,14 +227,14 @@ offset은 **그대로 복사**된다. 번역되는 건 VPN → PPN뿐이다.
 </Aside>
 
 <Aside type="caution" title="Page table은 MMU 하드웨어 안에 있다?">
-page table은 **메인 메모리(DRAM)**에 있다. MMU 안에 있는 건 PTBR과 TLB(15번 레슨) 정도다. 그래서 번역이 비싸다.
+page table은 **메인 메모리(DRAM)**에 있다. MMU 안에 있는 건 PTBR과 TLB(15번 레슨(#tlb)) 정도다. 그래서 번역이 비싸다.
 </Aside>
 
 ## Efficient ML 연결
 
 **MCU에는 MMU가 없다.** Arduino(AVR)나 Cortex-M MCU는 MMU가 없고, 있어도 영역별 권한만 거는 **MPU(Memory Protection Unit)**다. 가상 주소도 page fault도 없다. 그래서 TinyML 런타임(MCUNet, TinyEngine)은 **컴파일 시점에 모든 텐서의 SRAM 위치를 정적으로 계획**한다 (static memory planning). OS가 런타임에 해주던 일을 컴파일러가 미리 다 해야 하는 것이다. 반면 Raspberry Pi(Cortex-A)는 MMU가 있어서 Linux가 돈다.
 
-**공유 = 메모리 절약.** 같은 모델 파일을 여러 프로세스가 열면 OS가 같은 물리 page를 각 프로세스의 page table에 매핑해서 **물리 메모리 한 벌로 공유**할 수 있다. edge LLM 런타임이 `mmap`으로 weight를 여는 이유 중 하나다 (15번 레슨).
+**공유 = 메모리 절약.** 같은 모델 파일을 여러 프로세스가 열면 OS가 같은 물리 page를 각 프로세스의 page table에 매핑해서 **물리 메모리 한 벌로 공유**할 수 있다. edge LLM 런타임이 `mmap`으로 weight를 여는 이유 중 하나다 (15번 레슨(#efficient-ml-연결)).
 
 ## 체크 퀴즈
 

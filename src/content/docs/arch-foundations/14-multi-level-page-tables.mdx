@@ -54,7 +54,7 @@ RISC-V **Sv39**는 39-bit VA = 9 + 9 + 9 + 12로 3레벨이다.
 
 <Aside type="caution" title="Trade-off">
 **장점**: 안 쓰는 영역의 하위 테이블은 아예 없어도 된다 (상위 PTE를 invalid로 두면 끝). 메모리 절약.
-**단점**: 번역 한 번에 **메모리 접근이 레벨 수만큼** 필요하다 (x86-64는 4번, 최신 5-level paging은 5번). 이 비용을 TLB가 숨긴다 (15번 레슨).
+**단점**: 번역 한 번에 **메모리 접근이 레벨 수만큼** 필요하다 (x86-64는 4번, 최신 5-level paging은 5번). 이 비용을 TLB가 숨긴다 (15번 레슨(#tlb)).
 </Aside>
 
 ## Worked example 1: x86-64 4-level walk

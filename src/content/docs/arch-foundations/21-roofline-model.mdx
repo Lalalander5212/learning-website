@@ -117,7 +117,7 @@ vector add가 4 GF/s로 돈다면 peak의 0.5%지만 **이미 최적**이다. �
 
 ## Worked example 2: 16번 레슨의 dot product 다시 보기
 
-16번 레슨에서 누적기 8개 AVX2 dot product가 46 GFLOP/s에서 멈췄다. 데이터는 L1에 있었으니 **L1 지붕**을 보자. 코어 하나, 약 3.3 GHz, 사이클당 32 B load 2개라고 하면
+16번 레슨(#worked-example-peak와-dot-product-실측)에서 누적기 8개 AVX2 dot product가 46 GFLOP/s에서 멈췄다. 데이터는 L1에 있었으니 **L1 지붕**을 보자. 코어 하나, 약 3.3 GHz, 사이클당 32 B load 2개라고 하면
 
 $$
 BW_{L1} \approx 2 \times 32\text{ B} \times 3.3 \times 10^9 \approx 211 \text{ GB/s}
@@ -137,7 +137,7 @@ $$
 AI^{*} = \frac{312}{2.0} = 156 \text{ FLOP/B}
 $$
 
-batch 1 LLM decoding의 linear layer(FP16 weight)는 AI ≈ 1이다 (20번 레슨).
+batch 1 LLM decoding의 linear layer(FP16 weight)는 AI ≈ 1이다 (20번 레슨(#4-gemv-행렬--벡터)).
 
 $$
 P = 2.0 \text{ TB/s} \times 1 = 2 \text{ TFLOP/s} \approx 0.64\% \text{ of peak}

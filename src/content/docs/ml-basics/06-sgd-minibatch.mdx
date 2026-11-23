@@ -91,7 +91,7 @@ $$
 
 ### Noise floor: learning rate를 고정하면 끝까지 흔들린다
 
-05번 레슨처럼 1차원 2차식 $L(w) = \frac{a}{2}(w - w^*)^2$에서 gradient에 noise $\xi_t$(평균 0, 분산 $s^2 = \sigma^2 / B$)가 붙는다고 하자.
+05번 레슨(#1차원부터)처럼 1차원 2차식 $L(w) = \frac{a}{2}(w - w^*)^2$에서 gradient에 noise $\xi_t$(평균 0, 분산 $s^2 = \sigma^2 / B$)가 붙는다고 하자.
 
 $$
 e_{t+1} = (1 - \eta a)\, e_t - \eta\, \xi_t
@@ -113,7 +113,7 @@ $$
 
 1. $v$는 0이 아니다. **고정 learning rate SGD는 최솟값에 도착하지 않고 그 주변에서 흔들린다.**
 2. 흔들림은 $\eta / B$에 비례한다. learning rate를 반으로 줄이거나 batch를 2배로 키우면 noise floor가 절반이 된다.
-3. 그래서 batch를 $k$배 키울 때 learning rate도 $k$배 키우면 noise 수준이 대략 유지된다. 이것을 **linear scaling rule**이라고 한다 (Goyal et al., 2017). 단 $\eta a$가 커지면 $(2 - \eta a)$ 항과 05번 레슨의 발산 경계 때문에 깨진다.
+3. 그래서 batch를 $k$배 키울 때 learning rate도 $k$배 키우면 noise 수준이 대략 유지된다. 이것을 **linear scaling rule**이라고 한다 (Goyal et al., 2017). 단 $\eta a$가 커지면 $(2 - \eta a)$ 항과 05번 레슨(#여러-차원-eigen-방향으로-쪼개기)의 발산 경계 때문에 깨진다.
 
 ### Learning rate schedule
 
@@ -127,7 +127,7 @@ $$
 \end{cases}
 $$
 
-- **Warmup**: 학습 초반에는 weight가 무작위라 gradient가 크고 방향도 들쭉날쭉하고, Adam(08번 레슨) 같은 optimizer의 통계도 아직 안 쌓였다. 처음부터 큰 $\eta$를 쓰면 발산하기 쉽다. 작게 시작해서 키운다.
+- **Warmup**: 학습 초반에는 weight가 무작위라 gradient가 크고 방향도 들쭉날쭉하고, Adam(08번 레슨(#3단계-adam--rmsprop--momentum--bias-correction)) 같은 optimizer의 통계도 아직 안 쌓였다. 처음부터 큰 $\eta$를 쓰면 발산하기 쉽다. 작게 시작해서 키운다.
 - **Decay**: 끝에서 $\eta$를 줄여 noise floor를 낮춘다. cosine은 처음엔 천천히, 중간에 빠르게, 끝에서 다시 천천히 줄인다.
 
 ## Worked example
@@ -282,7 +282,7 @@ noise 덕분에 날카로운 최솟값(sharp minimum)에서 튕겨 나와 넓은
 
 (b) $\eta = 0.1$로 고정했을 때, 최솟값 주변 표준편차를 0.1 이하로 만들려면 batch size가 최소 얼마여야 하나?
 
-(c) 반대로 $B = 1$로 고정하면 learning rate를 얼마 이하로 줄여야 하나? (b)와 비교해서 수렴까지의 step 수 측면에서 어느 쪽이 유리한지 05번 레슨의 배율로 설명하라.
+(c) 반대로 $B = 1$로 고정하면 learning rate를 얼마 이하로 줄여야 하나? (b)와 비교해서 수렴까지의 step 수 측면에서 어느 쪽이 유리한지 05번 레슨(#1차원부터)의 배율로 설명하라.
 
 <details>
 <summary>풀이 보기</summary>
@@ -315,7 +315,7 @@ $$
 \frac{3.5\eta}{2 - \eta} \le 0.01 \;\Rightarrow\; 3.5\eta \le 0.02 - 0.01\eta \;\Rightarrow\; \eta \le \frac{0.02}{3.51} \approx 0.0057
 $$
 
-수렴 속도: 오차의 평균은 05번 레슨처럼 매 step $(1 - \eta a)$배가 된다. $\eta = 0.1$이면 0.9배라서 초기 오차 3을 0.1 수준으로 줄이는 데 $\ln 30 / \ln(1/0.9) \approx 32$ step이면 된다. $\eta = 0.0057$이면 0.9943배라 $\ln 30 / 0.0057 \approx 600$ step 가까이 걸린다.
+수렴 속도: 오차의 평균은 05번 레슨(#1차원부터)처럼 매 step $(1 - \eta a)$배가 된다. $\eta = 0.1$이면 0.9배라서 초기 오차 3을 0.1 수준으로 줄이는 데 $\ln 30 / \ln(1/0.9) \approx 32$ step이면 된다. $\eta = 0.0057$이면 0.9943배라 $\ln 30 / 0.0057 \approx 600$ step 가까이 걸린다.
 
 계산량(본 샘플 수)으로 보면 (b)는 $32 \times 19 \approx 600$개, (c)는 약 600개로 비슷하다. 차이는 **(b)는 19개를 병렬로 한 번에 계산할 수 있어서 step 수(= 순차 시간)가 20배 가까이 적다**는 것이다. GPU에서 batch를 키우는 이유가 이것이다. 실제로는 (c)처럼 처음엔 큰 $\eta$, 끝에서 작은 $\eta$를 쓰는 schedule이 둘의 장점을 섞는다.
 

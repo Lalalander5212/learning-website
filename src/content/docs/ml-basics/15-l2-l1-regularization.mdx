@@ -13,7 +13,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## 왜 필요한가
 
-13번 레슨의 9차 다항식은 train MSE가 0이지만 variance가 폭발했다. 이때 계수를 보면 수만~수십만 단위의 거대한 양수와 음수가 서로 상쇄하며 점들을 억지로 지난다. 그리고 13번 레슨 서술형에서 추정량을 0 쪽으로 당기면(shrinkage) MSE가 준다는 것을 봤다. **regularization**은 loss에 "weight가 크면 벌점"을 더해서 이 당기기를 모든 파라미터에 자동으로 적용한다. 벌점을 제곱(L2)으로 주느냐 절댓값(L1)으로 주느냐에 따라 결과가 달라지고, L1은 weight를 **정확히 0**으로 만든다. 이게 pruning의 출발점이다.
+13번 레슨(#예제-2-다항식-fitting)의 9차 다항식은 train MSE가 0이지만 variance가 폭발했다. 이때 계수를 보면 수만~수십만 단위의 거대한 양수와 음수가 서로 상쇄하며 점들을 억지로 지난다. 그리고 13번 레슨(#문제-최적의-shrinkage) 서술형에서 추정량을 0 쪽으로 당기면(shrinkage) MSE가 준다는 것을 봤다. **regularization**은 loss에 "weight가 크면 벌점"을 더해서 이 당기기를 모든 파라미터에 자동으로 적용한다. 벌점을 제곱(L2)으로 주느냐 절댓값(L1)으로 주느냐에 따라 결과가 달라지고, L1은 weight를 **정확히 0**으로 만든다. 이게 pruning의 출발점이다.
 
 ## 직관: 고무줄로 원점에 묶기
 
@@ -41,7 +41,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 **Regularization strength** $\lambda$: 벌점의 세기. hyperparameter라서 validation으로 고른다(14번 레슨).
 
-**Weight decay (가중치 감쇠)**: 매 step $\mathbf{w} \leftarrow (1 - \eta\lambda)\mathbf{w} - \eta\nabla L$. SGD에서는 L2와 같다(Adam에서는 다르다, 08번 레슨).
+**Weight decay (가중치 감쇠)**: 매 step $\mathbf{w} \leftarrow (1 - \eta\lambda)\mathbf{w} - \eta\nabla L$. SGD에서는 L2와 같다(Adam에서는 다르다, 08번 레슨(#adamw-decoupled-weight-decay)).
 
 **Sparsity (희소성)**: 0인 원소가 많은 성질.
 *Having many exactly-zero entries.*
@@ -52,7 +52,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 ### Ridge의 해와 shrinkage
 
-loss를 $L(\mathbf{w}) = \frac{1}{2N}\lVert X\mathbf{w} - \mathbf{y}\rVert^2 + \frac{\lambda}{2}\lVert\mathbf{w}\rVert^2$로 두자. gradient를 0으로 놓으면 (02번 레슨과 같은 방법)
+loss를 $L(\mathbf{w}) = \frac{1}{2N}\lVert X\mathbf{w} - \mathbf{y}\rVert^2 + \frac{\lambda}{2}\lVert\mathbf{w}\rVert^2$로 두자. gradient를 0으로 놓으면 (02번 레슨(#normal-equation-유도)과 같은 방법)
 
 $$
 \frac{1}{N}X^\top(X\mathbf{w} - \mathbf{y}) + \lambda\mathbf{w} = 0
@@ -75,7 +75,7 @@ $$
 - 데이터가 많이 퍼진 방향($s_i \gg \lambda$): 배율 $\approx 1$, 거의 안 줄인다.
 - 데이터가 거의 없는 방향($s_i \ll \lambda$): 배율 $\approx s_i/\lambda \to 0$, 강하게 줄인다.
 
-05번 레슨의 언어로 $s_i$는 곡률이다. 곡률이 작은 방향은 데이터가 그 방향 weight를 잘 정해 주지 못해서 noise에 크게 흔들린다(variance가 큼). ridge는 정확히 그 방향을 골라서 0 쪽으로 누른다. 그리고 $S + \lambda I$의 가장 작은 eigenvalue가 $\lambda$ 이상이 되므로 condition number도 좋아진다(02번 레슨 끝의 ridge 미리보기).
+05번 레슨(#여러-차원-eigen-방향으로-쪼개기)의 언어로 $s_i$는 곡률이다. 곡률이 작은 방향은 데이터가 그 방향 weight를 잘 정해 주지 못해서 noise에 크게 흔들린다(variance가 큼). ridge는 정확히 그 방향을 골라서 0 쪽으로 누른다. 그리고 $S + \lambda I$의 가장 작은 eigenvalue가 $\lambda$ 이상이 되므로 condition number도 좋아진다(02번 레슨(#ridge-regression-미리보기) 끝의 ridge 미리보기).
 
 ### Weight decay와의 관계
 
@@ -85,7 +85,7 @@ $$
 \mathbf{w} \leftarrow \mathbf{w} - \eta(\nabla L_{\text{data}} + \lambda\mathbf{w}) = (1 - \eta\lambda)\mathbf{w} - \eta\nabla L_{\text{data}}
 $$
 
-매 step weight를 $(1 - \eta\lambda)$배로 줄이고(decay) 그다음 데이터 gradient로 움직인다. 08번 레슨의 AdamW는 Adam에서도 이 형태가 되게 만든 것이다.
+매 step weight를 $(1 - \eta\lambda)$배로 줄이고(decay) 그다음 데이터 gradient로 움직인다. 08번 레슨(#adamw-decoupled-weight-decay)의 AdamW는 Adam에서도 이 형태가 되게 만든 것이다.
 
 ### MAP 해석
 
@@ -95,7 +95,7 @@ $$
 -\log p(\mathbf{w} \mid D) = \frac{1}{2\sigma^2}\sum_i (y_i - \mathbf{w}^\top\mathbf{x}_i)^2 + \frac{1}{2\tau^2}\lVert\mathbf{w}\rVert^2 + \text{const}
 $$
 
-이것을 최소화하는 것이 MAP이고 ridge와 같은 모양이다. $\frac{\sigma^2}{N}$을 곱해 위의 loss 형태로 맞추면 $\lambda = \frac{\sigma^2}{N\tau^2}$. noise가 클수록, 데이터가 적을수록, prior가 좁을수록(weight가 작다고 강하게 믿을수록) $\lambda$가 크다. 13번 레슨 서술형의 $c^*$와 같은 방향이다.
+이것을 최소화하는 것이 MAP이고 ridge와 같은 모양이다. $\frac{\sigma^2}{N}$을 곱해 위의 loss 형태로 맞추면 $\lambda = \frac{\sigma^2}{N\tau^2}$. noise가 클수록, 데이터가 적을수록, prior가 좁을수록(weight가 작다고 강하게 믿을수록) $\lambda$가 크다. 13번 레슨(#문제-최적의-shrinkage) 서술형의 $c^*$와 같은 방향이다.
 
 prior를 Laplace 분포 $p(w_j) \propto e^{-\lvert w_j \rvert / b}$로 바꾸면 $-\log$가 $\lvert w_j\rvert / b$라서 **L1 벌점**이 된다. Laplace 분포는 0에서 뾰족하므로 "대부분의 weight는 정확히 0일 것"이라는 믿음이다.
 
@@ -219,7 +219,7 @@ lasso l=0.1 : exact zeros = 43/50, test MSE = 0.313, w[:6] = [ 2.96 -1.95  1.39 
 ```
 
 볼 포인트:
-- **다항식**: $\lambda = 0$이면 weight norm이 약 13만이다. 아주 작은 $\lambda = 10^{-6}$만 줘도 norm이 50으로 줄고 test MSE가 0.150에서 0.128로 좋아진다. $\lambda$가 너무 크면(1) 직선에 가까워져서 underfitting이다. 13번 레슨의 U자 곡선을 $\lambda$ 축으로 다시 본 것이다.
+- **다항식**: $\lambda = 0$이면 weight norm이 약 13만이다. 아주 작은 $\lambda = 10^{-6}$만 줘도 norm이 50으로 줄고 test MSE가 0.150에서 0.128로 좋아진다. $\lambda$가 너무 크면(1) 직선에 가까워져서 underfitting이다. 13번 레슨(#capacity에-따른-tradeoff)의 U자 곡선을 $\lambda$ 축으로 다시 본 것이다.
 - **L1 vs L2**: 진짜 weight가 5개뿐인 문제에서 lasso는 50개 중 43개를 정확히 0으로 만들고 test MSE가 가장 좋다(noise 바닥이 0.25). ridge는 0을 하나도 못 만들고, $\lambda = 0.1$에서는 큰 진짜 weight(3 → 2.62)까지 깎아서 오히려 OLS보다 나쁘다.
 - 어느 쪽이 좋은지는 데이터에 달렸다. 진짜 구조가 sparse면 L1, 작은 효과가 많이 퍼져 있으면 L2가 유리하다. 그래서 둘 다 validation으로 고른다.
 
@@ -234,7 +234,7 @@ L2의 해는 $a/(1 + \lambda)$ 꼴이라 0에 가까워질 뿐 정확히 0이 �
 </Aside>
 
 <Aside type="caution" title="Bias에도 똑같이 weight decay를 건다?">
-02번 레슨 서술형에서 봤듯 bias는 데이터 전체를 평행이동하는 값이라 벌점을 줄 이유가 없다. 실전에서는 bias와 normalization layer의 scale/shift 파라미터를 weight decay에서 빼는 경우가 많다.
+02번 레슨(#문제-ridge-regression을-closed-form으로-풀기) 서술형에서 봤듯 bias는 데이터 전체를 평행이동하는 값이라 벌점을 줄 이유가 없다. 실전에서는 bias와 normalization layer의 scale/shift 파라미터를 weight decay에서 빼는 경우가 많다.
 </Aside>
 
 ## Efficient ML 연결
@@ -243,7 +243,7 @@ L2의 해는 $a/(1 + \lambda)$ 꼴이라 0에 가까워질 뿐 정확히 0이 �
 
 **Weight decay → quantization 친화성.** weight decay는 weight 분포를 좁게 유지하고 큰 outlier를 억제한다. quantization은 weight 범위를 $2^b$개 구간으로 나누므로 범위가 좁고 outlier가 없을수록 오차가 작다. 반대로 LLM은 일부 channel에 큰 outlier가 생겨서 quantization이 어려운데, 이를 다루는 기법들(SmoothQuant, AWQ 등)이 따로 있다.
 
-**Magnitude pruning의 근거.** Han et al.(2015)의 Deep Compression은 L2로 학습한 뒤 크기가 작은 weight를 자르고 다시 fine-tuning한다. 크기가 작은 weight가 loss에 덜 중요하다는 가정이다. 05번 레슨의 Hessian 관점에서는 "크기 × 곡률"이 중요도라는 OBS 계열 방법(02번 레슨)이 더 정확한 기준이다.
+**Magnitude pruning의 근거.** Han et al.(2015)의 Deep Compression은 L2로 학습한 뒤 크기가 작은 weight를 자르고 다시 fine-tuning한다. 크기가 작은 weight가 loss에 덜 중요하다는 가정이다. 05번 레슨(#efficient-ml-연결)의 Hessian 관점에서는 "크기 × 곡률"이 중요도라는 OBS 계열 방법(02번 레슨(#efficient-ml-연결))이 더 정확한 기준이다.
 
 ## 체크 퀴즈
 
