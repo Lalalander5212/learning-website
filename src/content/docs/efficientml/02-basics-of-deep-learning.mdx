@@ -1,0 +1,346 @@
+---
+title: "Lec 2. Basics of Deep Learning: layer와 efficiency metric"
+description: "MIT 6.5940 Fall 2026 Lecture 2. Linear, conv, grouped, depthwise layer의 파라미터와 MAC 공식을 유도하고, latency, throughput, memory, MAC/FLOP/FLOPS 같은 효율 지표를 구분하기"
+track: efficientml
+module: intro
+est: 40min
+prereq: [efficientml/01-introduction, ml-basics/09-mlp-activation]
+sidebar:
+  order: 2
+---
+import Quiz from '../../../components/Quiz.astro';
+import YouTube from '../../../components/YouTube.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+<YouTube id="CzGTQseaM38" title="EfficientML.ai Lecture 2 - Basics of Deep Learning (MIT 6.5940 Fall 2026)" />
+
+<Aside type="note" title="이 레슨 쓰는 법">
+영상을 보고 아래 노트로 정리한 뒤 문제를 푼다. 노트는 강의를 옮겨 적은 것이 아니라 강의가 다루는 layer와 지표를 다시 유도한 것이다. conv layer는 이 사이트의 deep-learning 트랙에서 자세히 다룰 예정이라, 여기서는 효율 계산에 필요한 만큼 정리한다. 슬라이드는 [코스 페이지](https://hanlab.mit.edu/courses/2026-fall-65940)에 있다.
+</Aside>
+
+## 왜 필요한가
+
+01번 레슨에서 "덜 옮기고 덜 계산하자"고 했다. 그러려면 먼저 **무엇을 얼마나** 세는지 정해야 한다. 파라미터 수, MAC 수, latency는 서로 다른 것을 잰다. 파라미터가 8배 적은 layer가 8배 빠르지 않은 경우가 흔하고, 그 이유를 지표로 설명할 수 있어야 압축 기법(pruning, quantization)과 구조 설계(MobileNet, MCUNet)의 효과를 제대로 비교할 수 있다. 이 레슨은 이후 모든 강의에서 쓰는 계산 공식을 정리한다.
+
+## 직관: 같은 일을 하는 세 가지 conv
+
+```text
+ 입력 c_i개 channel, 출력 c_o개 channel, k×k filter
+
+ Standard conv      출력 channel 하나가 입력 channel 전부를 본다
+   c_i ████████ ──► 각 출력: c_i × k × k 개 weight
+ 
+ Grouped conv (g)   channel을 g묶음으로 나눠 묶음끼리만 본다
+   c_i ██|██|██|██ ──► 각 출력: (c_i / g) × k × k 개 weight
+ 
+ Depthwise conv     g = c_i = c_o. channel 하나가 자기 channel만 본다
+   c_i █|█|█|█|█|█ ──► 각 출력: 1 × k × k 개 weight
+                       (channel 섞기는 뒤의 1×1 pointwise conv가 맡음)
+```
+
+연결을 줄일수록 파라미터와 MAC은 준다. 대신 weight 하나를 쓰는 횟수(재사용)도 줄어서, 메모리를 읽는 양에 비해 계산이 적어진다. 이게 "MAC이 적은데 안 빠른" 이유가 된다.
+
+## 정식 설명
+
+### 용어
+
+**Parameter (파라미터)**: 학습되는 값. weight와 bias.
+*Learnable values: weights and biases.*
+
+**Activation (활성값, feature map)**: layer의 입력과 출력으로 흐르는 중간값. 추론 때 입력마다 새로 생긴다.
+*Intermediate tensors produced by layers during a forward pass.*
+
+**MAC (multiply-accumulate)**: $a \leftarrow a + w \cdot x$ 한 번. 곱셈 1번 + 덧셈 1번.
+
+**FLOP / FLOPs (floating-point operation)**: 부동소수점 연산 하나 / 그 개수. 1 MAC = 2 FLOPs. 정수 연산이면 OP, OPs라고 쓴다.
+
+**FLOPS (FLOP per second)**: 초당 FLOP. **하드웨어의 처리 능력** 단위다. 모델의 연산량(FLOPs)과 헷갈리기 쉽다. OPS도 같은 관계.
+*Floating-point operations per second; a rate, not a count.*
+
+**Latency (지연 시간)**: 입력 하나를 넣고 결과가 나올 때까지 걸리는 시간.
+
+**Throughput (처리량)**: 단위 시간당 처리하는 입력 수(images/s, tokens/s). batch를 키우면 보통 throughput은 오르고 latency도 오른다.
+
+**Model size (모델 크기)**: 파라미터 수 × bit 수 / 8 바이트.
+
+**Total / peak activation (전체 / 최대 activation)**: 모든 layer activation의 합 / 실행 중 동시에 메모리에 있어야 하는 activation의 최댓값. 학습 메모리는 전자(backward를 위해 저장, [ml-basics 12](/learning-website/ml-basics/12-backprop-gradient-check/)), 추론 메모리는 후자가 정한다.
+
+### 기호
+
+batch $n$, 입력 channel $c_i$, 출력 channel $c_o$, 입력 크기 $h_i \times w_i$, 출력 크기 $h_o \times w_o$, kernel $k_h \times k_w$, stride $s$, padding $p$, group 수 $g$. 아래 MAC은 batch 1 기준이고 batch $n$이면 $n$배다. bias는 파라미터에 $c_o$개를 더하고 MAC에서는 무시한다.
+
+### Linear (fully-connected) layer
+
+[ml-basics 09](/learning-website/ml-basics/09-mlp-activation/)에서 본 그대로다. 출력 $c_o$개 각각이 입력 $c_i$개 전부와 곱해진다.
+
+$$
+\text{params} = c_o c_i, \qquad \text{MACs} = c_o c_i
+$$
+
+MAC 수와 파라미터 수가 같다. weight 하나를 샘플당 한 번만 쓴다는 뜻이다.
+
+### Convolution layer
+
+**출력 크기.** 한 변 길이 $h_i$에 padding $p$를 양쪽에 붙이면 $h_i + 2p$. 크기 $k$인 창을 stride $s$로 밀 때 놓을 수 있는 시작 위치는 $0, s, 2s, \dots$이고, 창의 끝이 $h_i + 2p$를 넘지 않아야 하므로 시작 위치가 $h_i + 2p - k$ 이하다. 개수는
+
+$$
+h_o = \left\lfloor \frac{h_i + 2p - k_h}{s} \right\rfloor + 1
+$$
+
+$w_o$도 같다. $k = 3$, $p = 1$, $s = 1$이면 $h_o = h_i$ ("same" padding).
+
+**파라미터.** 출력 channel 하나마다 $c_i \times k_h \times k_w$ 크기의 filter가 하나 있다.
+
+$$
+\text{params} = c_o \cdot c_i \cdot k_h k_w
+$$
+
+**MAC.** 출력 원소 하나 $= $ filter와 입력 patch의 내적 $= c_i k_h k_w$ MAC. 출력 원소는 $c_o h_o w_o$개.
+
+$$
+\text{MACs} = c_o \cdot c_i \cdot k_h k_w \cdot h_o w_o = \text{params} \times h_o w_o
+$$
+
+같은 weight를 출력 위치 $h_o w_o$개에서 **재사용**한다. 그래서 conv는 linear보다 arithmetic intensity가 훨씬 높다.
+
+### Grouped convolution
+
+channel을 $g$묶음으로 나눠 묶음 안에서만 conv한다. 출력 channel 하나가 보는 입력 channel이 $c_i / g$개라서
+
+$$
+\text{params} = \frac{c_o c_i k_h k_w}{g}, \qquad \text{MACs} = \frac{c_o c_i k_h k_w h_o w_o}{g}
+$$
+
+### Depthwise와 depthwise separable convolution
+
+**Depthwise**: $g = c_i = c_o$. channel마다 $k \times k$ filter 하나.
+
+$$
+\text{params} = c_o k_h k_w, \qquad \text{MACs} = c_o k_h k_w h_o w_o
+$$
+
+channel끼리 정보를 섞지 못하므로 뒤에 **pointwise**(1×1 conv, $c_i \to c_o$)를 붙인다. 이 둘을 합친 것이 depthwise separable conv이고 MobileNet의 기본 블록이다. standard conv 대비 MAC 비율은 ($k_h = k_w = k$, depthwise는 $c_i$ channel 유지)
+
+$$
+\frac{c_i k^2 h_o w_o + c_o c_i h_o w_o}{c_o c_i k^2 h_o w_o} = \frac{1}{c_o} + \frac{1}{k^2}
+$$
+
+$c_o$가 크면 대략 $1/k^2$, 즉 3×3이면 약 9배 줄어든다.
+
+### 지표끼리의 관계
+
+01번 레슨과 roofline([arch-foundations 21](/learning-website/arch-foundations/21-roofline-model/))을 합치면, layer 하나의 실행 시간은 대략
+
+$$
+t \approx \max\left(\frac{\text{FLOPs}}{\text{peak FLOPS}},\; \frac{\text{bytes moved}}{\text{memory bandwidth}}\right)
+$$
+
+MAC을 줄이면 첫 항만 준다. 옮기는 바이트(weight + activation)가 그대로면 둘째 항이 시간을 정한다. 그래서 MAC 수는 latency의 **대리 지표(proxy)** 일 뿐이고, 실제 latency는 하드웨어에서 재야 한다.
+
+## Worked example
+
+### 예제 1. Standard vs depthwise separable
+
+입력 $56 \times 56 \times 64$, 출력 channel 128, 3×3, stride 1, padding 1이라 $h_o = w_o = 56$, $h_o w_o = 3136$.
+
+**Standard 3×3**
+- params $= 128 \times 64 \times 9 = 73{,}728$
+- MACs $= 73{,}728 \times 3136 = 231{,}211{,}008$ (약 231M)
+
+**Depthwise 3×3 (64 channel) + pointwise 1×1 (64 → 128)**
+- depthwise: params $64 \times 9 = 576$, MACs $576 \times 3136 = 1{,}806{,}336$
+- pointwise: params $128 \times 64 = 8{,}192$, MACs $8{,}192 \times 3136 = 25{,}690{,}112$
+- 합: params $8{,}768$, MACs $27{,}496{,}448$
+
+**비율**: $231.2\text{M} / 27.5\text{M} = 8.41$배. 공식 $1/128 + 1/9 = 0.1189$의 역수 8.41과 같다.
+
+### 예제 2. 그런데 8.4배 빨라지나
+
+INT8(1 B)로 weight, 입력, 출력을 각각 한 번씩 옮긴다고 하자. 입력 $56 \times 56 \times 64 = 200{,}704$ B, 출력 $56 \times 56 \times 128 = 401{,}408$ B.
+
+| layer | MACs | 옮기는 바이트 | MAC / byte |
+|---|---|---|---|
+| standard 3×3 | 231.2M | $73{,}728 + 200{,}704 + 401{,}408 = 675{,}840$ | 342 |
+| depthwise 3×3 | 1.8M | $576 + 200{,}704 + 200{,}704 = 401{,}984$ | 4.5 |
+| pointwise 1×1 | 25.7M | $8{,}192 + 200{,}704 + 401{,}408 = 610{,}304$ | 42 |
+
+depthwise layer는 MAC이 standard의 1/128인데 옮기는 바이트는 60%나 된다. arithmetic intensity 4.5 MAC/byte면 대부분 하드웨어에서 memory-bound다. 그래서 MobileNet 계열은 MAC 수 감소만큼 빨라지지 않고, depthwise 다음 pointwise를 한 kernel로 합치는(fusion) 최적화가 중요해진다. 이 계산은 첫 번째 근사일 뿐이고 실제로는 cache와 kernel 구현에 따라 달라진다.
+
+## 코드
+
+```python
+import numpy as np
+
+def conv_out(h, k, s=1, p=0):
+    return (h + 2 * p - k) // s + 1
+
+def conv_cost(c_in, c_out, h_in, w_in, k, s=1, p=0, groups=1, bias=False):
+    """params, MACs (batch 1), input/output activation 원소 수"""
+    h_out, w_out = conv_out(h_in, k, s, p), conv_out(w_in, k, s, p)
+    params = c_out * (c_in // groups) * k * k + (c_out if bias else 0)
+    macs = c_out * (c_in // groups) * k * k * h_out * w_out
+    return dict(params=params, macs=macs, act_in=c_in * h_in * w_in,
+                act_out=c_out * h_out * w_out, out_hw=(h_out, w_out))
+
+# 1) 공식이 맞는지 naive conv로 MAC 수를 직접 세서 확인 (작은 크기)
+def naive_conv_macs(x, w, s, p, groups):
+    c_in, H, W = x.shape
+    c_out, cpg, k, _ = w.shape                       # cpg = c_in // groups
+    x = np.pad(x, ((0, 0), (p, p), (p, p)))
+    Ho, Wo = (H + 2 * p - k) // s + 1, (W + 2 * p - k) // s + 1
+    y, macs = np.zeros((c_out, Ho, Wo)), 0
+    for o in range(c_out):
+        g = o // (c_out // groups)
+        for i in range(Ho):
+            for j in range(Wo):
+                patch = x[g * cpg:(g + 1) * cpg, i * s:i * s + k, j * s:j * s + k]
+                y[o, i, j] = np.sum(patch * w[o]); macs += patch.size
+    return y, macs
+
+rng = np.random.default_rng(0)
+x = rng.normal(size=(4, 9, 9))
+for groups, c_out in [(1, 6), (2, 6), (4, 4)]:      # 일반, grouped, depthwise
+    w = rng.normal(size=(c_out, 4 // groups, 3, 3))
+    y, m = naive_conv_macs(x, w, s=2, p=1, groups=groups)
+    c = conv_cost(4, c_out, 9, 9, 3, s=2, p=1, groups=groups)
+    print(f"groups={groups}: out {y.shape}, counted MACs={m}, formula={c['macs']}")
+
+# 2) worked example: 56x56x64 -> 128, 3x3, stride 1, pad 1
+std = conv_cost(64, 128, 56, 56, 3, p=1)
+dw = conv_cost(64, 64, 56, 56, 3, p=1, groups=64)
+pw = conv_cost(64, 128, 56, 56, 1)
+print()
+print(f"standard 3x3      : params={std['params']:>7,}  MACs={std['macs']:>12,}")
+print(f"depthwise 3x3     : params={dw['params']:>7,}  MACs={dw['macs']:>12,}")
+print(f"pointwise 1x1     : params={pw['params']:>7,}  MACs={pw['macs']:>12,}")
+sep_p, sep_m = dw["params"] + pw["params"], dw["macs"] + pw["macs"]
+print(f"separable total   : params={sep_p:>7,}  MACs={sep_m:>12,}  ({std['macs'] / sep_m:.2f}x fewer MACs)")
+
+# 3) INT8로 weight + 입력 + 출력을 한 번씩 옮긴다고 할 때 arithmetic intensity (MAC / byte)
+for name, c in [("standard", std), ("depthwise", dw), ("pointwise", pw)]:
+    bytes_moved = c["params"] + c["act_in"] + c["act_out"]
+    print(f"{name:9s}: {c['macs'] / bytes_moved:7.1f} MAC/byte")
+```
+
+```text
+groups=1: out (6, 5, 5), counted MACs=5400, formula=5400
+groups=2: out (6, 5, 5), counted MACs=2700, formula=2700
+groups=4: out (4, 5, 5), counted MACs=900, formula=900
+
+standard 3x3      : params= 73,728  MACs= 231,211,008
+depthwise 3x3     : params=    576  MACs=   1,806,336
+pointwise 1x1     : params=  8,192  MACs=  25,690,112
+separable total   : params=  8,768  MACs=  27,496,448  (8.41x fewer MACs)
+standard :   342.1 MAC/byte
+depthwise:     4.5 MAC/byte
+pointwise:    42.1 MAC/byte
+```
+
+볼 포인트:
+- naive conv에서 MAC을 하나씩 센 값과 공식이 일반, grouped, depthwise 세 경우 모두 일치한다. 공식이 헷갈리면 이렇게 작은 크기로 직접 세 보면 된다.
+- separable 블록은 MAC이 8.41배 적지만 depthwise의 MAC/byte가 4.5로 매우 낮다. MAC만 보면 놓치는 부분이다.
+
+## 흔한 오해
+
+<Aside type="caution" title="파라미터가 적으면 빠르다?">
+conv는 weight를 출력 위치마다 재사용해서, 파라미터는 적어도 MAC이 많을 수 있다(예제 1의 standard conv: 파라미터 74K, MAC 231M). 반대로 linear layer는 파라미터가 많아도 MAC은 그만큼뿐이다. 속도는 MAC과 옮기는 바이트를 함께 봐야 한다.
+</Aside>
+
+<Aside type="caution" title="FLOPs와 FLOPS는 같은 말이다?">
+FLOPs는 개수(모델이 요구하는 연산량), FLOPS는 초당 개수(하드웨어 능력)다. 모델 50 GFLOPs를 100 TFLOPS GPU에서 돌리면 이상적으로 0.5 ms다. 논문에서 둘을 섞어 쓰는 경우가 있어서 단위를 꼭 확인한다. MAC과 FLOP의 2배 차이도 자주 틀리는 곳이다.
+</Aside>
+
+<Aside type="caution" title="추론 메모리는 모든 layer activation의 합이다?">
+추론에서는 layer를 지나면 이전 activation을 버릴 수 있어서, 동시에 들고 있어야 하는 **최대량(peak)** 이 메모리를 정한다. 합(total)이 중요한 건 backward를 위해 다 저장하는 학습 때다. 서술형에서 residual 연결이 peak를 어떻게 키우는지 계산한다.
+</Aside>
+
+## Efficient ML 연결
+
+- **Lec 3, 4 (pruning)**: weight를 0으로 만들면 파라미터는 바로 줄지만, MAC과 latency가 줄려면 0을 건너뛰는 kernel이나 하드웨어가 필요하다. 이 레슨의 지표를 구분해야 "몇 배 압축"과 "몇 배 빨라짐"을 따로 말할 수 있다.
+- **Lec 7, 8 (NAS)**: 구조 탐색에서 MAC 수 대신 실제 기기에서 잰 latency(lookup table)를 제약으로 쓰는 이유가 예제 2다.
+- **Lec 10, 11 (MCUNet, TinyEngine)**: MCU에서는 SRAM에 들어가는 peak activation이 첫 번째 제약이다. 서술형의 계산을 layer마다 하는 것이 MCUNet의 메모리 분석이다.
+
+## 체크 퀴즈
+
+<Quiz
+  q="입력 32 × 32, kernel 5 × 5, padding 2, stride 2인 conv의 출력 크기(한 변)는?"
+  options={['16', '15', '14', '32']}
+  answer={0}
+  explain="floor((32 + 2 × 2 - 5) / 2) + 1 = floor(31 / 2) + 1 = 15 + 1 = 16. 15는 마지막 +1을 빼먹은 값, 14는 padding을 무시하고 floor(27 / 2) + 1로 계산한 값, 32는 stride 1일 때의 same padding 결과다."
+/>
+
+<Quiz
+  q="입력 channel 32, 출력 channel 64, 3 × 3 conv, 출력 크기 28 × 28일 때 MAC 수는? (batch 1)"
+  options={['약 0.45M', '18,432', '약 14.5M', '약 130M']}
+  answer={2}
+  explain="params = 64 × 32 × 9 = 18,432, MACs = 18,432 × 28 × 28 = 14,450,688. 18,432는 파라미터 수에서 멈춘 값, 약 0.45M은 입력 channel 32를 빼먹은 64 × 9 × 784, 약 130M은 k × k를 한 번 더 곱한 값이다."
+/>
+
+<Quiz
+  q="출력 channel 256, kernel 5 × 5인 standard conv를 depthwise separable conv(depthwise 5 × 5 + pointwise 1 × 1)로 바꾸면 MAC이 대략 몇 배 줄어드나?"
+  options={['25배', '256배', '약 9배', '약 23배']}
+  answer={3}
+  explain="비율 = 1 / c_o + 1 / k² = 1 / 256 + 1 / 25 = 0.0439, 역수 약 22.8배. 25배는 1 / c_o 항을 무시한 근사, 약 9배는 3 × 3일 때의 값, 256배는 1 / k² 항을 무시한 값이다."
+/>
+
+<Quiz
+  q="25 GMACs인 모델을 peak 100 TFLOPS GPU에서 돌린다. 완전히 compute-bound이고 peak를 낸다고 하면 추론 한 번은?"
+  options={['0.25 ms', '0.5 ms', '2 ms', '4 ms']}
+  answer={1}
+  explain="25 GMACs = 50 GFLOPs, 50 × 10^9 / 100 × 10^12 = 0.5 ms. 0.25 ms는 MAC을 FLOP으로 바꾸지 않은 값, 4 ms는 100 / 25를 시간으로 잘못 읽은 값이다. 실제로는 peak FLOPS를 다 내기 어려워 더 오래 걸린다."
+/>
+
+## 서술형
+
+### 문제. Inverted residual block의 peak memory
+
+MobileNetV2의 inverted residual block을 MCU에서 INT8로 실행한다. 입력 $24 \times 24 \times 16$, 순서는
+
+1. expand: 1×1 conv, 16 → 96
+2. depthwise: 3×3, 96 channel, stride 1, padding 1
+3. project: 1×1 conv, 96 → 16
+4. residual: project 출력 + 블록 입력 (원소별 덧셈)
+
+bias는 무시한다.
+
+(a) 세 conv의 파라미터와 MAC을 구하고 블록 전체 합을 구하라.
+
+(b) layer를 하나씩 실행할 때, 각 layer 실행 중 동시에 메모리에 있어야 하는 activation(그 layer의 입력과 출력, 그리고 residual 때문에 아직 버릴 수 없는 블록 입력)을 구하라. peak는 어느 layer에서 몇 바이트인가?
+
+(c) 블록 전체 weight 크기와 peak activation을 비교하라. SRAM이 64 KB라면 어떤 방법을 생각할 수 있나?
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** $h_o w_o = 24 \times 24 = 576$.
+
+| layer | params | MACs |
+|---|---|---|
+| expand 1×1 | $96 \times 16 = 1{,}536$ | $1{,}536 \times 576 = 884{,}736$ |
+| depthwise 3×3 | $96 \times 9 = 864$ | $864 \times 576 = 497{,}664$ |
+| project 1×1 | $16 \times 96 = 1{,}536$ | $884{,}736$ |
+| 합 | **3,936** | **2,267,136** |
+
+**(b)** 텐서 크기: 블록 입력 $24 \times 24 \times 16 = 9{,}216$ B, 확장된 텐서 $24 \times 24 \times 96 = 55{,}296$ B.
+
+- expand 실행 중: 입력 9,216 + 출력 55,296 = 64,512 B (입력은 이 layer의 입력이면서 residual용)
+- depthwise 실행 중: 블록 입력 9,216(residual용) + 입력 55,296 + 출력 55,296 = **119,808 B**
+- project 실행 중: 블록 입력 9,216 + 입력 55,296 + 출력 9,216 = 73,728 B
+
+peak는 depthwise에서 119,808 B(약 117 KB).
+
+**(c)** weight는 3,936 B(약 3.8 KB)로 peak activation의 약 1/30이다. MCU에서는 weight보다 activation이 먼저 막힌다. 64 KB SRAM에 넣으려면:
+
+- depthwise는 channel끼리 독립이라 **in-place**로 계산하거나 channel 몇 개씩 나눠 계산하면 입력과 출력을 둘 다 통째로 들고 있을 필요가 없다. 출력을 입력 자리에 덮어쓰면 depthwise 단계가 $9{,}216 + 55{,}296 = 64{,}512$ B가 된다.
+- 공간을 patch로 나눠 블록 전체를 patch 단위로 실행하면(patch-based inference, MCUNetV2) 확장된 텐서를 전체 크기로 만들 필요가 없다.
+- expand 비율(6)이나 해상도를 줄이는 구조 변경은 정확도와 바꿔야 하므로 NAS로 고른다.
+
+</details>
+
+## 더 읽을거리
+
+- [MIT 6.5940 Fall 2026 코스 페이지](https://hanlab.mit.edu/courses/2026-fall-65940)
+- [A guide to convolution arithmetic for deep learning (Dumoulin & Visin, 2016)](https://arxiv.org/abs/1603.07285): 출력 크기 공식과 그림
+- [MobileNets (Howard et al., 2017)](https://arxiv.org/abs/1704.04861): depthwise separable conv
+- [MobileNetV2: Inverted Residuals and Linear Bottlenecks (Sandler et al., 2018)](https://arxiv.org/abs/1801.04381)
+- [MCUNetV2: Memory-Efficient Patch-based Inference for Tiny Deep Learning (Lin et al., 2021)](https://arxiv.org/abs/2110.15352)
