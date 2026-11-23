@@ -345,3 +345,7 @@ a.dash-title:hover { text-decoration: underline; text-decoration-thickness: 3px;
   :root[data-has-sidebar][data-sidebar-collapsed] { --sl-content-inline-start: 0rem; }
   :root[data-sidebar-collapsed] .sidebar-pane { display: none; }
 }
+/* 72rem 미만에서는 Starlight가 본문을 왼쪽 정렬함(TOC가 위 드롭다운으로 감). 사이드바를 접었을 때만 가운데로 */
+@media (min-width: 50rem) and (max-width: 71.99rem) {
+  :root[data-sidebar-collapsed] .main-frame .sl-container { margin-inline: auto; }
+}
