@@ -1,0 +1,371 @@
+---
+title: "Lec 6. Quantization (Part II): granularity, clipping, QAT, binary"
+description: "MIT 6.5940 Fall 2026 Lecture 6. Scale을 어떤 단위로 둘지(per-tensor, per-channel, group), 범위를 어디서 자를지(clipping), 저비트에서 정확도를 되찾는 quantization-aware training과 STE, 1-bit/2-bit 네트워크"
+track: efficientml
+module: inference
+est: 40min
+prereq: [efficientml/05-quantization-part1]
+sidebar:
+  order: 6
+---
+import Quiz from '../../../components/Quiz.astro';
+import YouTube from '../../../components/YouTube.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+<YouTube id="_sHTMuOQY5A" title="EfficientML.ai Lecture 6 - Quantization Part II (MIT 6.5940 Fall 2026)" />
+
+<Aside type="note" title="이 레슨 쓰는 법">
+영상을 보고 아래 노트로 정리한 뒤 문제를 푼다. 노트는 강의를 옮겨 적은 것이 아니라 강의가 다루는 주제를 이 사이트의 다른 레슨과 이어서 다시 유도한 것이다. 슬라이드는 [코스 페이지](https://hanlab.mit.edu/courses/2026-fall-65940)에 있다.
+</Aside>
+
+## 왜 필요한가
+
+05번 레슨(#linear-quantization)은 텐서 하나에 scale 하나를 두는 가장 단순한 linear quantization이었다. 8-bit에서는 그걸로 대부분 충분하지만 4-bit 이하로 내려가면 정확도가 급격히 떨어진다. 원인은 세 가지다. channel마다 값의 크기가 달라서 scale 하나로 다 담지 못하고(granularity), 드문 큰 값(outlier) 때문에 범위가 넓어져 눈금이 성겨지고(clipping), 반올림 오차가 쌓인다(rounding). 이 레슨은 이 세 가지를 학습 없이 고치는 방법(post-training quantization, PTQ)과, 그래도 안 될 때 양자화된 상태로 다시 학습하는 방법(quantization-aware training, QAT)을 다룬다.
+
+## 직관: 자 하나로 모든 걸 재지 않기
+
+```text
+ channel 0 weight: |·|   (최대 0.12)
+ channel 1 weight: |──────────────|   (최대 1.4)
+
+ per-tensor 자 (눈금 0.2):     channel 0의 값이 거의 다 0 눈금에 떨어짐
+   0     0.2    0.4   ...   1.4
+   |------|------|----------|
+
+ per-channel 자: channel 0은 눈금 0.017짜리 자, channel 1은 눈금 0.2짜리 자
+   channel 0도 7칸을 다 쓴다
+```
+
+작은 물건과 큰 물건을 같은 자로 재면 작은 물건은 "0 눈금"으로만 읽힌다. 물건마다(channel마다, 또는 값 몇십 개 묶음마다) 맞는 자를 쓰면 된다. 대신 자(scale)도 저장해야 한다.
+
+## 정식 설명
+
+### 용어
+
+**Post-training quantization (PTQ, 학습 후 양자화)**: 학습이 끝난 모델을 재학습 없이(또는 소량의 calibration 데이터만으로) 양자화하는 것.
+*Quantizing a trained model without (or with very little) retraining.*
+
+**Quantization-aware training (QAT, 양자화 인식 학습)**: forward에서 양자화를 흉내 내며(fake quantization) 학습해서 모델이 양자화 오차에 적응하게 하는 것.
+
+**Granularity (단위)**: scale과 zero point를 공유하는 원소의 묶음. per-tensor, per-channel, per-group.
+
+**Calibration (보정)**: 대표 입력 몇백 개를 흘려 activation의 범위나 분포를 재는 것.
+
+**Clipping (잘라내기)**: 양자화 범위를 실제 최댓값보다 좁게 잡고 그 밖의 값은 끝값으로 고정하는 것.
+
+**Straight-through estimator (STE)**: backward에서 round처럼 미분이 0인 함수를 항등함수처럼 취급해 gradient를 그대로 통과시키는 근사.
+*Treating a non-differentiable quantizer as identity in the backward pass.*
+
+**Binary / ternary network**: weight(또는 activation)를 $\{-1, +1\}$ / $\{-1, 0, +1\}$에 scale을 곱한 값으로만 쓰는 네트워크.
+
+### Granularity: scale을 몇 개 둘까
+
+| 단위 | scale 개수 (weight $c_o \times c_i$) | 오차 | 추가 저장 |
+|---|---|---|---|
+| per-tensor | 1 | 가장 큼 | 무시 가능 |
+| per-channel | $c_o$ (출력 channel마다) | 작음 | 무시 가능 |
+| per-group ($g$개씩) | $c_o c_i / g$ | 더 작음 | weight당 $\frac{b_s}{g}$ bit |
+
+**per-channel이 공짜인 이유**: 05번 레슨(#정수만으로-linear-layer-계산하기)의 정수 식에서 $M = S_W S_X / S_Y$였다. 출력 channel $j$마다 $S_{W,j}$가 다르면 $M_j$도 출력마다 하나씩이다. 누적이 끝난 뒤 출력마다 한 번 곱하면 되므로 계산이 늘지 않는다. 반면 **입력** channel마다 scale이 다르면 누적 중간에 곱해야 해서 정수 누적이 깨진다. 그래서 weight는 출력 channel 단위로 둔다.
+
+**group quantization**: 4-bit 이하에서는 channel 하나 안에서도 값의 크기가 크게 다르다. 연속된 $g$개(보통 32~128)마다 scale을 둔다. 저장 비용은 weight당 평균
+
+$$
+b_{\text{eff}} = b + \frac{b_s + b_z}{g}
+$$
+
+($b_s$: scale bit, $b_z$: zero point bit). 4-bit, FP16 scale, group 128이면 $4 + 16/128 = 4.125$ bit. LLM의 4-bit 형식(GPTQ, AWQ, llama.cpp의 Q4)이 이 구조다. MX(microscaling) 형식은 32개 묶음마다 8-bit 지수 scale을 두는 하드웨어 표준이다.
+
+### Clipping: 범위를 어디서 자를까
+
+범위를 $[-\alpha, \alpha]$로 잡고 대칭 $b$-bit로 양자화하면 오차는 두 종류다.
+
+$$
+\text{MSE}(\alpha) \approx \underbrace{\frac{S^2}{12}\,P(\lvert x \rvert \le \alpha)}_{\text{rounding, } S = \alpha / (2^{b-1}-1)} + \underbrace{\mathbb{E}\left[(\lvert x \rvert - \alpha)^2;\; \lvert x \rvert > \alpha\right]}_{\text{clipping}}
+$$
+
+(rounding 오차가 $[-S/2, S/2]$에 고르게 퍼져 있으면 분산이 $S^2/12$.) $\alpha$를 키우면 clipping은 줄지만 $S$가 커져 rounding이 는다. 그래서 최적 $\alpha$는 보통 최댓값보다 작다. 고르는 방법:
+
+- **min/max**: 그냥 최댓값. outlier에 약하다.
+- **EMA**: 학습/calibration 중 최댓값의 지수 이동 평균([ml-basics 07](/learning-website/ml-basics/07-momentum/#efficient-ml-연결)의 EMA).
+- **MSE 최소화**: 위 식(또는 실측 MSE)을 최소로 하는 $\alpha$를 탐색.
+- **KL divergence**: 원래 분포와 양자화된 분포의 KL을 최소화(TensorRT의 방식).
+
+### Rounding
+
+가장 가까운 값으로 반올림하는 것이 원소 하나의 오차는 최소로 하지만, layer **출력**의 오차를 최소로 하지는 않는다. weight 오차들이 입력과 곱해져 더해질 때 서로 상쇄되도록 일부는 올림, 일부는 내림하는 편이 출력에 더 좋을 수 있다. AdaRound는 calibration 데이터로 layer 출력 오차 $\lVert WX - \hat{W}X \rVert^2$를 최소화하는 올림/내림을 학습한다. [ml-basics 02](/learning-website/ml-basics/02-closed-form-vs-numerical/#efficient-ml-연결)의 GPTQ도 같은 목적식을 Hessian으로 푼다.
+
+### QAT와 straight-through estimator
+
+PTQ로 안 되는 저비트에서는 양자화된 weight로 forward하면서 다시 학습한다.
+
+- **Forward**: 학습용 실수 weight $W$를 그대로 두고, 매 step $\hat{W} = S \cdot \text{clamp}(\text{round}(W/S))$로 양자화한 값(fake quantization)으로 계산한다.
+- **Backward**: $\partial \hat{W} / \partial W$가 거의 모든 곳에서 0이라 그대로면 학습이 안 된다([ml-basics 12](/learning-website/ml-basics/12-backprop-gradient-check/#efficient-ml-연결)). STE는 이걸 1로 본다.
+
+$$
+\frac{\partial L}{\partial W} \approx \frac{\partial L}{\partial \hat{W}} \cdot \mathbb{1}\left[\lvert W \rvert \le \alpha\right]
+$$
+
+(clamp 밖은 0으로 막는 변형이 흔하다.) 실수 $W$가 조금씩 움직이다가 반올림 경계를 넘으면 $\hat{W}$가 바뀐다. 모델은 "양자화된 값으로도 loss가 낮은 곳"으로 적응한다. scale $S$도 같은 방식으로 학습할 수 있다(LSQ).
+
+### Binary와 ternary
+
+**Binary weight**: $W \approx \alpha B$, $B = \text{sign}(W) \in \{-1, +1\}$. 오차를 최소로 하는 $\alpha$는
+
+$$
+\lVert W - \alpha B \rVert^2 = \lVert W \rVert^2 - 2\alpha\, W^\top B + \alpha^2 n, \quad W^\top B = \sum_i \lvert w_i \rvert
+$$
+
+$\alpha$로 미분해 0으로 놓으면
+
+$$
+\boxed{\alpha^* = \frac{1}{n}\sum_i \lvert w_i \rvert}
+$$
+
+**activation까지 binary**면(XNOR-Net) 내적이 bit 연산이 된다. $\pm 1$ 벡터를 bit(1 = +1, 0 = −1)로 저장하면
+
+$$
+\mathbf{a}^\top\mathbf{b} = 2 \cdot \text{popcount}(\text{XNOR}(\mathbf{a}, \mathbf{b})) - n
+$$
+
+곱셈 $n$번이 XNOR 한 번과 popcount 한 번으로 바뀐다. 64-bit 레지스터 하나로 64개를 한 번에 처리한다.
+
+**Ternary**(TWN): $\{-1, 0, +1\}$. threshold $\Delta = 0.7 \cdot \frac{1}{n}\sum\lvert w_i \rvert$보다 작은 값은 0, 나머지는 부호. scale은 0이 아닌 원소의 $\lvert w \rvert$ 평균. 0을 쓸 수 있어서 binary보다 정확하고 2 bit로 저장된다.
+
+### Mixed precision
+
+layer마다 민감도가 다르므로(04번 레슨(#pruning-비율-정하기-sensitivity-analysis)과 같은 이야기) 민감한 layer는 8-bit, 둔감한 layer는 4-bit처럼 bit 수를 다르게 줄 수 있다. HAQ는 하드웨어 latency/에너지를 피드백으로 강화학습으로 bit 배분을 찾고, HAWQ는 layer별 Hessian 크기로 정한다([ml-basics 05](/learning-website/ml-basics/05-gradient-descent-learning-rate/#efficient-ml-연결)).
+
+## Worked example
+
+### 예제 1. per-tensor vs per-channel (INT4 대칭, 정수 범위 −7~7)
+
+channel 0 = $(0.12, -0.05, 0.03)$, channel 1 = $(1.4, -0.95, 0.35)$.
+
+**per-tensor**: $S = 1.4 / 7 = 0.2$.
+
+- channel 0: $0.12 / 0.2 = 0.6 \to 1$, $-0.05/0.2 = -0.25 \to 0$, $0.03/0.2 = 0.15 \to 0$ → $(0.2, 0, 0)$. 오차 $(0.08, 0.05, 0.03)$로 원래 값과 비슷한 크기.
+- channel 1: $(7, -4.75 \to -5, 1.75 \to 2)$ → $(1.4, -1.0, 0.4)$.
+
+**per-channel**: channel 0의 $S_0 = 0.12 / 7 = 0.01714$.
+
+- $0.12 \to 7$, $-0.05 / 0.01714 = -2.92 \to -3$, $0.03 / 0.01714 = 1.75 \to 2$ → $(0.12, -0.0514, 0.0343)$. 오차 $(0, 0.0014, 0.0043)$.
+- channel 1은 $S_1 = 0.2$로 같다.
+
+channel 0의 오차가 수십 배 줄었다.
+
+### 예제 2. group quantization의 비용
+
+7B 모델 4-bit, group 128, FP16 scale: $7 \times 10^9 \times 4.125 / 8 = 3.61$ GB. scale 없는 순수 4-bit(3.5 GB)보다 3% 크다. group 32면 4.5 bit라 12.5% 커진다. group을 작게 할수록 정확도는 오르고 크기도 는다.
+
+### 예제 3. Binary와 ternary
+
+$W = (0.8, -0.2, 0.5, -1.1)$.
+
+- **binary**: $B = (1, -1, 1, -1)$, $\alpha^* = (0.8 + 0.2 + 0.5 + 1.1)/4 = 0.65$. 근사 $(0.65, -0.65, 0.65, -0.65)$, 오차 제곱합 $0.0225 + 0.2025 + 0.0225 + 0.2025 = 0.45$. $\alpha = 1.0$이면 0.94, $\alpha = \max = 1.1$이면 1.26.
+- **ternary**: $\Delta = 0.7 \times 0.65 = 0.455$. $\lvert -0.2 \rvert < \Delta$라 0. $t = (1, 0, 1, -1)$, scale $= (0.8 + 0.5 + 1.1)/3 = 0.8$. 근사 $(0.8, 0, 0.8, -0.8)$, 오차 제곱합 $0 + 0.04 + 0.09 + 0.09 = 0.22$. binary의 절반이다.
+
+## 코드
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+
+def quant_sym(x, bits, scale):
+    qmax = 2 ** (bits - 1) - 1
+    return np.clip(np.round(x / scale), -qmax, qmax) * scale
+
+# 1) Granularity: 출력 channel마다 크기가 다른 weight (64 x 256)
+ch_scale = np.exp(rng.normal(0, 1.0, size=(64, 1)))          # channel마다 10배 이상 차이
+W = rng.normal(0, 1, size=(64, 256)) * ch_scale * 0.02
+def err(Wq): return np.mean((W - Wq) ** 2) / np.mean(W ** 2)  # 상대 MSE
+bits = 4; qmax = 2 ** (bits - 1) - 1
+per_tensor = quant_sym(W, bits, np.abs(W).max() / qmax)
+per_channel = quant_sym(W, bits, np.abs(W).max(1, keepdims=True) / qmax)
+G = W.reshape(64, -1, 32)                                     # group size 32
+per_group = quant_sym(G, bits, np.abs(G).max(2, keepdims=True) / qmax).reshape(W.shape)
+print("INT4 relative MSE  per-tensor %.4f | per-channel %.4f | group(32) %.4f"
+      % (err(per_tensor), err(per_channel), err(per_group)))
+print("bits/weight with FP16 scales: per-channel %.3f | group(32) %.3f | group(128) %.3f"
+      % (4 + 16 / 256, 4 + 16 / 32, 4 + 16 / 128))
+
+# 2) Clipping: outlier가 섞인 activation을 INT4로. 범위 alpha를 바꿔 가며 MSE
+x = np.concatenate([rng.laplace(0, 1, 100_000), [40.0, -35.0]])  # 대부분 작고 outlier 두 개
+print("\nclip alpha | INT4 MSE   (max|x| = %.1f)" % np.abs(x).max())
+for alpha in [np.abs(x).max(), 20, 10, 8, 6, 5, 4, 3]:
+    xq = quant_sym(np.clip(x, -alpha, alpha), 4, alpha / 7)
+    print(f"  {alpha:7.1f}  | {np.mean((x - xq) ** 2):.5f}")
+
+# 3) QAT with STE: spiral MLP의 weight를 저비트로 (ml-basics 12번 레슨의 모델)
+def spiral(n, rng):
+    X, y = [], []
+    for c in range(3):
+        r = np.linspace(0.05, 1, n)
+        t = np.linspace(c * 4, (c + 1) * 4, n) + rng.normal(0, 0.2, n)
+        X.append(np.c_[r * np.sin(t), r * np.cos(t)]); y.append(np.full(n, c))
+    return np.vstack(X), np.concatenate(y)
+def fq(W, bits):                       # per-channel 대칭 fake quant
+    qmax = 2 ** (bits - 1) - 1
+    s = np.abs(W).max(1, keepdims=True) / qmax
+    return np.clip(np.round(W / s), -qmax, qmax) * s
+def forward(params, X, bits=None):
+    A = X
+    for i, (W, b) in enumerate(params):
+        Wq = fq(W, bits) if bits else W
+        Z = A @ Wq.T + b
+        A = np.maximum(Z, 0) if i < len(params) - 1 else Z
+    return A
+def train(params, X, y, steps, lr=0.05, bits=None):
+    params = [[W.copy(), b.copy()] for W, b in params]
+    vel = [[np.zeros_like(W), np.zeros_like(b)] for W, b in params]
+    for _ in range(steps):
+        acts, A, Ws = [X], X, []
+        for i, (W, b) in enumerate(params):
+            Wq = fq(W, bits) if bits else W; Ws.append(Wq)
+            Z = A @ Wq.T + b
+            if i < len(params) - 1:
+                A = np.maximum(Z, 0); acts.append(A)
+        P = np.exp(Z - Z.max(1, keepdims=True)); P /= P.sum(1, keepdims=True)
+        G = P; G[np.arange(len(y)), y] -= 1; G /= len(y)
+        for i in reversed(range(len(params))):
+            W, b = params[i]
+            gW, gb = G.T @ acts[i], G.sum(0)          # STE: dL/dWq를 그대로 dL/dW로
+            if i > 0: G = (G @ Ws[i]) * (acts[i] > 0)
+            vel[i][0] = 0.9 * vel[i][0] + gW; vel[i][1] = 0.9 * vel[i][1] + gb
+            W -= lr * vel[i][0]; b -= lr * vel[i][1]
+    return params
+acc = lambda p, X, y, bits=None: (forward(p, X, bits).argmax(1) == y).mean()
+rng = np.random.default_rng(0)
+X, y = spiral(200, rng); Xt, yt = spiral(200, np.random.default_rng(1))
+sizes = [2, 128, 128, 3]
+init = [[rng.normal(0, np.sqrt(2 / i), (o, i)), np.zeros(o)] for i, o in zip(sizes[:-1], sizes[1:])]
+fp = train(init, X, y, 4000)
+print(f"\nFP32 test acc = {acc(fp, Xt, yt):.3f}")
+for bits in (4, 3, 2):
+    ptq = acc(fp, Xt, yt, bits)
+    qat = train(fp, X, y, 1000, lr=0.01, bits=bits)
+    print(f"{bits}-bit weights (per-channel): PTQ {ptq:.3f} -> QAT (STE, 1000 steps) {acc(qat, Xt, yt, bits):.3f}")
+
+print()
+# 4) Binary: W ≈ alpha * sign(W), alpha = mean|W|
+Wb = np.array([0.8, -0.2, 0.5, -1.1])
+alpha = np.abs(Wb).mean()
+for a in [alpha, 1.0, np.abs(Wb).max()]:
+    print(f"alpha={a:.3f}  ||W - a*sign(W)||^2 = {np.sum((Wb - a * np.sign(Wb)) ** 2):.4f}")
+```
+
+```text
+INT4 relative MSE  per-tensor 0.1019 | per-channel 0.0152 | group(32) 0.0092
+bits/weight with FP16 scales: per-channel 4.062 | group(32) 4.500 | group(128) 4.125
+
+clip alpha | INT4 MSE   (max|x| = 40.0)
+     40.0  | 1.33851
+     20.0  | 0.55386
+     10.0  | 0.17587
+      8.0  | 0.12338
+      6.0  | 0.08547
+      5.0  | 0.07717
+      4.0  | 0.08620
+      3.0  | 0.13840
+
+FP32 test acc = 0.998
+4-bit weights (per-channel): PTQ 0.998 -> QAT (STE, 1000 steps) 0.998
+3-bit weights (per-channel): PTQ 0.998 -> QAT (STE, 1000 steps) 0.998
+2-bit weights (per-channel): PTQ 0.715 -> QAT (STE, 1000 steps) 0.998
+
+alpha=0.650  ||W - a*sign(W)||^2 = 0.4500
+alpha=1.000  ||W - a*sign(W)||^2 = 0.9400
+alpha=1.100  ||W - a*sign(W)||^2 = 1.2600
+```
+
+볼 포인트:
+- **Granularity**: channel마다 크기가 수십 배 다른 weight에서 INT4 per-tensor의 상대 오차는 10%, per-channel은 1.5%, group 32는 0.9%다.
+- **Clipping**: outlier 두 개(40, −35)가 있는 데이터를 최댓값 40으로 INT4 양자화하면 MSE 1.34, 범위를 5로 자르면 0.077로 17배 작다. outlier 두 개의 clipping 오차보다 나머지 10만 개의 rounding 오차가 훨씬 크기 때문이다. 3으로 자르면 다시 커진다.
+- **QAT**: 4, 3-bit는 PTQ로도 정확도가 그대로지만 2-bit(ternary)는 PTQ로 71.5%까지 떨어진다. STE로 1000 step 다시 학습하면 99.8%로 돌아온다. backward에서는 양자화 전 weight를 업데이트하고, forward는 항상 양자화된 weight로 한다.
+- **Binary**: $\alpha = $ 평균 절댓값일 때 오차가 가장 작다는 유도 결과와 맞는다.
+
+## 흔한 오해
+
+<Aside type="caution" title="Activation도 per-channel로 양자화하면 된다?">
+weight는 출력 channel 단위 scale이 정수 누적 뒤에 곱해져서 공짜지만, activation(= 다음 layer의 입력)을 입력 channel 단위로 양자화하면 누적 중간에 scale이 달라져서 정수 행렬곱이 깨진다. 그래서 activation은 보통 per-tensor(또는 token 단위)로 하고, channel마다 다른 크기는 SmoothQuant처럼 weight 쪽으로 옮기는 방법을 쓴다(Lec 13).
+</Aside>
+
+<Aside type="caution" title="양자화 범위는 실제 최댓값으로 잡아야 오차가 없다?">
+최댓값으로 잡으면 clipping 오차는 0이지만 눈금이 성겨져서 대부분의 값의 rounding 오차가 커진다. 코드처럼 outlier가 있으면 최댓값보다 훨씬 작게 자르는 편이 전체 MSE가 작다.
+</Aside>
+
+<Aside type="caution" title="STE는 진짜 gradient다?">
+round의 진짜 gradient는 거의 모든 곳에서 0이다. STE는 일부러 틀린 gradient를 써서 학습을 가능하게 하는 근사라 gradient check([ml-basics 12](/learning-website/ml-basics/12-backprop-gradient-check/#gradient-check-절차))가 통과하지 않는다. 그래서 학습률이 크면 weight가 반올림 경계 근처에서 진동하는 문제가 생기기도 한다.
+</Aside>
+
+## Efficient ML 연결
+
+- **Lab 4**: k-means와 linear quantization을 구현하고, per-channel과 QAT로 정확도를 회복한다.
+- **Lec 13 (LLM quantization)**: LLM activation의 outlier channel 때문에 per-tensor INT8 activation이 어렵다. SmoothQuant(scale을 weight로 옮김), AWQ(중요 channel 보호), GPTQ(출력 오차 기준 rounding)가 모두 이 레슨의 granularity, clipping, rounding 문제를 LLM에 맞게 푼 것이다.
+- **Edge LLM**: llama.cpp의 Q4_K, Q8_0 같은 형식은 group 단위 scale을 둔 4/8-bit 형식이다. 예제 2의 계산대로 모델 파일 크기가 순수 bit 수보다 조금 크다.
+
+## 체크 퀴즈
+
+<Quiz
+  q="weight 텐서 전체 최댓값이 1.4이고 INT4 대칭(정수 -7~7)으로 per-tensor 양자화한다. 최댓값이 0.08인 channel의 값 0.08은 몇으로 복원되나?"
+  options={['0.08', '0.2', '0', '0.1']}
+  answer={2}
+  explain="S = 1.4 / 7 = 0.2, 0.08 / 0.2 = 0.4 → 반올림 0, 복원값 0. 이 channel의 값은 전부 0이 된다. per-channel이면 S = 0.08 / 7이라 0.08이 정확히 7 눈금으로 복원된다. 0.2는 올림을 한 경우다."
+/>
+
+<Quiz
+  q="4-bit weight를 group 64로 양자화하고 group마다 FP16 scale과 4-bit zero point를 저장한다. weight 하나당 평균 bit 수는?"
+  options={['4.25', '4.3125', '4.0625', '4.5']}
+  answer={1}
+  explain="4 + (16 + 4) / 64 = 4.3125. 4.25는 zero point를 빼먹은 4 + 16/64, 4.0625는 scale을 빼먹은 4 + 4/64, 4.5는 group 32로 착각한 값이다."
+/>
+
+<Quiz
+  q="W = (0.6, -0.4, 0.2, -1.0)을 W ≈ α · sign(W)로 binary 근사할 때 오차 제곱합을 최소로 하는 α는?"
+  options={['1.0', '-0.15', '0.6', '0.55']}
+  answer={3}
+  explain="α* = 평균 |w| = (0.6 + 0.4 + 0.2 + 1.0) / 4 = 0.55. -0.15는 절댓값 없이 평균을 낸 값, 1.0은 최댓값이다. 최댓값을 쓰면 작은 weight들의 오차가 커진다."
+/>
+
+<Quiz
+  q="QAT에서 straight-through estimator는 backward 때 양자화 함수(round)를 어떻게 처리하나?"
+  options={['미분을 1로 보고 gradient를 그대로 통과시킨다(범위 밖은 0으로 막기도 함)', '미분을 0으로 계산해 그 weight는 업데이트하지 않는다', 'round 대신 sigmoid의 미분을 정확히 계산한다', 'finite difference로 gradient를 근사한다']}
+  answer={0}
+  explain="round의 실제 미분은 거의 모든 곳에서 0이라 그대로 쓰면 학습이 멈춘다. STE는 항등함수처럼 1로 취급해 양자화된 weight에 대한 gradient를 실수 weight에 그대로 전달한다. 매끄러운 함수로 근사하는 방법들도 있지만 그건 STE가 아니다."
+/>
+
+## 서술형
+
+### 문제. Binary와 XNOR 내적
+
+(a) $W \in \mathbb{R}^n$을 $\alpha B$ ($B \in \{-1, +1\}^n$)로 근사할 때 $\lVert W - \alpha B \rVert^2$를 최소화하는 $B$와 $\alpha$를 둘 다 유도하라. ($B$를 먼저 정하고 $\alpha$를 구하면 된다.)
+
+(b) $\mathbf{a} = (1, -1, 1, 1, -1, 1, -1, -1)$, $\mathbf{b} = (1, 1, -1, 1, -1, -1, -1, 1)$일 때 $\mathbf{a}^\top\mathbf{b}$를 직접 계산하고, $+1 \to 1$, $-1 \to 0$으로 bit 인코딩한 뒤 XNOR와 popcount로 다시 계산해 같은지 확인하라. 식 $2 \cdot \text{popcount} - n$을 유도하라.
+
+(c) 길이 4096인 내적을 FP32 곱셈-덧셈으로 하는 것과, 64-bit 레지스터에서 XNOR + popcount로 하는 것의 명령어 수를 비교하라(load 제외, popcount는 1명령어로 가정).
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** 전개하면 $\lVert W \rVert^2 - 2\alpha\sum_i w_i b_i + \alpha^2 n$ ($b_i^2 = 1$이라 $\lVert B \rVert^2 = n$). $\alpha > 0$일 때 이 값을 최소화하려면 $\sum_i w_i b_i$가 최대여야 하므로 $b_i = \text{sign}(w_i)$, 그때 $\sum_i w_i b_i = \sum_i \lvert w_i \rvert$. 이제 $\alpha$에 대한 2차식 $n\alpha^2 - 2\alpha\sum\lvert w_i \rvert + \lVert W \rVert^2$을 미분해 0으로 놓으면 $\alpha^* = \frac{1}{n}\sum_i\lvert w_i \rvert$.
+
+**(b)** 원소별 곱: $(1, -1, -1, 1, 1, -1, 1, -1)$, 합 0.
+
+bit: $\mathbf{a} = 10110100$, $\mathbf{b} = 11010001$. 같은 자리(XNOR = 1): 1, 4, 5, 7번째 → popcount 4. $2 \times 4 - 8 = 0$. 같다.
+
+유도: 같은 부호인 자리의 곱은 $+1$, 다른 자리는 $-1$이다. 같은 자리 수를 $p$(= XNOR의 popcount)라 하면 다른 자리는 $n - p$이므로 내적 $= p - (n - p) = 2p - n$.
+
+**(c)** FP32: 원소마다 FMA 1개 → 4096개(SIMD 없이). XNOR: 64개씩 묶어 $4096 / 64 = 64$개 word, word마다 XNOR 1 + popcount 1 + 누적 덧셈 1 = 3개 → 192개 + 마지막 $2p - n$ 몇 개. 약 21배 적다. 메모리도 원소당 32 bit에서 1 bit로 32배 준다. 대신 binary activation은 정확도 손실이 커서 첫/마지막 layer는 보통 높은 정밀도로 둔다.
+
+</details>
+
+## 더 읽을거리
+
+- [MIT 6.5940 Fall 2026 코스 페이지](https://hanlab.mit.edu/courses/2026-fall-65940)
+- [A White Paper on Neural Network Quantization (Nagel et al., 2021)](https://arxiv.org/abs/2106.08295): granularity, clipping, AdaRound, QAT 정리
+- [Up or Down? Adaptive Rounding for Post-Training Quantization (AdaRound, Nagel et al., 2020)](https://arxiv.org/abs/2004.10568)
+- [Learned Step Size Quantization (LSQ, Esser et al., 2019)](https://arxiv.org/abs/1902.08153)
+- [XNOR-Net (Rastegari et al., 2016)](https://arxiv.org/abs/1603.05279)
+- [Ternary Weight Networks (Li et al., 2016)](https://arxiv.org/abs/1605.04711)
+- [HAQ: Hardware-Aware Automated Quantization with Mixed Precision (Wang et al., 2019)](https://arxiv.org/abs/1811.08886)
