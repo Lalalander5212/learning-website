@@ -1,0 +1,368 @@
+---
+title: "Lec 5. Quantization (Part I): 숫자 형식과 linear quantization"
+description: "MIT 6.5940 Fall 2026 Lecture 5. FP32/FP16/BF16/FP8과 정수 형식을 비트 단위로 읽고, k-means quantization과 linear quantization(scale, zero point)을 유도한 뒤 정수만으로 linear layer를 계산하기"
+track: efficientml
+module: inference
+est: 40min
+prereq: [efficientml/04-pruning-sparsity-part2, arch-foundations/16-simd]
+sidebar:
+  order: 5
+---
+import Quiz from '../../../components/Quiz.astro';
+import YouTube from '../../../components/YouTube.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+<YouTube id="Qg_3N8pdK9s" title="EfficientML.ai Lecture 5 - Quantization Part I (MIT 6.5940 Fall 2026)" />
+
+<Aside type="note" title="이 레슨 쓰는 법">
+영상을 보고 아래 노트로 정리한 뒤 문제를 푼다. 노트는 강의를 옮겨 적은 것이 아니라 강의가 다루는 주제를 이 사이트의 다른 레슨과 이어서 다시 유도한 것이다. 슬라이드는 [코스 페이지](https://hanlab.mit.edu/courses/2026-fall-65940)에 있다.
+</Aside>
+
+## 왜 필요한가
+
+pruning(03, 04번 레슨)은 weight의 **개수**를 줄였다. quantization은 weight와 activation 하나하나의 **bit 수**를 줄인다. FP32를 INT8로 바꾸면 메모리와 대역폭이 4배 줄고, 01번 레슨(#에너지는-데이터-이동이-정한다)의 표대로 곱셈 에너지는 18배 줄며, SIMD 한 명령어가 처리하는 원소 수가 4배가 된다([arch-foundations 16](/learning-website/arch-foundations/16-simd/#efficient-ml-연결)). edge LLM이 4-bit weight로 돌아가는 것도 이 덕분이다. 대신 표현할 수 있는 값이 $2^b$개로 줄어서 오차가 생긴다. 이 레슨은 그 오차를 어떻게 정의하고, 정수 연산만으로 어떻게 신경망을 계산하는지 유도한다.
+
+## 직관: 자로 재기
+
+```text
+ 실수 r:  -0.8                 0                       2.2
+          |--------------------|------------------------|
+ INT8 q: -128   ...   -60(Z)          ...   25    ...   127
+                      ↑ 실수 0이 정확히 표현되는 눈금
+
+ 눈금 간격 S = (2.2 - (-0.8)) / 255 ≈ 0.0118
+ r = 1.0  →  가장 가까운 눈금 q = 25   →  되돌리면 S (25 - (-60)) = 1.0
+ r = 0.31 →  q = -34                  →  되돌리면 0.3059 (오차 ≤ S/2)
+```
+
+실수 축 위에 같은 간격의 눈금 256개를 그리고, 각 값을 가장 가까운 눈금 번호로 저장하는 것이 linear quantization이다. 눈금 간격(scale)과 0이 어느 눈금인지(zero point)만 알면 되돌릴 수 있다.
+
+## 정식 설명
+
+### 용어
+
+**Quantization (양자화)**: 연속적이거나 많은 값을 적은 개수의 이산 값으로 대응시키는 것. 신경망에서는 weight와 activation을 적은 bit로 표현하는 것.
+*Mapping values to a small discrete set, here low-bit numbers.*
+
+**Quantization error (양자화 오차)**: 원래 값과 양자화 후 되돌린 값의 차이.
+
+**Scale** $S$: 정수 눈금 한 칸이 실수로 얼마인지. **Zero point** $Z$: 실수 0에 대응하는 정수.
+
+**Symmetric / asymmetric quantization (대칭 / 비대칭)**: $Z = 0$으로 두고 범위를 $[-\alpha, \alpha]$로 잡는 것 / $Z$를 써서 $[r_{\min}, r_{\max}]$에 맞추는 것.
+
+**Codebook (코드북)**: k-means quantization에서 대표값(centroid)들의 목록. weight는 그 목록의 index로 저장한다.
+
+**Fixed-point (고정소수점)**: 정수에 정해진 2의 거듭제곱을 곱해 실수를 나타내는 방식. 소수점 위치가 고정이다.
+
+### 숫자 형식
+
+**정수** $b$-bit: unsigned는 $[0, 2^b - 1]$, signed(2의 보수)는 $[-2^{b-1}, 2^{b-1} - 1]$. INT8은 $[-128, 127]$.
+
+**부동소수점**: sign 1 bit, exponent $e$ bits, mantissa(fraction) $m$ bits. 일반 수(normal)의 값은
+
+$$
+(-1)^{\text{sign}} \times (1.\text{mantissa})_2 \times 2^{\,\text{exponent} - \text{bias}}, \qquad \text{bias} = 2^{e-1} - 1
+$$
+
+exponent bit가 **범위**(얼마나 크고 작은 수까지)를, mantissa bit가 **정밀도**(눈금이 얼마나 촘촘한지)를 정한다.
+
+| 형식 | exp | mantissa | 최댓값 | 특징 |
+|---|---|---|---|---|
+| FP32 | 8 | 23 | $\approx 3.4 \times 10^{38}$ | 학습 기본 |
+| FP16 | 5 | 10 | 65,504 | 범위가 좁아 학습 중 overflow/underflow 위험 |
+| BF16 | 8 | 7 | $\approx 3.4 \times 10^{38}$ | FP32와 같은 범위, 정밀도는 낮음. 학습에 많이 씀 |
+| FP8 E4M3 | 4 | 3 | 448 | 정밀도 쪽. 추론, forward |
+| FP8 E5M2 | 5 | 2 | 57,344 | 범위 쪽. gradient |
+
+BF16은 FP32의 상위 16 bit를 그대로 잘라 낸 것이라 변환이 쉽고, exponent가 같아서 FP16처럼 loss scaling 없이 학습할 수 있다.
+
+### K-means quantization
+
+weight를 $2^b$개의 대표값으로 묶는다. 1차원 k-means로 centroid $c_1, \dots, c_K$를 찾고, 각 weight는 가장 가까운 centroid의 index($b$ bit)로 저장한다. 추론 때는 index로 codebook을 찾아 원래 정밀도의 값으로 계산한다.
+
+저장 크기($N$개 weight, 원래 32-bit):
+
+$$
+\underbrace{N \cdot b}_{\text{index}} + \underbrace{2^b \cdot 32}_{\text{codebook}} \quad\text{vs}\quad N \cdot 32
+$$
+
+$N$이 크면 codebook은 무시할 만해서 압축률은 약 $32 / b$배다. centroid가 분포에 맞춰 놓이므로 같은 bit에서 오차가 작다. 대신 **계산은 여전히 실수**로 한다. 메모리는 줄지만 정수 연산의 이득은 없다. Deep Compression이 pruning 뒤에 쓴 방법이다(weight sharing).
+
+fine-tuning할 때는 같은 centroid에 속한 weight들의 gradient를 모아 더해서 centroid를 업데이트한다.
+
+### Linear quantization
+
+실수 $r$과 정수 $q$를 1차 함수로 잇는다.
+
+$$
+\boxed{r = S\,(q - Z)}
+$$
+
+**$S$와 $Z$ 유도.** 실수 범위 $[r_{\min}, r_{\max}]$를 정수 범위 $[q_{\min}, q_{\max}]$에 맞추려면 양 끝이 대응해야 한다.
+
+$$
+r_{\max} = S(q_{\max} - Z), \qquad r_{\min} = S(q_{\min} - Z)
+$$
+
+빼면 $r_{\max} - r_{\min} = S(q_{\max} - q_{\min})$이므로
+
+$$
+S = \frac{r_{\max} - r_{\min}}{q_{\max} - q_{\min}}, \qquad Z = \text{round}\left(q_{\min} - \frac{r_{\min}}{S}\right)
+$$
+
+$Z$를 정수로 반올림하는 이유는 **실수 0을 오차 없이 표현**하기 위해서다. zero padding이나 ReLU 출력의 0이 정확히 0이어야 한다.
+
+**양자화와 복원**:
+
+$$
+q = \text{clamp}\left(\text{round}\left(\frac{r}{S}\right) + Z,\; q_{\min},\; q_{\max}\right), \qquad \hat{r} = S(q - Z)
+$$
+
+범위 안의 값은 반올림 때문에 오차가 최대 $S/2$다. 범위 밖의 값은 clamp되어 오차가 커진다(clipping error). 범위를 넓히면 clipping은 줄지만 $S$가 커져서 반올림 오차가 는다. 이 trade-off가 Lec 6의 clipping 주제다.
+
+**대칭 quantization**: $Z = 0$, $S = \frac{\max\lvert r \rvert}{2^{b-1} - 1}$. weight는 보통 0 중심이라 대칭으로 하고, ReLU 뒤 activation처럼 한쪽으로 치우친 값은 비대칭이 범위를 덜 낭비한다.
+
+### 정수만으로 linear layer 계산하기
+
+$\mathbf{y} = W\mathbf{x}$에서 세 텐서를 각각 linear quantization한다: $W = S_W(q_W - Z_W)$, $\mathbf{x} = S_X(q_X - Z_X)$, $\mathbf{y} = S_Y(q_Y - Z_Y)$. 대입하면
+
+$$
+S_Y(q_Y - Z_Y) = S_W S_X \sum_k (q_{W,jk} - Z_W)(q_{X,k} - Z_X)
+$$
+
+weight를 대칭($Z_W = 0$)으로 두면
+
+$$
+q_{Y,j} = \underbrace{\frac{S_W S_X}{S_Y}}_{M}\left(\sum_k q_{W,jk}\,q_{X,k} \;-\; Z_X \sum_k q_{W,jk}\right) + Z_Y
+$$
+
+- $\sum_k q_W q_X$: INT8 × INT8 곱을 INT32에 누적. 하드웨어가 가장 잘하는 연산이다.
+- $Z_X \sum_k q_{W,jk}$: weight와 $Z_X$가 정해져 있으면 **미리 계산**해 둘 수 있다.
+- $M$: 실수지만 상수다. $M = M_0 \cdot 2^{-n}$ ($0.5 \le M_0 < 1$)로 쓰고 $M_0$를 정수(예: Q15, Q31)로 저장하면 정수 곱셈 + bit shift로 계산된다.
+- bias는 $S_b = S_W S_X$, $Z_b = 0$으로 INT32에 양자화해서 누적값에 그냥 더한다.
+
+결과적으로 추론 전체가 정수 곱셈, 덧셈, shift만으로 돈다. 부동소수점 유닛이 없는 MCU에서 신경망을 돌리는 방법이다.
+
+## Worked example
+
+### 예제 1. FP16 비트 읽기
+
+14.0 = `0 10010 1100000000`
+
+- sign 0 → 양수
+- exponent $10010_2 = 18$, bias 15 → $2^{3}$
+- mantissa $1100000000_2$ → $1 + 0.5 + 0.25 = 1.75$
+- 값 $1.75 \times 8 = 14.0$
+
+0.1은 FP16에 정확히 없어서 가장 가까운 0.0999755859375로 저장된다. 이것도 quantization이다.
+
+### 예제 2. 범위 [−0.8, 2.2]를 INT8로
+
+- $S = \frac{2.2 - (-0.8)}{127 - (-128)} = \frac{3.0}{255} = 0.011765$
+- $Z = \text{round}\left(-128 - \frac{-0.8}{0.011765}\right) = \text{round}(-128 + 68) = -60$
+
+| $r$ | $r / S$ | $q$ | $\hat{r} = S(q - Z)$ | 오차 |
+|---|---|---|---|---|
+| −0.8 | −68 | −128 | −0.8 | 0 |
+| 0.0 | 0 | −60 | 0.0 | 0 (정확히 표현) |
+| 0.31 | 26.35 → 26 | −34 | 0.3059 | 0.0041 ($\le S/2 = 0.0059$) |
+| 1.0 | 85 | 25 | 1.0 | 0 |
+| 2.2 | 187 | 127 | 2.2 | 0 |
+
+### 예제 3. 정수 linear layer
+
+$S_W = 0.01$ (대칭), $q_W = \begin{bmatrix} 50 & -25 \\ 75 & 100 \end{bmatrix}$ ($W = \begin{bmatrix} 0.5 & -0.25 \\ 0.75 & 1.0 \end{bmatrix}$), $S_X = 0.02$, $Z_X = -10$, $q_X = (40, 15)$ ($\mathbf{x} = (1.0, 0.5)$), 출력 $S_Y = 0.008$, $Z_Y = -20$.
+
+1. $q_W q_X = (50 \cdot 40 - 25 \cdot 15,\; 75 \cdot 40 + 100 \cdot 15) = (1625, 4500)$
+2. 행 합 $\sum_k q_W = (25, 175)$, $Z_X \times$ 행 합 $= (-250, -1750)$ (미리 계산)
+3. INT32 누적값 $= (1625 + 250,\; 4500 + 1750) = (1875, 6250)$
+4. $M = \frac{0.01 \times 0.02}{0.008} = 0.025 = 0.8 \times 2^{-5}$
+5. $q_Y = \text{round}(0.025 \times (1875, 6250)) + (-20) = (47, 156) - 20 = (27, 136)$
+6. 복원 $\hat{\mathbf{y}} = 0.008 \times (47, 156) = (0.376, 1.248)$. 실수 계산 $W\mathbf{x} = (0.375, 1.25)$와 출력 눈금 반 칸(0.004) 안에서 맞는다.
+
+## 코드
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+
+# 1) FP16 비트 해석: sign 1, exponent 5 (bias 15), mantissa 10
+def fp16_bits(x):
+    b = int(np.array(x, dtype=np.float16).view(np.uint16))
+    s, e, m = b >> 15, (b >> 10) & 0x1F, b & 0x3FF
+    return f"{s} {e:05b} {m:010b}", (-1) ** s * (1 + m / 1024) * 2.0 ** (e - 15)
+for x in [14.0, 0.1, 65504.0]:
+    bits, val = fp16_bits(x)
+    print(f"{x:>8} -> {bits} -> {val!r}")
+print("FP16 0.1 actually stores", float(np.float16(0.1)))
+
+# 2) Linear (affine) quantization: r = S (q - Z)
+def linear_params(rmin, rmax, bits=8, signed=True):
+    qmin, qmax = (-(2 ** (bits - 1)), 2 ** (bits - 1) - 1) if signed else (0, 2 ** bits - 1)
+    S = (rmax - rmin) / (qmax - qmin)
+    Z = int(np.round(qmin - rmin / S))
+    return S, Z, qmin, qmax
+
+def quantize(r, S, Z, qmin, qmax):
+    return np.clip(np.round(r / S) + Z, qmin, qmax).astype(np.int32)
+
+S, Z, qmin, qmax = linear_params(-0.8, 2.2)
+r = np.array([-0.8, 0.0, 0.31, 1.0, 2.2])
+q = quantize(r, S, Z, qmin, qmax)
+print(f"\nS={S:.6f} Z={Z}  q={q.tolist()}  dequant={np.round(S * (q - Z), 4).tolist()}")
+
+# 3) K-means vs linear: 같은 bit 수에서 weight 재구성 오차
+w = rng.standard_t(df=4, size=4096) * 0.05           # 꼬리가 두꺼운 weight 분포
+def kmeans_1d(x, k, iters=50):
+    c = np.quantile(x, (np.arange(k) + 0.5) / k)        # 분위수로 초기화
+    for _ in range(iters):
+        idx = np.abs(x[:, None] - c[None]).argmin(1)
+        c = np.array([x[idx == j].mean() if np.any(idx == j) else c[j] for j in range(k)])
+    return c[idx]
+print("\nbits | linear MSE  | k-means MSE")
+for bits in (2, 3, 4):
+    S2, Z2, lo, hi = linear_params(w.min(), w.max(), bits)
+    lin = S2 * (quantize(w, S2, Z2, lo, hi) - Z2)
+    km = kmeans_1d(w, 2 ** bits)
+    print(f"  {bits}  | {np.mean((w - lin) ** 2):.3e} | {np.mean((w - km) ** 2):.3e}")
+
+# 4) 정수만으로 linear layer 계산 (weight 대칭 Z_W=0, activation 비대칭)
+S_W, S_X, Z_X, S_Y, Z_Y = 0.01, 0.02, -10, 0.008, -20
+qW = np.array([[50, -25], [75, 100]]); qX = np.array([40, 15])
+M = S_W * S_X / S_Y
+acc = qW @ qX - Z_X * qW.sum(1)                       # 두 번째 항은 미리 계산 가능
+qY = np.round(M * acc).astype(int) + Z_Y
+y_float = (S_W * qW) @ (S_X * (qX - Z_X))
+print(f"\nint32 acc={acc.tolist()}  M={M}  qY={qY.tolist()}")
+print(f"dequant y={np.round(S_Y * (qY - Z_Y), 4).tolist()}  float y={y_float.tolist()}")
+M0, n = M, 0
+while M0 < 0.5: M0, n = M0 * 2, n + 1
+print(f"M = {M0} * 2^-{n}  ->  M0 as Q15 integer = {round(M0 * 2 ** 15)}")
+```
+
+```text
+    14.0 -> 0 10010 1100000000 -> 14.0
+     0.1 -> 0 01011 1001100110 -> 0.0999755859375
+ 65504.0 -> 0 11110 1111111111 -> 65504.0
+FP16 0.1 actually stores 0.0999755859375
+
+S=0.011765 Z=-60  q=[-128, -60, -34, 25, 127]  dequant=[-0.8, 0.0, 0.3059, 1.0, 2.2]
+
+bits | linear MSE  | k-means MSE
+  2  | 3.502e-03 | 1.005e-03
+  3  | 1.497e-03 | 3.170e-04
+  4  | 3.912e-04 | 8.698e-05
+
+int32 acc=[1875, 6250]  M=0.025  qY=[27, 136]
+dequant y=[0.376, 1.248]  float y=[0.375, 1.25]
+M = 0.8 * 2^-5  ->  M0 as Q15 integer = 26214
+```
+
+볼 포인트:
+- FP16 65504는 exponent `11110`, mantissa 전부 1이다. exponent `11111`은 inf/NaN용이라 이것이 최댓값이다.
+- 꼬리가 두꺼운 weight 분포에서 k-means는 같은 bit의 linear보다 MSE가 약 4배 작다. linear는 드문 큰 값 때문에 범위가 넓어지고 눈금이 성겨지는데, k-means는 값이 많이 몰린 곳에 centroid를 촘촘히 둔다.
+- 정수 linear layer는 예제 3의 숫자 그대로 나온다. $M$은 정수 26214(Q15)와 5-bit shift로 바꿀 수 있다.
+
+## 흔한 오해
+
+<Aside type="caution" title="Quantization은 계산을 정수로 바꾸는 것이다?">
+방법에 따라 다르다. k-means quantization이나 LLM의 weight-only 4-bit는 저장만 저비트이고, 계산할 때 FP16으로 되돌려서 곱한다(메모리 대역폭 이득). 정수 연산 이득까지 보려면 weight와 activation을 둘 다 linear quantization해야 한다(W8A8 등).
+</Aside>
+
+<Aside type="caution" title="zero point는 반올림하지 않아도 된다?">
+$Z$가 정수가 아니면 실수 0이 어떤 정수 눈금에도 정확히 대응하지 않아서, zero padding이나 ReLU의 0에 매번 오차가 생긴다. 정수 연산 식에서도 $Z$가 정수여야 누적이 정수로 유지된다.
+</Aside>
+
+<Aside type="caution" title="FP16과 BF16은 둘 다 16-bit라 같은 용도다?">
+FP16은 정밀도(mantissa 10 bit)가 높지만 최댓값이 65,504라 학습 중 큰 값이나 아주 작은 gradient를 표현하지 못해 loss scaling이 필요하다. BF16은 정밀도(7 bit)가 낮지만 FP32와 범위가 같아서 학습이 안정적이다. 같은 bit 수에서 범위와 정밀도를 어떻게 나누느냐의 차이다.
+</Aside>
+
+## Efficient ML 연결
+
+- **Lec 6 (Part II)**: post-training quantization의 granularity(per-tensor, per-channel, group), clipping 범위를 고르는 방법, rounding(AdaRound), quantization-aware training과 straight-through estimator([ml-basics 12](/learning-website/ml-basics/12-backprop-gradient-check/#efficient-ml-연결)), binary/ternary 네트워크.
+- **Lab 4**: k-means quantization과 linear quantization을 직접 구현하고 정확도를 비교한다. 이 레슨의 코드가 그 출발점이다.
+- **Lec 13 (LLM quantization)**: LLM은 activation에 큰 outlier가 있어서 W8A8이 어렵고, weight-only 4-bit(AWQ, GPTQ)가 많이 쓰인다. edge LLM이 memory-bound라는 01번 레슨(#llm-decoding이-memory-bound인-이유를-에너지로-보기)의 계산 때문에 weight만 줄여도 속도가 거의 비트 수에 반비례해서 빨라진다.
+
+## 체크 퀴즈
+
+<Quiz
+  q="FP16 비트 패턴 0 10001 0100000000이 나타내는 값은? (exponent bias 15)"
+  options={['2.5', '10.0', '5.0', '1.25']}
+  answer={2}
+  explain="exponent 10001 = 17, 17 - 15 = 2라서 2^2 = 4. mantissa 0100000000 = 0.25라서 1.25. 값 1.25 × 4 = 5.0. 1.25는 exponent를 빼먹은 값, 2.5는 exponent를 1로, 10.0은 3으로 잘못 계산한 값이다."
+/>
+
+<Quiz
+  q="실수 범위 [-0.5, 1.5]를 unsigned 8-bit [0, 255]로 linear quantization할 때 zero point Z는?"
+  options={['64', '-64', '128', '0']}
+  answer={0}
+  explain="S = 2.0 / 255 ≈ 0.00784, Z = round(0 - (-0.5) / S) = round(63.75) = 64. 부호를 거꾸로 하면 -64가 되고, 128은 범위가 0 중심이라고 착각한 값, 0은 대칭 quantization의 zero point다."
+/>
+
+<Quiz
+  q="FP32 weight 100만 개를 4-bit k-means quantization(centroid 16개는 FP32로 저장)하면 저장 크기는 대략 몇 배 줄어드나?"
+  options={['4배', '16배', '32배', '약 8배']}
+  answer={3}
+  explain="index 10^6 × 4 bit = 0.5 MB, codebook 16 × 4 B = 64 B로 무시 가능. 원래 4 MB이므로 약 8배. 4배는 FP32 → INT8, 16배는 centroid 수를 압축률로 착각한 값, 32배는 1-bit일 때다."
+/>
+
+<Quiz
+  q="weight는 대칭(Z_W = 0), activation은 비대칭(Z_X ≠ 0)으로 양자화한 정수 linear layer에서, 추론 전에 미리 계산해 둘 수 있는 항은?"
+  options={['Σ q_W q_X', 'Z_X × Σ q_W (출력마다 weight 행의 합)', 'q_Y', '입력 q_X의 합']}
+  answer={1}
+  explain="weight와 zero point Z_X는 추론 전에 정해지므로 Z_X × (weight 행의 합)은 상수다. Σ q_W q_X와 q_X의 합은 입력이 들어와야 알 수 있다. 만약 weight까지 비대칭이면 Z_W × Σ q_X 항이 생겨서 입력마다 추가 계산이 필요하다. weight를 대칭으로 두는 이유 중 하나다."
+/>
+
+## 서술형
+
+### 문제. Bias까지 포함한 정수 linear layer
+
+$\mathbf{y} = W\mathbf{x} + \mathbf{b}$를 정수로 계산한다. $S_W = 0.02$ (대칭), $q_W = \begin{bmatrix} 30 & -10 \\ 20 & 40 \end{bmatrix}$, $S_X = 0.05$, $Z_X = 5$, $q_X = (25, 13)$, $\mathbf{b} = (0.1, -0.2)$, 출력 $S_Y = 0.004$, $Z_Y = 0$.
+
+(a) bias를 $S_b = S_W S_X$, $Z_b = 0$인 INT32로 양자화하면 $q_b$는? 왜 bias의 scale을 이렇게 정하나?
+
+(b) $q_Y$에 대한 정수 식을 쓰고, 미리 계산할 수 있는 항을 모아 하나의 상수 벡터로 만들어라.
+
+(c) 위 숫자로 $q_Y$를 구하고 실수 계산 $W\mathbf{x} + \mathbf{b}$와 비교하라.
+
+(d) $M$을 $M_0 \cdot 2^{-n}$ ($0.5 \le M_0 < 1$)로 쓰고, $M_0$를 Q15 정수로 나타내라.
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** $S_b = 0.02 \times 0.05 = 0.001$, $q_b = \mathbf{b} / S_b = (100, -200)$. 누적값 $\sum q_W q_X$의 scale이 $S_W S_X$이므로, bias도 같은 scale이어야 같은 INT32 누적기에 **그대로 더할 수 있다**. scale이 작아서(0.001) 8-bit로는 범위가 부족하므로 32-bit로 둔다.
+
+**(b)**
+
+$$
+S_Y(q_Y - Z_Y) = S_W S_X\left(\sum_k q_{W,jk}q_{X,k} - Z_X\sum_k q_{W,jk} + q_{b,j}\right)
+$$
+
+$$
+q_{Y,j} = M\left(\sum_k q_{W,jk}q_{X,k} + C_j\right) + Z_Y, \qquad C_j = q_{b,j} - Z_X\sum_k q_{W,jk}, \quad M = \frac{S_W S_X}{S_Y}
+$$
+
+$C_j$는 weight, bias, $Z_X$만으로 정해지므로 미리 계산한다.
+
+**(c)** $\sum_k q_W q_X = (30 \cdot 25 - 10 \cdot 13,\; 20 \cdot 25 + 40 \cdot 13) = (620, 1020)$.
+
+행 합 $(20, 60)$, $C = (100 - 5 \cdot 20,\; -200 - 5 \cdot 60) = (0, -500)$.
+
+누적값 $= (620, 520)$, $M = 0.001 / 0.004 = 0.25$, $q_Y = (155, 130)$.
+
+복원 $0.004 \times (155, 130) = (0.62, 0.52)$.
+
+실수: $\mathbf{x} = 0.05 \times (20, 8) = (1.0, 0.4)$, $W = (0.6, -0.2;\; 0.4, 0.8)$. $W\mathbf{x} + \mathbf{b} = (0.6 - 0.08 + 0.1,\; 0.4 + 0.32 - 0.2) = (0.62, 0.52)$. 이 숫자에서는 정확히 같다.
+
+**(d)** $0.25 = 0.5 \times 2^{-1}$, $M_0 = 0.5$, $n = 1$. Q15로 $M_0 = 0.5 \times 2^{15} = 16384$. 계산은 $(\text{acc} \times 16384) \gg (15 + 1)$.
+
+</details>
+
+## 더 읽을거리
+
+- [MIT 6.5940 Fall 2026 코스 페이지](https://hanlab.mit.edu/courses/2026-fall-65940)
+- [Quantization and Training of Neural Networks for Efficient Integer-Arithmetic-Only Inference (Jacob et al., 2018)](https://arxiv.org/abs/1712.05877): 정수 linear layer 유도의 원전
+- [Deep Compression (Han et al., 2015)](https://arxiv.org/abs/1510.00149): k-means weight sharing
+- [A White Paper on Neural Network Quantization (Nagel et al., 2021)](https://arxiv.org/abs/2106.08295)
+- [FP8 Formats for Deep Learning (Micikevicius et al., 2022)](https://arxiv.org/abs/2209.05433): E4M3, E5M2
