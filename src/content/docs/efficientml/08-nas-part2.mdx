@@ -1,0 +1,369 @@
+---
+title: "Lec 8. Neural Architecture Search (Part II): 싸게 평가하기와 hardware-aware NAS"
+description: "MIT 6.5940 Fall 2026 Lecture 8. 후보마다 학습하지 않고 성능을 추정하는 방법(weight sharing, zero-shot), latency를 탐색에 넣는 방법(lookup table, ProxylessNAS), 한 번 학습해 여러 기기에 맞추는 Once-for-All"
+track: efficientml
+module: inference
+est: 40min
+prereq: [efficientml/07-nas-part1]
+sidebar:
+  order: 8
+---
+import Quiz from '../../../components/Quiz.astro';
+import YouTube from '../../../components/YouTube.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+<YouTube id="IlPSXPrchrM" title="EfficientML.ai Lecture 8 - Neural Architecture Search Part II (MIT 6.5940 Fall 2026)" />
+
+<Aside type="note" title="이 레슨 쓰는 법">
+영상을 보고 아래 노트로 정리한 뒤 문제를 푼다. 노트는 강의를 옮겨 적은 것이 아니라 강의가 다루는 주제를 이 사이트의 다른 레슨과 이어서 다시 설명한 것이다. 슬라이드는 [코스 페이지](https://hanlab.mit.edu/courses/2026-fall-65940)에 있다.
+</Aside>
+
+## 왜 필요한가
+
+07번 레슨(#search-strategy)의 강화학습 NAS는 후보 구조마다 처음부터 학습해서 GPU 수백 개로 몇 주가 걸렸다. 게다가 기기(휴대폰 CPU, GPU, MCU)마다 빠른 구조가 다르므로 기기마다 다시 탐색해야 한다. 이 레슨은 두 비용을 줄이는 방법을 다룬다. (1) 후보를 학습하지 않고 정확도를 **싸게 추정**하기, (2) MAC 대신 **실제 latency**를 탐색에 싸게 넣기. 그리고 둘을 합쳐서 큰 네트워크를 한 번만 학습한 뒤 기기마다 그 안에서 subnet을 꺼내 쓰는 Once-for-All을 본다.
+
+## 직관: 큰 옷 한 벌에서 줄여 입기
+
+```text
+ 기존 NAS                         Once-for-All
+ 기기마다:                         한 번:   모든 크기를 감당하는 큰 네트워크 학습 (supernet)
+   탐색 ─► 학습 ─► 배포            기기마다: 그 안에서 subnet을 골라 꺼냄 (학습 없음)
+   탐색 ─► 학습 ─► 배포               ┌─ 폰 CPU용: 얕고 좁게
+   탐색 ─► 학습 ─► 배포               ├─ GPU용:   넓게
+                                     └─ MCU용:   해상도 낮게
+ 비용 ∝ 기기 수                    비용 ≈ 한 번 + 기기 수 × (거의 0)
+```
+
+사이즈마다 옷을 새로 재단하는 대신, 줄여도 모양이 무너지지 않게 만든 큰 옷 한 벌에서 필요한 만큼 접어 입는 것이다. 핵심은 "접은 옷도 잘 맞도록" 큰 옷을 만드는 학습 방법이다.
+
+## 정식 설명
+
+### 용어
+
+**Supernet (슈퍼넷)**: search space의 모든 후보를 subnet으로 포함하는 큰 네트워크. 후보들이 weight를 공유한다.
+*A single over-parameterized network whose subnetworks are the candidate architectures, sharing weights.*
+
+**Weight sharing (가중치 공유)**: 후보 구조들이 supernet의 같은 weight를 나눠 쓰는 것. 후보마다 따로 학습할 필요가 없다.
+
+**Zero-shot (zero-cost) proxy**: 학습 없이(초기화 상태에서 forward/backward 한두 번으로) 구조의 좋고 나쁨을 점수로 매기는 지표.
+
+**Latency lookup table (LUT, 지연 시간 표)**: 연산(종류, 크기)별로 기기에서 미리 잰 latency를 저장한 표. 구조의 latency를 layer별 값의 합으로 추정한다.
+
+**Kendall's τ (켄달 타우)**: 두 순위가 얼마나 일치하는지 나타내는 상관계수. −1(정반대)~1(완전 일치).
+*A rank correlation coefficient from concordant minus discordant pairs.*
+
+**Progressive shrinking (점진적 축소)**: Once-for-All의 학습 방법. 가장 큰 네트워크를 먼저 학습하고, kernel, depth, width 순으로 작은 subnet도 함께 학습되도록 범위를 넓혀 간다.
+
+### 성능 추정 방법의 비용
+
+| 방법 | 후보 하나 평가 비용 | 정확도 신뢰도 |
+|---|---|---|
+| 처음부터 학습 | 전체 학습 1번 | 가장 정확 |
+| 짧게 학습(몇 epoch), 작은 데이터 | 일부 | 순위가 뒤바뀔 수 있음 |
+| 부모 weight 물려받기(Net2Net 식) | fine-tune만 | 중간 |
+| Weight sharing (supernet) | forward 몇 번 | 순위 상관이 관건 |
+| Zero-shot proxy | forward/backward 1~2번 | 가장 낮음, 빠른 1차 필터용 |
+
+NAS에 필요한 것은 정확도의 절댓값이 아니라 **순위**다. 추정값이 실제보다 다 낮아도 순서만 맞으면 같은 구조를 고른다. 그래서 추정 방법의 질을 Kendall's τ로 잰다. 후보 $n$개에서 가능한 쌍 $\binom{n}{2}$개 중 순서가 일치하는 쌍(concordant) $C$, 반대인 쌍(discordant) $D$에 대해
+
+$$
+\tau = \frac{C - D}{n(n-1)/2}
+$$
+
+### Weight sharing과 supernet
+
+supernet의 각 layer에는 후보 연산(예: kernel 3, 5, 7)이 모두 들어 있다. 학습할 때 매 step 무작위로 subnet 하나(layer마다 연산 하나)를 골라 그 경로만 forward/backward한다(single-path). 학습이 끝나면 후보마다 해당 경로의 weight를 그대로 써서 validation 정확도를 잰다.
+
+문제: 같은 weight가 여러 subnet에 쓰이면서 서로 간섭한다. supernet에서 잰 정확도는 따로 학습한 정확도보다 낮고, 순위도 일부 뒤바뀐다(τ < 1). 그래서 고른 구조는 보통 다시 학습(또는 fine-tune)해서 최종 정확도를 얻는다.
+
+### Zero-shot proxy
+
+학습 전 상태에서 계산하는 점수로 후보를 걸러 낸다. 예: 무작위 입력에 대한 출력이 입력을 얼마나 잘 구분하는지(표현력), gradient의 크기나 방향 일관성. 비용이 거의 없지만 실제 정확도와 순위 상관이 높지 않은 경우가 많아서, 수백만 후보를 수천 개로 줄이는 1차 필터로 쓴다.
+
+### Latency를 탐색에 넣기
+
+**왜 측정하지 않나**: 후보마다 기기에서 latency를 재면 정확하지만 후보가 수천 개면 느리고, 기기가 손에 있어야 한다.
+
+**Lookup table**: 연산 종류 × 입력 크기 × channel 조합마다 latency를 한 번씩 재서 표로 만들고, 구조의 latency를 layer별 값의 합으로 추정한다.
+
+$$
+\text{Latency}(a) \approx \sum_{\ell} \text{LUT}\left[\ell, o_\ell(a)\right]
+$$
+
+가정은 layer들의 latency가 **더해진다**는 것이다. layer fusion이나 cache 효과가 크면 오차가 생기는데, 그럴 때는 작은 회귀 모델(latency predictor)을 측정값으로 학습해서 쓴다.
+
+**ProxylessNAS: 기대 latency를 미분 가능하게**: layer $\ell$에서 연산 $i$를 고를 확률을 $p_{\ell,i} = \text{softmax}(\boldsymbol{\alpha}_\ell)_i$라 하면
+
+$$
+\mathbb{E}[\text{Latency}] = \sum_\ell \sum_i p_{\ell,i} \cdot \text{lat}_{\ell,i}
+$$
+
+이건 $\boldsymbol{\alpha}$의 매끄러운 함수라서 loss에 넣어 gradient로 최적화할 수 있다.
+
+$$
+L = L_{\text{CE}} + \lambda \cdot \mathbb{E}[\text{Latency}]
+$$
+
+softmax 미분 $\partial p_j / \partial \alpha_i = p_j(\delta_{ij} - p_i)$를 쓰면 (layer 하나, $\bar{\ell} = \sum_j p_j \text{lat}_j$)
+
+$$
+\frac{\partial\, \mathbb{E}[\text{Latency}]}{\partial \alpha_i} = \sum_j \text{lat}_j\, p_j(\delta_{ij} - p_i) = p_i\left(\text{lat}_i - \bar{\ell}\right)
+$$
+
+평균보다 느린 연산은 gradient가 양수라 $\alpha$가 줄고, 빠른 연산은 늘어난다.
+
+또 하나: DARTS(07번 레슨(#search-strategy))는 후보 연산을 전부 계산해서 메모리가 후보 수에 비례했다. ProxylessNAS는 매 step 확률 $p$에 따라 **한 경로만 샘플링**해서 계산한다(path binarization). 메모리가 연산 하나 분량이 되어 proxy 데이터셋이 아니라 대상 데이터셋(ImageNet)에서 바로 탐색할 수 있다. 이름의 "proxyless"가 그 뜻이다.
+
+### Once-for-All (OFA)
+
+**Search space**: stage 5개, stage마다 depth \{2, 3, 4\}, layer마다 kernel \{3, 5, 7\}과 width 확장 비율 \{3, 4, 6\}, 입력 해상도도 여러 개. subnet이 $10^{19}$개 수준이다(07번 레슨(#search-space)의 계산).
+
+**Progressive shrinking** 순서:
+
+1. 가장 큰 네트워크(kernel 7, depth 4, width 6)를 먼저 학습한다.
+2. **Elastic kernel**: 7×7 kernel의 가운데 5×5, 그 가운데 3×3을 작은 kernel로 쓴다. 그대로 잘라 쓰면 분포가 맞지 않아서 작은 변환 행렬을 끼워 학습한다.
+3. **Elastic depth**: stage에서 앞쪽 $d$개 layer만 쓰고 뒤를 건너뛴다.
+4. **Elastic width**: channel을 중요도(weight의 L1 norm) 순으로 **정렬**해 두고 앞쪽 $k$개만 쓴다. 중요한 channel이 항상 남는다.
+
+각 단계에서 큰 subnet을 teacher로 작은 subnet을 학습해서(knowledge distillation, Lec 9) 큰 subnet의 정확도를 지킨다.
+
+**Specialization**: 기기마다 latency LUT(또는 predictor)와 정확도 predictor를 만들고, 07번 레슨의 진화 탐색으로 제약을 만족하는 subnet을 찾는다. 학습이 없으므로 기기 하나당 비용이 매우 작다.
+
+## Worked example
+
+### 예제 1. LUT와 기대 latency
+
+layer 3개, 후보 연산 3개의 latency(ms, 설명용 숫자):
+
+| layer | mb3_k3 | mb6_k3 | mb6_k5 |
+|---|---|---|---|
+| 0 | 0.42 | 0.71 | 0.98 |
+| 1 | 0.30 | 0.55 | 0.80 |
+| 2 | 0.21 | 0.36 | 0.52 |
+
+구조 (mb6_k5, mb3_k3, mb6_k3)의 LUT latency $= 0.98 + 0.30 + 0.36 = 1.64$ ms.
+
+구조 파라미터가 $\boldsymbol{\alpha}_0 = (0, 1, 2)$, $\boldsymbol{\alpha}_1 = (1, 0, -1)$, $\boldsymbol{\alpha}_2 = (0, 0, 0)$이면
+
+- layer 0: $p = (0.090, 0.245, 0.665)$, 기대값 $0.090 \times 0.42 + 0.245 \times 0.71 + 0.665 \times 0.98 = 0.864$
+- layer 1: $p = (0.665, 0.245, 0.090)$, 기대값 $0.200 + 0.135 + 0.072 = 0.406$
+- layer 2: $p = (1/3, 1/3, 1/3)$, 기대값 $(0.21 + 0.36 + 0.52)/3 = 0.363$
+- 합 $\mathbb{E}[\text{Latency}] = 1.633$ ms
+
+layer 0의 gradient: $\bar{\ell}_0 = 0.864$이므로 $p_i(\text{lat}_i - 0.864) = (0.090 \times (-0.444),\; 0.245 \times (-0.154),\; 0.665 \times 0.116) = (-0.040, -0.038, 0.078)$. 느린 mb6_k5의 $\alpha$는 줄고 나머지는 는다.
+
+### 예제 2. 순위가 얼마나 맞나
+
+후보 5개의 실제 정확도(처음부터 학습)와 supernet에서 잰 정확도(설명용 숫자):
+
+| 후보 | 실제 | supernet |
+|---|---|---|
+| A | 76.1 | 70.2 |
+| B | 75.3 | 70.5 |
+| C | 74.8 | 68.9 |
+| D | 73.2 | 68.1 |
+| E | 72.9 | 66.0 |
+
+쌍 10개 중 A–B만 순서가 반대이고 나머지 9개는 일치한다. $\tau = (9 - 1)/10 = 0.8$. supernet 점수는 전부 5~6%p 낮지만 순위는 거의 맞다. supernet으로 고르면 B를 고르게 되는데, 실제 1등 A와 0.8%p 차이다.
+
+### 예제 3. 기기 20개에 맞추는 비용 (어림)
+
+기기마다 NAS + 재학습에 500 GPU-hour가 든다고 하자. 20개면 10,000 GPU-hour. OFA는 supernet 학습에 1,200 GPU-hour 정도가 들고 기기마다 탐색에 10 GPU-hour라고 하면 $1{,}200 + 20 \times 10 = 1{,}400$. 약 7배 싸고, 기기가 늘수록 차이가 커진다. (숫자는 규모를 보여 주기 위한 어림이다.)
+
+## 코드
+
+```python
+import numpy as np
+
+# 1) Latency lookup table: layer마다 후보 연산의 측정 latency(ms, 설명용 숫자)
+LUT = {  # layer: {op: latency}
+    0: {"mb3_k3": 0.42, "mb6_k3": 0.71, "mb6_k5": 0.98},
+    1: {"mb3_k3": 0.30, "mb6_k3": 0.55, "mb6_k5": 0.80},
+    2: {"mb3_k3": 0.21, "mb6_k3": 0.36, "mb6_k5": 0.52},
+}
+arch = ["mb6_k5", "mb3_k3", "mb6_k3"]
+print("LUT latency of", arch, "=", round(sum(LUT[l][op] for l, op in enumerate(arch)), 2), "ms")
+
+# 2) ProxylessNAS식 기대 latency: E[lat] = sum_l sum_i softmax(alpha_l)_i * lat_{l,i}
+alpha = np.array([[0.0, 1.0, 2.0], [1.0, 0.0, -1.0], [0.0, 0.0, 0.0]])
+lat = np.array([[LUT[l][o] for o in LUT[l]] for l in LUT])
+softmax = lambda a: np.exp(a) / np.exp(a).sum(-1, keepdims=True)
+def expected_latency(alpha):
+    return float(np.sum(softmax(alpha) * lat))
+P = softmax(alpha)
+grad = P * (lat - np.sum(P * lat, axis=1, keepdims=True))      # d E[lat] / d alpha (softmax 미분)
+h = 1e-6; num = np.zeros_like(alpha)
+for idx in np.ndindex(alpha.shape):
+    a1, a2 = alpha.copy(), alpha.copy(); a1[idx] += h; a2[idx] -= h
+    num[idx] = (expected_latency(a1) - expected_latency(a2)) / (2 * h)
+print(f"E[latency] = {expected_latency(alpha):.4f} ms")
+print("grad layer0 analytic", np.round(grad[0], 4), " numeric", np.round(num[0], 4))
+
+# 3) Supernet 순위가 실제 순위와 얼마나 맞나: Kendall tau
+def kendall_tau(a, b):
+    n, s = len(a), 0
+    for i in range(n):
+        for j in range(i + 1, n):
+            s += np.sign(a[i] - a[j]) * np.sign(b[i] - b[j])
+    return s / (n * (n - 1) / 2)
+true_acc = [76.1, 75.3, 74.8, 73.2, 72.9]       # 각자 처음부터 학습한 정확도 (설명용)
+supernet_acc = [70.2, 70.5, 68.9, 68.1, 66.0]   # supernet에서 weight를 물려받아 잰 정확도
+print(f"\nKendall tau(supernet, true) = {kendall_tau(supernet_acc, true_acc):.2f}")
+
+# 4) OFA의 elastic width: 중요한 channel부터 정렬해 두면 앞쪽 k개만 잘라 써도 된다
+def spiral(n, rng):
+    X, y = [], []
+    for c in range(3):
+        r = np.linspace(0.05, 1, n)
+        t = np.linspace(c * 4, (c + 1) * 4, n) + rng.normal(0, 0.2, n)
+        X.append(np.c_[r * np.sin(t), r * np.cos(t)]); y.append(np.full(n, c))
+    return np.vstack(X), np.concatenate(y)
+def forward(p, X):
+    A = X
+    for i, (W, b) in enumerate(p):
+        Z = A @ W.T + b
+        A = np.maximum(Z, 0) if i < len(p) - 1 else Z
+    return A
+def train(p, X, y, steps, lr=0.05):
+    p = [[W.copy(), b.copy()] for W, b in p]; v = [[np.zeros_like(W), np.zeros_like(b)] for W, b in p]
+    for _ in range(steps):
+        acts, A = [X], X
+        for i, (W, b) in enumerate(p):
+            Z = A @ W.T + b
+            if i < len(p) - 1: A = np.maximum(Z, 0); acts.append(A)
+        P_ = np.exp(Z - Z.max(1, keepdims=True)); P_ /= P_.sum(1, keepdims=True)
+        G = P_; G[np.arange(len(y)), y] -= 1; G /= len(y)
+        for i in reversed(range(len(p))):
+            W, b = p[i]; gW, gb = G.T @ acts[i], G.sum(0)
+            if i > 0: G = (G @ W) * (acts[i] > 0)
+            v[i][0] = 0.9 * v[i][0] + gW; v[i][1] = 0.9 * v[i][1] + gb
+            W -= lr * v[i][0]; b -= lr * v[i][1]
+    return p
+acc = lambda p, X, y: (forward(p, X).argmax(1) == y).mean()
+rng = np.random.default_rng(0)
+X, y = spiral(200, rng); Xt, yt = spiral(200, np.random.default_rng(1))
+sizes = [2, 128, 3]
+net = train([[rng.normal(0, np.sqrt(2 / i), (o, i)), np.zeros(o)] for i, o in zip(sizes[:-1], sizes[1:])], X, y, 4000)
+def take(p, idx):                                   # hidden channel idx만 남긴 subnet
+    (W1, b1), (W2, b2) = p
+    return [[W1[idx], b1[idx]], [W2[:, idx], b2]]
+order = np.argsort(-np.abs(net[1][0]).sum(0))      # 다음 layer로 나가는 weight의 L1 norm이 큰 순서
+print("\nwidth | top-k by importance | random k channels   (재학습 없이)")
+for k in (128, 64, 32, 16, 8):
+    rand = np.mean([acc(take(net, rng.choice(128, k, replace=False)), Xt, yt) for _ in range(10)])
+    print(f" {k:4d} |        {acc(take(net, order[:k]), Xt, yt):.3f}        |      {rand:.3f}")
+```
+
+```text
+LUT latency of ['mb6_k5', 'mb3_k3', 'mb6_k3'] = 1.64 ms
+E[latency] = 1.6330 ms
+grad layer0 analytic [-0.0399 -0.0376  0.0775]  numeric [-0.0399 -0.0376  0.0775]
+
+Kendall tau(supernet, true) = 0.80
+
+width | top-k by importance | random k channels   (재학습 없이)
+  128 |        0.998        |      0.998
+   64 |        0.977        |      0.614
+   32 |        0.747        |      0.450
+   16 |        0.487        |      0.411
+    8 |        0.395        |      0.395
+```
+
+볼 포인트:
+- 기대 latency의 gradient를 유도식 $p_i(\text{lat}_i - \bar{\ell})$로 계산한 값과 finite difference 값이 일치한다([ml-basics 12](/learning-website/ml-basics/12-backprop-gradient-check/#gradient-check-절차)의 gradient check).
+- Kendall τ 0.8은 예제 2의 손계산과 같다.
+- **Elastic width**: hidden 128개짜리 MLP를 재학습 없이 64개로 줄일 때, 중요도 순으로 앞쪽 64개를 쓰면 97.7%, 무작위 64개면 61.4%다. OFA가 channel을 정렬해 두는 이유다. 다만 32개 이하에서는 정렬만으로는 무너진다. OFA는 여기에 더해 작은 subnet도 학습 중에 함께 최적화(progressive shrinking)해서 작은 크기에서도 정확도를 지킨다.
+
+## 흔한 오해
+
+<Aside type="caution" title="Supernet에서 잰 정확도가 그 구조의 최종 정확도다?">
+weight 공유 때문에 supernet 정확도는 보통 따로 학습한 것보다 낮고, 일부 순위도 뒤바뀐다. supernet은 고르는 용도로만 쓰고, 고른 구조는 다시 학습하거나 fine-tune해서 최종 정확도를 잰다. OFA는 progressive shrinking 덕분에 subnet을 그대로 써도 정확도가 높은 편이지만, 그래도 fine-tune하면 조금 더 오른다.
+</Aside>
+
+<Aside type="caution" title="Latency는 FLOPs에 비례하니 FLOPs를 제약으로 쓰면 된다?">
+같은 FLOPs라도 연산 종류(depthwise vs dense), channel 수의 정렬(SIMD 폭의 배수인지), 메모리 접근 패턴에 따라 latency가 크게 다르고, 기기마다 순서도 다르다. 그래서 기기별 LUT나 predictor를 쓴다.
+</Aside>
+
+<Aside type="caution" title="LUT의 합은 정확한 latency다?">
+layer별 latency가 독립적으로 더해진다는 가정이다. layer fusion, cache 재사용, 병렬 실행이 있으면 실제 latency가 합보다 작거나 달라진다. LUT는 순위를 매기기에 충분할 정도면 되고, 최종 후보는 실제 기기에서 잰다.
+</Aside>
+
+## Efficient ML 연결
+
+- **Lab 3**: OFA supernet에서 MAC과 latency 제약을 만족하는 subnet을 진화 탐색으로 찾고, 정확도 predictor를 직접 써 본다.
+- **Lec 10 (MCUNet)**: MCU의 SRAM과 flash 제약 아래에서 TinyNAS로 search space를 고르고 그 안에서 구조를 찾는다. 이 레슨의 latency LUT 자리에 peak memory 계산이 들어간다.
+- **LLM 쪽**: LLM은 학습이 너무 비싸서 NAS를 거의 하지 않지만, 큰 모델에서 width와 depth를 줄인 작은 모델을 잘라 내고 distillation으로 회복하는 방식(예: Minitron 계열)이 OFA의 elastic width/depth와 같은 아이디어다.
+
+## 체크 퀴즈
+
+<Quiz
+  q="한 layer의 후보 연산 3개의 선택 확률이 (0.5, 0.3, 0.2)이고 latency가 (1.0, 2.0, 4.0) ms일 때 이 layer의 기대 latency는?"
+  options={['약 2.33 ms', '1.0 ms', '1.9 ms', '4.0 ms']}
+  answer={2}
+  explain="0.5 × 1.0 + 0.3 × 2.0 + 0.2 × 4.0 = 1.9. 약 2.33은 확률을 무시한 단순 평균, 1.0은 확률이 가장 높은 연산만 본 값이다. 기대값은 확률 가중합이라 α에 대해 미분 가능하다."
+/>
+
+<Quiz
+  q="후보 4개의 실제 순위가 A > B > C > D이고 supernet 순위가 B > A > C > D일 때 Kendall τ는?"
+  options={['약 0.67', '약 0.83', '0.75', '1.0']}
+  answer={0}
+  explain="쌍은 4 × 3 / 2 = 6개. A–B 한 쌍만 반대라 concordant 5, discordant 1, τ = (5 - 1) / 6 ≈ 0.67. 약 0.83은 일치하는 쌍 비율 5/6을 그대로 쓴 값이다. τ는 불일치 쌍을 빼서 계산한다."
+/>
+
+<Quiz
+  q="기기마다 NAS와 재학습에 500 GPU-hour가 드는 방식과, supernet 학습 1,200 GPU-hour + 기기마다 탐색 10 GPU-hour인 방식을 기기 20개에 대해 비교하면 후자가 대략 몇 배 싼가?"
+  options={['20배', '약 8.3배', '약 1.4배', '약 7배']}
+  answer={3}
+  explain="20 × 500 = 10,000 대 1,200 + 20 × 10 = 1,400, 약 7.1배. 약 8.3배는 기기별 탐색 비용 200을 빼먹은 10,000 / 1,200, 20배는 supernet 학습 비용을 무시하고 기기 수만 본 값이다."
+/>
+
+<Quiz
+  q="ProxylessNAS가 매 step 후보 연산 중 하나의 경로만 샘플링해서 계산하는(path binarization) 주된 이유는?"
+  options={['latency를 더 정확히 재려고', '모든 후보 연산의 activation을 저장하지 않아 메모리를 연산 하나 분량으로 줄이려고', 'softmax를 계산하지 않으려고', '정확도 predictor를 학습하려고']}
+  answer={1}
+  explain="DARTS처럼 후보를 모두 계산하면 activation 메모리가 후보 수에 비례해서, 큰 데이터셋과 큰 search space에서는 GPU에 안 들어간다. 경로 하나만 활성화하면 메모리가 일반 학습 수준이 되어 ImageNet에서 바로(proxy 없이) 탐색할 수 있다."
+/>
+
+## 서술형
+
+### 문제. Latency를 loss에 넣은 탐색 한 step
+
+layer 하나에 후보 연산 3개가 있고, latency는 $(1, 2, 3)$ ms, 구조 파라미터는 $\boldsymbol{\alpha} = (0, 0, 0)$이다. loss는 $L = L_{\text{CE}} + \lambda\, \mathbb{E}[\text{Latency}]$, $\lambda = 0.1$.
+
+(a) $\partial\, \mathbb{E}[\text{Latency}] / \partial \alpha_i = p_i(\text{lat}_i - \bar{\ell})$를 softmax 미분으로 유도하라.
+
+(b) 현재 $\boldsymbol{\alpha}$에서 latency 항의 gradient를 구하라.
+
+(c) cross-entropy의 gradient가 $\partial L_{\text{CE}} / \partial \boldsymbol{\alpha} = (0.05, -0.02, -0.04)$라고 하자. learning rate 1로 한 step 업데이트한 $\boldsymbol{\alpha}$를 구하고, 어느 연산이 가장 유리해졌는지 해석하라. $\lambda$를 1로 키우면 어떻게 달라지나?
+
+(d) latency 대신 FLOPs를 쓰면 이 식에서 무엇이 바뀌고, 왜 기기별 LUT가 더 나은가?
+
+<details>
+<summary>풀이 보기</summary>
+
+**(a)** $\mathbb{E}[\text{Latency}] = \sum_j p_j\,\text{lat}_j$, $p_j = e^{\alpha_j} / \sum_k e^{\alpha_k}$. softmax 미분 $\partial p_j / \partial \alpha_i = p_j(\delta_{ij} - p_i)$ (몫의 미분: $j = i$면 $p_i - p_i^2$, 아니면 $-p_j p_i$).
+
+$$
+\frac{\partial\, \mathbb{E}}{\partial \alpha_i} = \sum_j \text{lat}_j\, p_j(\delta_{ij} - p_i) = p_i\,\text{lat}_i - p_i\sum_j p_j\,\text{lat}_j = p_i(\text{lat}_i - \bar{\ell})
+$$
+
+**(b)** $p = (1/3, 1/3, 1/3)$, $\bar{\ell} = 2$. gradient $= \frac{1}{3}(1 - 2,\; 2 - 2,\; 3 - 2) = (-0.333, 0, 0.333)$.
+
+**(c)** 전체 gradient $= (0.05, -0.02, -0.04) + 0.1 \times (-0.333, 0, 0.333) = (0.0167, -0.02, -0.0067)$.
+
+업데이트 $\boldsymbol{\alpha} \leftarrow \boldsymbol{\alpha} - 1 \times \text{grad} = (-0.0167, 0.02, 0.0067)$. 가운데 연산(2 ms)이 가장 커졌다. 정확도만 보면 가장 느린 연산(gradient −0.04)이 유리했지만, latency 벌점이 그 이득을 일부 깎았고, 빠른 연산은 정확도 쪽에서 불리해서(+0.05) latency 이득(−0.033)으로도 못 따라왔다. 정확도와 latency의 절충이 가운데로 간 것이다.
+
+$\lambda = 1$이면 latency 항이 $(-0.333, 0, 0.333)$이라 전체 $(-0.283, -0.02, 0.293)$, 업데이트 후 $(0.283, 0.02, -0.293)$로 가장 빠른 연산이 크게 유리해진다. $\lambda$가 정확도와 속도 사이의 환율이다.
+
+**(d)** $\text{lat}_i$ 자리에 FLOPs를 넣으면 식은 그대로다. 문제는 FLOPs 순서가 실제 latency 순서와 다를 수 있다는 것이다. depthwise conv처럼 FLOPs는 작은데 memory-bound라 느린 연산(02번 레슨(#worked-example)), SIMD 폭에 맞지 않는 channel 수, 기기마다 다른 최적 연산 때문에 FLOPs로 고른 구조가 실제로 빠르지 않을 수 있다. 기기별 LUT는 그 기기에서 잰 값이라 이 차이를 반영한다.
+
+</details>
+
+## 더 읽을거리
+
+- [MIT 6.5940 Fall 2026 코스 페이지](https://hanlab.mit.edu/courses/2026-fall-65940)
+- [Once-for-All: Train One Network and Specialize it for Efficient Deployment (Cai et al., 2020)](https://arxiv.org/abs/1908.09791)
+- [ProxylessNAS: Direct Neural Architecture Search on Target Task and Hardware (Cai et al., 2019)](https://arxiv.org/abs/1812.00332)
+- [Efficient Neural Architecture Search via Parameter Sharing (ENAS, Pham et al., 2018)](https://arxiv.org/abs/1802.03268)
+- [Single Path One-Shot Neural Architecture Search with Uniform Sampling (Guo et al., 2020)](https://arxiv.org/abs/1904.00420)
+- [Zero-Cost Proxies for Lightweight NAS (Abdelfattah et al., 2021)](https://arxiv.org/abs/2101.08134)
